@@ -44,6 +44,24 @@ export const useEditorStore = defineStore('editor', {
 
     togglePlay() {
       this.playing = !this.playing
+    },
+    
+    startPlayback() {
+      this.playing = true
+      const startTime = performance.now();
+      const initialTime = this.currentTime;
+
+      const loop = () => {
+        if (!this.playing) return;
+        // 计算当前播放头：暂停时的 currentTime + 本次播放经过的时间
+        this.currentTime = initialTime + (performance.now() - startTime);
+        requestAnimationFrame(loop);
+      };
+      loop();
+    },
+
+    pausePlayback() {
+      this.playing = false
     }
   }
 })

@@ -17,7 +17,11 @@ import DanmakuLayer from './DanmakuLayer.vue'
 const store = useEditorStore()
 
 function toggle() {
-  store.togglePlay()
+  if (store.playing) {
+    store.pausePlayback()
+  } else {
+    store.startPlayback()
+  }
 }
 </script>
 

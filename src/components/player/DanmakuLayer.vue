@@ -27,10 +27,25 @@ const visibleDanmakus = computed(() => {
 })
 
 function getStyle(d: any) {
+  const t = store.currentTime - d.startTime
+
+  const progress = Math.min(
+    Math.max(t / d.animation.moveDuration, 0),
+    1
+  )
+
+  const x =
+    d.transform.start.x +
+    (d.transform.end.x - d.transform.start.x) * progress
+
+  const y =
+    d.transform.start.y +
+    (d.transform.end.y - d.transform.start.y) * progress
+
   return {
     position: 'absolute',
-    left: d.transform.start.x + 'px',
-    top: d.transform.start.y + 'px',
+    left: x + 'px',
+    top: y + 'px',
     color: d.content.color,
     fontSize: d.content.size + 'px'
   }
