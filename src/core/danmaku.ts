@@ -1,7 +1,6 @@
 export interface DanmakuItem {
   id: string
-
-  // 时间（统一毫秒）
+  layer: number
   startTime: number
 
   content: {
