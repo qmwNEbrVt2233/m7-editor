@@ -59,6 +59,7 @@ export const useEditorStore = defineStore('editor', {
           }
         }
       ],
+      selectedIds: [] as string[],
       currentTime: 0,
       playing: false
     }
@@ -162,6 +163,37 @@ export const useEditorStore = defineStore('editor', {
       }
 
       reader.readAsText(file)
+    },
+
+    selectDanmaku(id: string, multi = false) {
+      if (multi) {
+        if (this.selectedIds.includes(id)) {
+          this.selectedIds = this.selectedIds.filter(i => i !== id)
+        } else {
+          this.selectedIds.push(id)
+        }
+      } else {
+        this.selectedIds = [id]
+      }
+    },
+
+    clearSelection() {
+      this.selectedIds = []
+    },
+
+    updateDanmaku(id: string, patch: any) {
+      const d = this.danmakus.find(d => d.id === id)
+      if (!d) return
+
+      Object.assign(d, patch)
+    },
+
+    updateSelectedDanmakus(patch: any) {
+      this.danmakus.forEach(d => {
+        if (this.selectedIds.includes(d.id)) {
+          Object.assign(d, patch)
+        }
+      })
     }
   }
 })

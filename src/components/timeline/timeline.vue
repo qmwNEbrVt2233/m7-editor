@@ -26,12 +26,25 @@
     <!-- 弹幕块 -->
     <div class="tracks">
       <div
-        v-for="d in store.danmakus"
-        :key="d.id"
-        class="block"
-        :style="getBlockStyle(d)"
+        v-for="layer in 100"
+        :key="layer"
+        class="track-row"
+        :style="{ top: (layer - 1) * rowHeight + 'px' }"
       >
-        {{ d.content.text }}
+        <!-- 当前layer的弹幕 -->
+        <div
+          v-for="d in getLayerDanmakus(layer - 1)"
+          :key="d.id"
+          class="block"
+          :class="{ selected: store.selectedIds.includes(d.id) }"
+          :style="getBlockStyle(d)"
+          @mousedown.stop="onBlockMouseDown($event, d)"
+          @click.stop="onSelect($event, d)"
+        >
+          <div class="handle left" @mousedown.stop="onResizeStart($event, d, 'left')" />
+          <div class="handle right" @mousedown.stop="onResizeStart($event, d, 'right')" />
+          {{ d.content.text }}
+        </div>
       </div>
     </div>
   </div>
@@ -85,7 +98,7 @@ function getBlockStyle(d: any) {
     position: 'absolute',
     left: (d.startTime - offset.value) * scale + 'px',
     width: d.animation.duration * scale + 'px',
-    top: '30px'
+    top: d.layer * rowHeight + 'px'
   }
 }
 
@@ -97,15 +110,6 @@ function onMouseDown(e: MouseEvent) {
   updateTime(e)
 }
 
-function onMouseMove(e: MouseEvent) {
-  if (!dragging.value) return
-  updateTime(e)
-}
-
-function onMouseUp() {
-  dragging.value = false
-}
-
 function updateTime(e: MouseEvent) {
   const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
 
@@ -114,6 +118,138 @@ function updateTime(e: MouseEvent) {
   const time = x / scale + offset.value
 
   store.setTime(time)
+}
+
+const rowHeight = 30
+
+function getLayerDanmakus(layer: number) {
+  if (!Array.isArray(store.danmakus)) return []
+  return store.danmakus.filter(
+  (d) => d && typeof d === 'object' && d.layer === layer
+  )
+}
+
+const draggingBlock = ref<null | any>(null)
+const dragOffsetX = ref(0)
+const dragOffsetY = ref(0)
+
+function onBlockMouseDown(e: MouseEvent, d: any) {
+  draggingBlock.value = d
+
+  const rect = (e.target as HTMLElement).getBoundingClientRect()
+
+  dragOffsetX.value = e.clientX - rect.left
+  dragOffsetY.value = e.clientY - rect.top
+  dragMode.value = 'move'
+
+  if (!store.selectedIds.includes(d.id)) {
+    store.selectDanmaku(d.id)
+  }
+
+  draggingIds.value = [...store.selectedIds]
+}
+
+function updateBlockDrag(e: MouseEvent) {
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+
+  const x = e.clientX - rect.left - dragOffsetX.value
+  const y = e.clientY - rect.top - dragOffsetY.value
+
+  // 时间
+  const newTime = x / scale + offset.value
+
+  // layer（关键）
+  const newLayer = Math.floor(y / rowHeight)
+
+  store.updateDanmaku(draggingBlock.value.id, {
+    startTime: Math.max(0, newTime),
+    layer: Math.max(0, newLayer)
+  })
+}
+
+const dragMode = ref<'move' | 'resize-left' | 'resize-right' | null>(null)
+const draggingIds = ref<string[]>([])
+
+function onSelect(e: MouseEvent, d: any) {
+  const multi = e.ctrlKey || e.metaKey
+  store.selectDanmaku(d.id, multi)
+}
+
+function onResizeStart(e: MouseEvent, d: any, side: 'left' | 'right') {
+  dragMode.value = side === 'left' ? 'resize-left' : 'resize-right'
+
+  if (!store.selectedIds.includes(d.id)) {
+    store.selectDanmaku(d.id)
+  }
+
+  draggingIds.value = [...store.selectedIds]
+}
+
+function snapTime(time: number) {
+  const threshold = 100 // 100ms 吸附范围
+
+  let targets: number[] = []
+
+  // 播放头
+  targets.push(store.currentTime)
+
+  // 所有弹幕起点
+  store.danmakus.forEach(d => {
+    targets.push(d.startTime)
+    targets.push(d.startTime + d.animation.duration)
+  })
+
+  for (let t of targets) {
+    if (Math.abs(t - time) < threshold) {
+      return t
+    }
+  }
+
+  return time
+}
+
+function onMouseMove(e: MouseEvent) {
+  // 拖动播放头
+  if (dragging.value && !dragMode.value) {
+    updateTime(e)
+    return
+  }
+
+  // 拖动弹幕块
+  if (!dragMode.value) return
+
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  const x = e.clientX - rect.left
+  const y = e.clientY - rect.top
+
+  const time = snapTime(x / scale + offset.value)
+  const layer = Math.floor(y / rowHeight)
+
+  draggingIds.value.forEach(id => {
+    const d = store.danmakus.find(d => d.id === id)
+    if (!d) return
+
+    if (dragMode.value === 'move') {
+      d.startTime = Math.max(0, time)
+      d.layer = Math.max(0, layer)
+    }
+
+    if (dragMode.value === 'resize-left') {
+      const end = d.startTime + d.animation.duration
+      d.startTime = Math.min(time, end - 50)
+      d.animation.duration = end - d.startTime
+    }
+
+    if (dragMode.value === 'resize-right') {
+      d.animation.duration = Math.max(50, time - d.startTime)
+    }
+  })
+}
+
+function onMouseUp() {
+  dragging.value = false
+  dragMode.value = null
+  draggingIds.value = []
 }
 </script>
 
@@ -164,5 +300,26 @@ function updateTime(e: MouseEvent) {
   font-size: 12px;
   overflow: hidden;
   white-space: nowrap;
+}
+
+.block.selected {
+  outline: 2px solid yellow;
+}
+
+.handle {
+  position: absolute;
+  width: 6px;
+  top: 0;
+  bottom: 0;
+  background: #fff;
+  cursor: ew-resize;
+}
+
+.handle.left {
+  left: 0;
+}
+
+.handle.right {
+  right: 0;
 }
 </style>
