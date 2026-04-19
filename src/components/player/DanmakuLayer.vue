@@ -6,7 +6,7 @@
       class="danmaku"
       :style="getStyle(d)"
     >
-      {{ d.content.text }}
+      <div class="danmaku-content" v-html="formatText(d.content.text)"></div>
     </div>
   </div>
 </template>
@@ -49,8 +49,13 @@ function getStyle(d: any) {
     color: d.content.color,
     fontSize: d.content.size + 'px',
     fontFamily: d.content.font,
-    fontWeight: 'bold' as const
+    fontWeight: 'bold' as const,
+    lineHeight: 1,
   }
+}
+
+function formatText(text: string) {
+  return text.replace(/\n/g, '<br />')
 }
 </script>
 
@@ -66,5 +71,9 @@ function getStyle(d: any) {
 
 .danmaku {
   white-space: nowrap;
+}
+
+.danmaku-content {
+  word-break: break-word;
 }
 </style>
