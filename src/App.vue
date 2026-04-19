@@ -21,7 +21,7 @@ import Timeline from './components/timeline/timeline.vue'
 import { useEditorStore } from './store/editor'
 
 const store = useEditorStore()
-const timelineHeight = ref(300)
+const timelineHeight = ref(window.innerHeight - 530)
 
 // 全局快捷键
 function handleKeyDown(e: KeyboardEvent) {

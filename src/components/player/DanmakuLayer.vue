@@ -47,7 +47,9 @@ function getStyle(d: any) {
     left: x + 'px',
     top: y + 'px',
     color: d.content.color,
-    fontSize: d.content.size + 'px'
+    fontSize: d.content.size + 'px',
+    fontFamily: d.content.font,
+    fontWeight: 'bold' as const
   }
 }
 </script>
@@ -64,6 +66,5 @@ function getStyle(d: any) {
 
 .danmaku {
   white-space: nowrap;
-  font-weight: bold;
 }
 </style>

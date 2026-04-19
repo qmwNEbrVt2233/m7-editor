@@ -1,16 +1,5 @@
 <template>
   <div class="player">
-    <div class="screen">
-      <video
-        v-if="store.videoUrl"
-        ref="videoRef"
-        class="video-element"
-        :src="store.videoUrl"
-        @loadedmetadata="onVideoLoaded"
-      />
-      <DanmakuLayer />
-    </div>
-
     <div class="controls">
       <button @click="toggle">
         {{ store.playing ? '暂停' : '播放' }}
@@ -34,6 +23,17 @@
         style="display: none"
         accept=".json"
       />
+    </div>
+    
+    <div class="screen">
+      <video
+        v-if="store.videoUrl"
+        ref="videoRef"
+        class="video-element"
+        :src="store.videoUrl"
+        @loadedmetadata="onVideoLoaded"
+      />
+      <DanmakuLayer />
     </div>
 
     <div v-if="store.videoUrl" class="video-info">
