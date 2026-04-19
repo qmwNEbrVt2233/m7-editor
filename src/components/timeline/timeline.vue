@@ -397,6 +397,8 @@ function onMouseUp() {
   line-height: 28px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
   clip-path: inset(0);
+  outline: 2px solid #d8d8d8;
+  outline-offset: -2px;
 }
 
 .block:hover {

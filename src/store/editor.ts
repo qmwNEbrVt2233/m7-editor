@@ -7,6 +7,11 @@ export const useEditorStore = defineStore('editor', {
     const saved = loadProject()
 
     return {
+      // 视频相关状态
+      videoUrl: saved?.video?.url || '',
+      videoDuration: saved?.video?.duration || 0,
+      videoElement: null as HTMLVideoElement | null,
+
       danmakus: saved?.danmakus || [
         {
           id: '1',
@@ -96,20 +101,6 @@ export const useEditorStore = defineStore('editor', {
       this.playing = false
     },
 
-    exportProject() {
-      return {
-        meta: {
-          version: '1.0',
-          createdAt: Date.now()
-        },
-        timeline: {
-          scale: 0.1,
-          offset: 0
-        },
-        danmakus: this.danmakus
-      }
-    },
-
     saveToLocal() {
       const project = this.exportProject()
       saveProject(project)
@@ -125,6 +116,14 @@ export const useEditorStore = defineStore('editor', {
       }
 
       this.danmakus = project.danmakus || []
+      
+      // 加载视频信息
+      if (project.video?.url) {
+        this.videoUrl = project.video.url
+      }
+      if (project.video?.duration) {
+        this.videoDuration = project.video.duration
+      }
 
       console.log('加载完成')
     },
@@ -155,6 +154,14 @@ export const useEditorStore = defineStore('editor', {
           const project = JSON.parse(reader.result as string)
 
           this.danmakus = project.danmakus || []
+          
+          // 加载视频信息
+          if (project.video?.url) {
+            this.videoUrl = project.video.url
+          }
+          if (project.video?.duration) {
+            this.videoDuration = project.video.duration
+          }
 
           console.log('文件加载成功')
         } catch (e) {
@@ -182,18 +189,57 @@ export const useEditorStore = defineStore('editor', {
     },
 
     updateDanmaku(id: string, patch: any) {
-      const d = this.danmakus.find(d => d.id === id)
+      const d = this.danmakus.find((d: any) => d.id === id)
       if (!d) return
 
       Object.assign(d, patch)
     },
 
     updateSelectedDanmakus(patch: any) {
-      this.danmakus.forEach(d => {
+      this.danmakus.forEach((d: any) => {
         if (this.selectedIds.includes(d.id)) {
           Object.assign(d, patch)
         }
       })
+    },
+
+    // 视频相关操作
+    setVideoUrl(url: string) {
+      this.videoUrl = url
+    },
+
+    setVideoDuration(duration: number) {
+      this.videoDuration = duration
+    },
+
+    setVideoElement(element: HTMLVideoElement | null) {
+      this.videoElement = element
+    },
+
+    // 同步视频与播放头位置
+    syncVideoToCurrentTime() {
+      if (this.videoElement && this.videoUrl) {
+        this.videoElement.currentTime = this.currentTime / 1000 // 将ms转换为秒
+      }
+    },
+
+    // 导出时包含视频信息
+    exportProject() {
+      return {
+        meta: {
+          version: '1.0',
+          createdAt: Date.now()
+        },
+        timeline: {
+          scale: 0.1,
+          offset: 0
+        },
+        video: {
+          url: this.videoUrl,
+          duration: this.videoDuration
+        },
+        danmakus: this.danmakus
+      }
     }
   }
 })

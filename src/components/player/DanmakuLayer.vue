@@ -18,7 +18,7 @@ import { useEditorStore } from '../../store/editor'
 const store = useEditorStore()
 
 const visibleDanmakus = computed(() => {
-  return store.danmakus.filter(d => {
+  return store.danmakus.filter((d: any) => {
     return (
       store.currentTime >= d.startTime &&
       store.currentTime <= d.startTime + d.animation.duration
@@ -43,7 +43,7 @@ function getStyle(d: any) {
     (d.transform.end.y - d.transform.start.y) * progress
 
   return {
-    position: 'absolute',
+    position: 'absolute' as const,
     left: x + 'px',
     top: y + 'px',
     color: d.content.color,
@@ -51,3 +51,19 @@ function getStyle(d: any) {
   }
 }
 </script>
+
+<style scoped>
+.layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.danmaku {
+  white-space: nowrap;
+  font-weight: bold;
+}
+</style>

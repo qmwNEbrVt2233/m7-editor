@@ -16,8 +16,8 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import Player from './components/Player/Player.vue'
-import Timeline from './components/Timeline/Timeline.vue'
+import Player from './components/player/Player.vue'
+import Timeline from './components/timeline/timeline.vue'
 import { useEditorStore } from './store/editor'
 
 const store = useEditorStore()
