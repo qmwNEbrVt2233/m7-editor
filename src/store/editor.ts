@@ -66,7 +66,9 @@ export const useEditorStore = defineStore('editor', {
       ],
       selectedIds: [] as string[],
       currentTime: 0,
-      playing: false
+      playing: false,
+      // 快捷键配置：播放头移动的步长（毫秒）
+      playheadStepMs: 16.666667  // 默认60fps对应的毫秒值
     }
   },
 

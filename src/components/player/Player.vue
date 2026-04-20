@@ -9,6 +9,19 @@
       <button @click="load">加载工程</button>
       <button @click="download">导出JSON</button>
       <button @click="importProject">导入工程</button>
+      
+      <!-- 快捷键配置：播放头移动范围 -->
+      <span style="margin-left: 20px; color: #999;">播放头移动范围:</span>
+      <input
+        type="text"
+        v-model="playheadStepInput"
+        @change="onPlayheadStepChange"
+        placeholder="如 33 或 /60"
+        style="width: 80px; padding: 4px 8px; margin-left: 8px;"
+        title="输入毫秒数(如33)或帧率(如/60表示60fps)"
+      />
+      <span style="margin-left: 8px; color: #999;">当前: {{ store.playheadStepMs.toFixed(6) }}ms</span>
+      
       <input
         type="file"
         ref="videoInput"
@@ -45,7 +58,7 @@
 <script setup lang="ts">
 import { useEditorStore } from '../../store/editor'
 import DanmakuLayer from './DanmakuLayer.vue'
-import { ref, watch, onMounted, nextTick } from 'vue'
+import { ref, watch, onMounted, nextTick, computed } from 'vue'
 
 const store = useEditorStore()
 const videoRef = ref<HTMLVideoElement | null>(null)
@@ -54,6 +67,39 @@ const projectInput = ref<HTMLInputElement | null>(null)
 const lastSyncTime = ref(0) // 上次同步的时间戳
 const previousCurrentTime = ref(0) // 上一帧的currentTime
 const isSyncing = ref(false) // 标志位：是否正在同步
+
+// 快捷键配置相关
+const playheadStepInput = ref(`${store.playheadStepMs.toFixed(6)}`)
+
+// 处理播放头步长输入变化
+function onPlayheadStepChange(e: Event) {
+  const input = (e.target as HTMLInputElement).value.trim()
+  
+  if (!input) return
+  
+  let stepMs = 16.666667  // 默认60fps
+  
+  // 检查是否是帧率格式 '/60'
+  if (input.startsWith('/')) {
+    const fpsStr = input.substring(1)
+    const fps = parseInt(fpsStr)
+    if (fps > 0) {
+      stepMs = 1000 / fps
+    }
+  } else {
+    // 否则按ms处理
+    const ms = parseFloat(input)
+    if (ms > 0) {
+      stepMs = ms
+    }
+  }
+  
+  // 验证合法性
+  if (stepMs > 0 && stepMs <= 10000) {
+    store.playheadStepMs = stepMs
+    playheadStepInput.value = `${stepMs.toFixed(6)}`
+  }
+}
 
 // 初始化视频元素引用
 onMounted(() => {

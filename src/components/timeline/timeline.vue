@@ -125,14 +125,84 @@ function handleZoom(e: KeyboardEvent) {
 
 // ===== 平移功能 =====
 function handlePan(e: KeyboardEvent) {
-  const panStep = 10000 // 每次平移10000ms
+  const isCtrl = e.ctrlKey || e.metaKey
+  const isAlt = e.altKey
   
-  if (e.key === 'ArrowLeft') {
+  // 计算移动的距离
+  let panDistance = 0 // 0表示不移动
+  
+  if (isCtrl && isAlt && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+    // Ctrl+Alt: 移动30000ms (30秒)
+    panDistance = 30000
+  } else if (isCtrl && !isAlt && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+    // Ctrl: 移动10000ms
+    panDistance = 10000
+  } else if (!isCtrl && !isAlt && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+    // 普通方向键: 移动播放头到最近的stepMs的整数倍位置（排除当前位置）
+    const stepMs = store.playheadStepMs
+    const EPS = stepMs * 1e-4
+    
+    const current = store.currentTime
+    const ratio = current / stepMs
+    
+    function quantizeTime(t: number, step: number) {
+      return Math.round(t / step) * step
+    }
+
+    let newTime: number
+    
+    if (e.key === 'ArrowLeft') {
+      // 向左
+      let base = Math.floor(ratio) * stepMs
+      
+      // 如果正好在刻度上，则再往前一个step
+      if (Math.abs(ratio - Math.round(ratio)) < EPS) {
+        base -= stepMs
+      }
+      
+      newTime = Math.max(0, base)
+    } else {
+      // 向右
+      let base = Math.ceil(ratio) * stepMs
+      
+      // 如果正好在刻度上，则再往后一个step
+      if (Math.abs(ratio - Math.round(ratio)) < EPS) {
+        base += stepMs
+      }
+      
+      newTime = base
+    }
+
+    newTime = quantizeTime(newTime, stepMs)
+    
+    store.setTime(newTime)
     e.preventDefault()
-    offset.value = Math.max(0, offset.value - panStep)
-  } else if (e.key === 'ArrowRight') {
+    return
+  }
+  
+  // 如果需要平移视图
+  if (panDistance > 0) {
     e.preventDefault()
-    offset.value = offset.value + panStep
+    
+    // 平移视图
+    if (e.key === 'ArrowLeft') {
+      offset.value = Math.max(0, offset.value - panDistance)
+    } else if (e.key === 'ArrowRight') {
+      offset.value = offset.value + panDistance
+    }
+    
+    // 同时平移播放头（Ctrl+方向键和Ctrl+Alt+方向键都平移播放头）
+    const stepMs = store.playheadStepMs
+    
+    function quantizeTime(t: number, step: number) {
+      return Math.round(t / step) * step
+    }
+    let newTime = e.key === 'ArrowLeft'
+      ? Math.max(0, store.currentTime - panDistance)
+      : store.currentTime + panDistance
+    
+    newTime = quantizeTime(newTime, stepMs)
+    store.setTime(newTime)
   }
 }
 
