@@ -49,6 +49,18 @@
 
       <!-- 用于显示滚动条的占位符 -->
       <div class="scrollbar-spacer"></div>
+      
+      <!-- 框选矩形 -->
+      <div
+        v-if="selectionBox.visible"
+        class="selection-box"
+        :style="{
+          left: Math.min(selectionBox.startX, selectionBox.endX) + 'px',
+          top: Math.min(selectionBox.startY, selectionBox.endY) + 'px',
+          width: Math.abs(selectionBox.endX - selectionBox.startX) + 'px',
+          height: Math.abs(selectionBox.endY - selectionBox.startY) + 'px'
+        }"
+      />
     </div>
   </div>
 </template>
@@ -169,7 +181,7 @@ const playheadX = computed(() => {
 // ===== 弹幕块 =====
 function getBlockStyle(d: any) {
   return {
-    position: 'absolute',
+    position: 'absolute' as const,
     left: (d.startTime - offset.value) * scale.value + 'px',
     width: d.animation.duration * scale.value + 'px',
     top: d.layer * rowHeight + 'px'
@@ -180,6 +192,33 @@ function getBlockStyle(d: any) {
 const dragging = ref(false)
 
 function onMouseDown(e: MouseEvent) {
+  // 检测是否在空白处点击（用于框选和取消选择）
+  const isOnBlock = (e.target as HTMLElement).closest('.block')
+  const isOnHandle = (e.target as HTMLElement).closest('.handle')
+  const isCtrlPressed = e.ctrlKey || e.metaKey
+  
+  // 点击空白处取消所有选择
+  if (!isOnBlock && !isOnHandle && !isCtrlPressed) {
+    store.clearSelection()
+  }
+  
+  if (isCtrlPressed && !isOnBlock && !isOnHandle) {
+    // 进入框选模式
+    isBoxSelectingMode.value = true
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const tracksElement = document.querySelector('.tracks') as HTMLElement
+    const scrollTop = tracksElement.scrollTop
+    
+    selectionBox.value = {
+      visible: true,
+      startX: e.clientX - rect.left,
+      startY: e.clientY - rect.top - 20 + scrollTop, // 考虑ruler高度(20px)和scrollTop
+      endX: e.clientX - rect.left,
+      endY: e.clientY - rect.top - 20 + scrollTop
+    }
+    return
+  }
+  
   dragging.value = true
   updateTime(e)
 }
@@ -198,6 +237,19 @@ const draggingBlock = ref<null | any>(null)
 const dragOffsetX = ref(0)
 const dragOffsetY = ref(0)
 
+// 记录拖动时所有选中弹幕的初始状态
+interface DragState {
+  startTime: number
+  layer: number
+  duration: number
+}
+const dragInitialStates = ref<Map<string, DragState>>(new Map())
+const dragStartPageX = ref(0)
+const dragStartPageY = ref(0)
+
+// 当前操作的弹幕块ID（用于准确标识用户在拖动/resize哪个弹幕块）
+const activeBlockId = ref<string | null>(null)
+
 function getLayerDanmakus(layer: number) {
   if (!Array.isArray(store.danmakus)) return []
   return store.danmakus.filter(
@@ -206,13 +258,14 @@ function getLayerDanmakus(layer: number) {
 }
 
 function onBlockMouseDown(e: MouseEvent, d: any) {
+  const isCtrlPressed = e.ctrlKey || e.metaKey
+  
+  // Ctrl按下时不进入拖动模式，让onSelect处理多选
+  if (isCtrlPressed) {
+    return
+  }
+  
   draggingBlock.value = d
-
-  const blockRect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-
-  // 记录鼠标相对于弹幕块左上角的偏移
-  dragOffsetX.value = e.clientX - blockRect.left
-  dragOffsetY.value = e.clientY - blockRect.top
   dragMode.value = 'move'
 
   if (!store.selectedIds.includes(d.id)) {
@@ -220,10 +273,70 @@ function onBlockMouseDown(e: MouseEvent, d: any) {
   }
 
   draggingIds.value = [...store.selectedIds]
+  activeBlockId.value = d.id // 标记当前操作的弹幕块
+  
+  // 记录所有选中弹幕的初始状态
+  recordDragInitialStates()
+  
+  // 根据activeBlockId（被点击的弹幕块）计算基准点
+  const activeDanmaku = store.danmakus.find((d: any) => d.id === activeBlockId.value)
+  if (activeDanmaku) {
+    const activeStartTimeX = (activeDanmaku.startTime - offset.value) * scale.value
+    
+    const timelineRect = (document.querySelector('.timeline') as HTMLElement).getBoundingClientRect()
+    const tracksElement = document.querySelector('.tracks') as HTMLElement
+    const scrollTop = tracksElement.scrollTop
+    
+    dragOffsetX.value = e.clientX - timelineRect.left - activeStartTimeX
+    dragOffsetY.value = e.clientY - timelineRect.top
+    
+    // dragStartLayer应该考虑ruler高度(20px)和scrollTop
+    dragStartLayer.value = Math.floor((e.clientY - timelineRect.top - 20 + scrollTop) / rowHeight)
+  }
+  
+  // 记录全局鼠标位置（用于计算多选拖动的delta）
+  dragStartPageX.value = e.pageX
+  dragStartPageY.value = e.pageY
 }
 
 const dragMode = ref<'move' | 'resize-left' | 'resize-right' | null>(null)
 const draggingIds = ref<string[]>([])
+
+// 记录拖动开始时的layer（用于正确处理滚动时的layer计算）
+const dragStartLayer = ref(0)
+
+// 框选相关
+interface SelectionBox {
+  visible: boolean
+  startX: number
+  startY: number
+  endX: number
+  endY: number
+}
+
+const selectionBox = ref<SelectionBox>({
+  visible: false,
+  startX: 0,
+  startY: 0,
+  endX: 0,
+  endY: 0
+})
+
+const isBoxSelectingMode = ref(false)
+
+function recordDragInitialStates() {
+  dragInitialStates.value.clear()
+  draggingIds.value.forEach(id => {
+    const d = store.danmakus.find((d: any) => d.id === id)
+    if (d) {
+      dragInitialStates.value.set(id, {
+        startTime: d.startTime,
+        layer: d.layer,
+        duration: d.animation.duration
+      })
+    }
+  })
+}
 
 function onSelect(e: MouseEvent, d: any) {
   const multi = e.ctrlKey || e.metaKey
@@ -238,6 +351,21 @@ function onResizeStart(e: MouseEvent, d: any, side: 'left' | 'right') {
   }
 
   draggingIds.value = [...store.selectedIds]
+  activeBlockId.value = d.id // 标记当前操作的弹幕块
+  
+  // 记录所有选中弹幕的初始状态
+  recordDragInitialStates()
+  
+  // 根据activeBlockId（被点击的弹幕块）计算基准点
+  const activeDanmaku = store.danmakus.find((d: any) => d.id === activeBlockId.value)
+  if (activeDanmaku) {
+    const activeStartTimeX = (activeDanmaku.startTime - offset.value) * scale.value
+    const timelineRect = (document.querySelector('.timeline') as HTMLElement).getBoundingClientRect()
+    dragOffsetX.value = e.clientX - timelineRect.left - activeStartTimeX
+  }
+  
+  // 记录鼠标位置（用于计算resize的delta）
+  dragStartPageX.value = e.pageX
 }
 
 // 时间舍入函数，确保精度
@@ -254,7 +382,7 @@ function snapTime(time: number) {
   targets.push(store.currentTime)
 
   // 所有弹幕起点和结束点（排除正在被拖动的对象）
-  store.danmakus.forEach(d => {
+  store.danmakus.forEach((d: any) => {
     if (!draggingIds.value.includes(d.id)) {
       targets.push(d.startTime)
       targets.push(d.startTime + d.animation.duration)
@@ -282,6 +410,17 @@ function snapTime(time: number) {
 }
 
 function onMouseMove(e: MouseEvent) {
+  // 框选模式
+  if (isBoxSelectingMode.value) {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const tracksElement = document.querySelector('.tracks') as HTMLElement
+    const scrollTop = tracksElement.scrollTop
+    
+    selectionBox.value.endX = e.clientX - rect.left
+    selectionBox.value.endY = e.clientY - rect.top - 20 + scrollTop // 考虑ruler高度(20px)和scrollTop
+    return
+  }
+  
   // 拖动播放头
   if (dragging.value && !dragMode.value) {
     updateTime(e)
@@ -291,44 +430,130 @@ function onMouseMove(e: MouseEvent) {
   // 拖动弹幕块
   if (!dragMode.value) return
 
-  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  // 问题3修复：从.tracks获取scrollTop，而不是e.currentTarget（timeline）
+  const tracksElement = document.querySelector('.tracks') as HTMLElement
+  const scrollTop = tracksElement.scrollTop
+  const timelineRect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  
+  const x = e.clientX - timelineRect.left
+  const y = e.clientY - timelineRect.top - 20 + scrollTop // -20是ruler的高度
 
   const rawTime = x / scale.value + offset.value
   const layer = Math.floor(y / rowHeight)
 
-  draggingIds.value.forEach(id => {
-    const d = store.danmakus.find(d => d.id === id)
-    if (!d) return
-
-    if (dragMode.value === 'move') {
-      // 先计算实际 startTime，再吸附，最后舍入
-      let startTime = Math.max(0, rawTime - dragOffsetX.value / scale.value)
-      startTime = snapTime(startTime)
-      d.startTime = startTime
-      d.layer = Math.max(0, layer - Math.floor(dragOffsetY.value / rowHeight))
+  if (dragMode.value === 'move') {
+    // 批量拖动：基于activeBlockId计算delta，然后应用到所有选中弹幕
+    const activeInitial = dragInitialStates.value.get(activeBlockId.value!)
+    
+    if (activeInitial) {
+      // 计算activeBlockId弹幕应该移动到的位置
+      let deltaTime = Math.max(0, rawTime - dragOffsetX.value / scale.value) - activeInitial.startTime
+      deltaTime = snapTime(activeInitial.startTime + deltaTime) - activeInitial.startTime
+      
+      // 使用dragStartLayer计算deltaLayer
+      const deltaLayer = layer - dragStartLayer.value
+      
+      // 应用delta给所有选中弹幕
+      draggingIds.value.forEach(id => {
+        const d = store.danmakus.find((d: any) => d.id === id)
+        const initial = dragInitialStates.value.get(id)
+        if (!d || !initial) return
+        
+        d.startTime = Math.max(0, initial.startTime + deltaTime)
+        d.layer = Math.max(0, initial.layer + deltaLayer)
+      })
     }
+  }
 
-    if (dragMode.value === 'resize-left') {
-      // 左边缩放吸附
-      let leftTime = snapTime(rawTime)
-      const end = d.startTime + d.animation.duration
-      d.startTime = Math.min(leftTime, end - 50)
-      d.animation.duration = Math.round(end - d.startTime)
+  if (dragMode.value === 'resize-left') {
+    // 批量左边缩放：基于activeBlockId计算delta，应用到所有选中弹幕
+    let leftTime = snapTime(rawTime)
+    
+    const activeInitial = dragInitialStates.value.get(activeBlockId.value!)
+    
+    if (activeInitial) {
+      // 计算activeBlockId弹幕的startTime改变量
+      const end = activeInitial.startTime + activeInitial.duration
+      const newStartTime = Math.min(leftTime, end - 50)
+      const deltaStartTime = newStartTime - activeInitial.startTime
+      
+      // 将delta应用到所有选中弹幕
+      draggingIds.value.forEach(id => {
+        const d = store.danmakus.find((d: any) => d.id === id)
+        const initial = dragInitialStates.value.get(id)
+        if (!d || !initial) return
+        
+        const initialEnd = initial.startTime + initial.duration
+        const newStart = Math.max(0, initial.startTime + deltaStartTime)
+        d.startTime = Math.min(newStart, initialEnd - 50)
+        d.animation.duration = Math.round(initialEnd - d.startTime)
+      })
     }
+  }
 
-    if (dragMode.value === 'resize-right') {
-      // 右边缩放吸附
-      let rightTime = snapTime(rawTime)
-      d.animation.duration = Math.max(50, Math.round(rightTime - d.startTime))
+  if (dragMode.value === 'resize-right') {
+    // 批量右边缩放：基于activeBlockId计算delta，应用到所有选中弹幕
+    let rightTime = snapTime(rawTime)
+    
+    const activeInitial = dragInitialStates.value.get(activeBlockId.value!)
+    
+    if (activeInitial) {
+      // 计算activeBlockId弹幕的duration改变量
+      const activeEnd = activeInitial.startTime + activeInitial.duration
+      const deltaDuration = rightTime - activeEnd
+      
+      // 将delta应用到所有选中弹幕
+      draggingIds.value.forEach(id => {
+        const d = store.danmakus.find((d: any) => d.id === id)
+        const initial = dragInitialStates.value.get(id)
+        if (!d || !initial) return
+        
+        const newDuration = Math.max(50, initial.duration + deltaDuration)
+        d.animation.duration = newDuration
+      })
     }
-  })
+  }
 }
 
 function onMouseUp() {
+  // 框选模式处理
+  if (isBoxSelectingMode.value) {
+    isBoxSelectingMode.value = false
+    
+    // 计算选择框的边界
+    const minX = Math.min(selectionBox.value.startX, selectionBox.value.endX)
+    const maxX = Math.max(selectionBox.value.startX, selectionBox.value.endX)
+    const minY = Math.min(selectionBox.value.startY, selectionBox.value.endY)
+    const maxY = Math.max(selectionBox.value.startY, selectionBox.value.endY)
+    
+    // 找出被选中的弹幕
+    const selectedInBox: string[] = []
+    store.danmakus.forEach((d: any) => {
+      const blockLeft = (d.startTime - offset.value) * scale.value
+      const blockRight = blockLeft + d.animation.duration * scale.value
+      const blockTop = d.layer * rowHeight + 20 // +20是因为ruler的高度
+      const blockBottom = blockTop + 28
+      
+      // 检查弹幕块是否与选择框相交
+      if (blockRight > minX && blockLeft < maxX && blockBottom > minY && blockTop < maxY) {
+        selectedInBox.push(d.id)
+      }
+    })
+    
+    // 更新选中状态（框选会替换之前的选择）
+    if (selectedInBox.length > 0) {
+      store.selectedIds = selectedInBox
+    }
+    
+    selectionBox.value.visible = false
+    return
+  }
+  
   dragging.value = false
   dragMode.value = null
+  activeBlockId.value = null // 清除当前操作的弹幕块ID
+  
+  // 不清空dragInitialStates，在下一次拖动开始时通过recordDragInitialStates()更新
   draggingIds.value = []
 }
 </script>
@@ -439,5 +664,13 @@ function onMouseUp() {
   position: relative;
   height: 3000px;
   pointer-events: none;
+}
+
+.selection-box {
+  position: absolute;
+  background: rgba(100, 200, 255, 0.2);
+  border: 2px solid rgba(100, 200, 255, 0.8);
+  pointer-events: none;
+  z-index: 5;
 }
 </style>
