@@ -35,7 +35,7 @@ export const useEditorStore = defineStore('editor', {
             duration: 2000,
             moveDuration: 0,
             delay: 0,
-            easing: 'linear'
+            easing: 'speedup'
           }
         },
         {
@@ -60,7 +60,7 @@ export const useEditorStore = defineStore('editor', {
             duration: 500,
             moveDuration: 500,
             delay: 0,
-            easing: 'linear'
+            easing: 'speedup'
           }
         }
       ],

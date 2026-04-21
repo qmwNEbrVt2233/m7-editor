@@ -27,6 +27,6 @@ export interface DanmakuItem {
     duration: number       // 生存时间 ms
     moveDuration: number   // 运动时间 ms
     delay: number
-    easing: 'linear' | 'ease-in'
+    easing: 'speedup' | 'speeddown'
   }
 }

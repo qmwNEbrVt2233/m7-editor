@@ -29,7 +29,7 @@ export function toXML(list: DanmakuItem[]) {
         d.animation.delay,
         d.content.stroke ? 1 : 0,
         d.content.font,
-        d.animation.easing === 'linear' ? 1 : 0
+        d.animation.easing === 'speedup' ? 1 : 0
       ])
 
       return `<d p="${p}">${body}</d>`
