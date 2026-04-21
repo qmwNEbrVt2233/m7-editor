@@ -72,6 +72,22 @@ export const useEditorStore = defineStore('editor', {
     }
   },
 
+  getters: {
+    /**
+     * 获取选中的弹幕列表
+     */
+    getSelectedDanmakus(): DanmakuItem[] {
+      return this.danmakus.filter((d: DanmakuItem) => this.selectedIds.includes(d.id))
+    },
+
+    /**
+     * 获取选中弹幕的数量
+     */
+    selectedCount(): number {
+      return this.selectedIds.length
+    }
+  },
+
   actions: {
     addDanmaku(item: DanmakuItem) {
       this.danmakus.push(item)

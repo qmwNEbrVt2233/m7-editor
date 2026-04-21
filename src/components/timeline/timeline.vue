@@ -99,10 +99,10 @@ function handleZoom(e: KeyboardEvent) {
   
   let newScale = scale.value
   
-  if (e.key === '-' || e.key === '_') {
+  if ((e.ctrlKey || e.metaKey) && (e.key === '-' || e.key === '_')) {
     e.preventDefault()
     newScale = scale.value / zoomStep
-  } else if (e.key === '=' || e.key === '+') {
+  } else if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+')) {
     e.preventDefault()
     newScale = scale.value * zoomStep
   } else {
@@ -677,6 +677,23 @@ function onMouseUp() {
   overflow-y: scroll;
   overflow-x: hidden;
   scrollbar-gutter: stable;
+}
+
+.tracks::-webkit-scrollbar {
+  width: 8px;
+}
+
+.tracks::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+.tracks::-webkit-scrollbar-thumb {
+  background: #464647;
+  border-radius: 4px;
+}
+
+.tracks::-webkit-scrollbar-thumb:hover {
+  background: #5a5a5a;
 }
 
 .block {

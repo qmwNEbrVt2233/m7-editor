@@ -1,7 +1,12 @@
 <template>
   <div class="app-container">
     <div class="main-content">
-      <Player />
+      <div class="player-section">
+        <Player />
+      </div>
+      <div class="editor-section">
+        <EditorPanel />
+      </div>
     </div>
     <div 
       class="timeline-container"
@@ -17,6 +22,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import Player from './components/player/Player.vue'
+import EditorPanel from './components/editor/editorPanel.vue'
 import Timeline from './components/timeline/timeline.vue'
 import { useEditorStore } from './store/editor'
 
@@ -88,8 +94,25 @@ function onTimelineDragStart(e: MouseEvent) {
 
 .main-content {
   flex: 1;
-  overflow: auto;
+  overflow: hidden;
   background: #222;
+  display: flex;
+  flex-direction: row;
+}
+
+.player-section {
+  flex: 1;
+  overflow: hidden;
+  background: #222;
+}
+
+.editor-section {
+  width: 350px;
+  background: #1e1e1e;
+  border-left: 1px solid #333;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .timeline-container {
