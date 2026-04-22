@@ -1,6 +1,7 @@
 <template>
   <div class="player">
     <div class="controls">
+      <img src="/favicon.svg" width="35" height="35">
       <button @click="toggle">
         {{ store.playing ? '暂停' : '播放' }}
       </button>
@@ -238,6 +239,9 @@ function formatTime(ms: number) {
   background: #000;
   position: relative;
   overflow: hidden;
+  position: fixed;
+  top: 60px;
+  z-index: 0
 }
 
 .video-element {
@@ -250,6 +254,7 @@ function formatTime(ms: number) {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  z-index: 1
 }
 
 .controls button {

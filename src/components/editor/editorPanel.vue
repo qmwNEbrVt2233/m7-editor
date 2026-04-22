@@ -17,7 +17,7 @@
         <section class="editor-section">
           <h3>基础信息</h3>
           <div class="form-group">
-            <label>层级 (Layer)</label>
+            <label>所属层 (Layer)</label>
             <input
               type="text"
               v-model="layer"
@@ -42,6 +42,22 @@
         <!-- 内容编辑 -->
         <section class="editor-section">
           <h3>内容</h3>
+
+          <div class="form-group">
+            <label>文本内容 (0-255个字符，换行占2个)</label>
+            <textarea
+              v-model="text"
+              @change="updateField('content.text', text)"
+              placeholder="输入弹幕文本内容"
+              class="text-input"
+            ></textarea>
+            <div 
+              class="char-counter"
+              :class="{ 'char-counter-exceeded': !isTextLengthValid(text) }"
+            >
+              已占用: {{ calculateTextLength(text) }}/255
+            </div>
+          </div>
 
           <div class="form-group">
             <label>字体 (Font)</label>
@@ -276,7 +292,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import { useEditorStore } from '@/store/editor'
-import { parseInput, applyOperation, formatInputDisplay } from '@/utils/parser'
+import { parseInput, applyOperation, formatInputDisplay, parseColorWithAlpha, blendColor } from '@/utils/parser'
 import { validateField, normalizeColor, validateRange, M7_RULES } from '@/utils/validation'
 import { formatTime } from '@/utils/time'
 
@@ -326,6 +342,19 @@ const startTime = computed<string>({
 })
 
 // 内容编辑
+const text = computed<string>({
+  get: () => {
+    if (editCache.value['content.text'] !== undefined) return editCache.value['content.text']
+    const values = getFieldValues('content.text')
+    if (values.length === 0) return ''
+    const allSame = values.every((v, i) => i === 0 || v === values[0])
+    return allSame ? values[0] : ''
+  },
+  set: (v) => {
+    editCache.value['content.text'] = v
+  }
+})
+
 const font = computed<string>({
   get: () => editCache.value['content.font'] !== undefined ? editCache.value['content.font'] : (selectedDanmakus.value[0]?.content.font || 'Microsoft YaHei'),
   set: (v) => {
@@ -472,8 +501,39 @@ function updateField(path: string, inputValue: string | number | boolean) {
   }
 
   updateDebounceTimer.value = setTimeout(() => {
-    const isTextField = path === 'content.text'
-    const parseResult = parseInput(String(inputValue), isTextField)
+    // 1. 定义不需要进行四则运算解析的字段列表
+    const bypassValidationFields = [
+      'content.text',
+      'content.font',
+      'animation.easing',
+      'opacity.from',
+      'opacity.to',
+      'content.stroke',
+      'content.color'
+    ]
+    const shouldBypass = bypassValidationFields.includes(path)
+
+    // 2. 处理这些直值更新的字段
+    if (shouldBypass) {
+      // 针对文本内容的特殊长度校验
+      if (path === 'content.text') {
+        const textValue = String(inputValue)
+        if (!isTextLengthValid(textValue)) {
+          console.warn('文本超出字符限制（最多255个字符，换行符占用2个）')
+          return
+        }
+      }
+
+      const updates: Record<string, any> = {}
+      // 透明度(opacity)强制转为数字，其他字段保持原样(string)
+      updates[path] = path.startsWith('opacity.') ? Number(inputValue) : inputValue
+      
+      store.updateSelectedDanmakus(updates)
+      delete editCache.value[path]
+      return
+    }
+
+    const parseResult = parseInput(String(inputValue), false) 
 
     if (parseResult.error) {
       console.warn(`字段 ${path} 验证失败: ${parseResult.error}`)
@@ -501,9 +561,24 @@ function updateField(path: string, inputValue: string | number | boolean) {
 
     // 处理颜色字段
     if (path === 'content.color') {
+      // 首先检查是否是Alpha混合格式 (e.g., "FFFFFF@0.5" 或 "#FFFFFF@0.5")
+      const alphaResult = parseColorWithAlpha(String(inputValue))
+      
+      if (alphaResult) {
+        // 对所有选中的弹幕应用Alpha混合
+        selectedDanmakus.value.forEach((d) => {
+          const currentColor = d.content.color || '#ffffff'
+          const blendedColor = blendColor(currentColor, alphaResult.color, alphaResult.alpha)
+          store.updateDanmaku(d.id, { 'content.color': blendedColor })
+        })
+        delete editCache.value[path]
+        return
+      }
+      
+      // 否则按普通颜色处理
       const normalized = normalizeColor(String(inputValue))
       if (!normalized) {
-        console.warn('颜色格式无效')
+        console.warn('颜色格式无效（支持 #RRGGBB 或 RRGGBB@Alpha 格式）')
         return
       }
       updates[path] = normalized
@@ -558,7 +633,7 @@ function updateField(path: string, inputValue: string | number | boolean) {
     }
 
     delete editCache.value[path]
-  }, 100) // 300ms防抖
+  }, 100) // 100ms防抖
 }
 
 // 解析时间值（支持±*/ 操作）
@@ -570,6 +645,28 @@ function parseTimeValue(input: string): number {
   if (parseResult.error) return values[0]
 
   return applyOperation(values[0], parseResult)
+}
+
+/**
+ * 计算文本占用的字符数（换行符占用2个字符）
+ */
+function calculateTextLength(str: string): number {
+  let length = 0
+  for (let i = 0; i < str.length; i++) {
+    if (str[i] === '\n') {
+      length += 2
+    } else {
+      length += 1
+    }
+  }
+  return length
+}
+
+/**
+ * 检查文本长度是否有效（0-255）
+ */
+function isTextLengthValid(str: string): boolean {
+  return calculateTextLength(str) <= 255
 }
 
 // 清除选择
@@ -704,8 +801,22 @@ onBeforeUnmount(() => {
   transition: border-color 0.2s;
 }
 
+.form-group textarea {
+  padding: 8px 10px;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  background-color: #3c3c3c;
+  color: #e0e0e0;
+  font-size: 13px;
+  transition: border-color 0.2s;
+  resize: vertical;
+  min-height: 80px;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
 .form-group input:focus,
-.form-group select:focus {
+.form-group select:focus,
+.form-group textarea:focus {
   outline: none;
   border-color: #4ec9b0;
   background-color: #444;
@@ -732,6 +843,18 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   min-width: 60px;
   text-align: right;
+}
+
+.char-counter {
+  font-size: 12px;
+  color: #888;
+  margin-top: 4px;
+  text-align: right;
+}
+
+.char-counter-exceeded {
+  color: #ff6b6b;
+  font-weight: 600;
 }
 
 .color-input-group {

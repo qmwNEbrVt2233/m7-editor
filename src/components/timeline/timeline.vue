@@ -444,7 +444,7 @@ function roundTime(time: number) {
 }
 
 function snapTime(time: number) {
-  const threshold = 100 // 100ms 吸附范围
+  const threshold = 30 // ms 吸附范围
 
   let targets: number[] = []
 
@@ -705,7 +705,6 @@ function onMouseUp() {
   overflow: hidden;
   white-space: nowrap;
   border-radius: 2px;
-  padding: 0 4px;
   line-height: 28px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
   clip-path: inset(0);

@@ -113,6 +113,7 @@ function onTimelineDragStart(e: MouseEvent) {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  z-index: 1;
 }
 
 .timeline-container {

@@ -16,6 +16,93 @@ export interface ParseResult {
 }
 
 /**
+ * 验证是否为有效的四则运算表达式
+ * 仅支持：数字、+、-、*、/ 和空格
+ * 示例："+10", "-5", "*2", "/2", "100"
+ */
+export function validateArithmeticExpression(input: string): { valid: boolean; error?: string } {
+  const trimmed = input.trim()
+  
+  // 空字符串不合法
+  if (!trimmed) {
+    return { valid: false, error: '输入不能为空' }
+  }
+
+  // 检查是否只包含允许的字符：数字、操作符、小数点、负号、空格
+  if (!/^[\d+\-*/.() ]*$/.test(trimmed)) {
+    return { valid: false, error: '仅支持四则运算符和数字' }
+  }
+
+  // 检查操作符的合法性
+  const operatorPattern = /^[+\-*/]?\d+(?:[+\-*/]\d+)*$/
+  if (!operatorPattern.test(trimmed.replace(/\s+/g, ''))) {
+    return { valid: false, error: '四则运算格式不正确' }
+  }
+
+  return { valid: true }
+}
+
+/**
+ * 解析颜色与Alpha混合格式
+ * 格式：RRGGBB@ALPHA 或 #RRGGBB@ALPHA
+ * 示例：FFFFFF@0.5 表示白色半透明
+ * 返回：{ color: '#FFFFFF', alpha: 0.5 } 或 null
+ */
+export interface ColorAlphaResult {
+  color: string
+  alpha: number
+}
+
+export function parseColorWithAlpha(input: string): ColorAlphaResult | null {
+  const trimmed = input.trim()
+  
+  // 匹配格式：可选的#，6位十六进制，@，0-1的浮点数
+  const match = trimmed.match(/^#?([A-Fa-f0-9]{6})@([0-1](?:\.\d+)?)$/)
+  
+  if (!match) {
+    return null
+  }
+  
+  const hex = match[1].toUpperCase()
+  const alpha = parseFloat(match[2])
+  
+  // 验证alpha值
+  if (isNaN(alpha) || alpha < 0 || alpha > 1) {
+    return null
+  }
+  
+  return {
+    color: `#${hex}`,
+    alpha: alpha
+  }
+}
+
+/**
+ * RGB颜色混合（Alpha合成）
+ * 使用"源超过目标"的Alpha混合公式
+ */
+export function blendColor(baseHex: string, overlayHex: string, alpha: number): string {
+  // 解析基础颜色
+  const baseR = parseInt(baseHex.slice(1, 3), 16)
+  const baseG = parseInt(baseHex.slice(3, 5), 16)
+  const baseB = parseInt(baseHex.slice(5, 7), 16)
+  
+  // 解析叠加颜色
+  const overlayR = parseInt(overlayHex.slice(1, 3), 16)
+  const overlayG = parseInt(overlayHex.slice(3, 5), 16)
+  const overlayB = parseInt(overlayHex.slice(5, 7), 16)
+  
+  // Alpha混合公式：result = overlay * alpha + base * (1 - alpha)
+  const r = Math.round(overlayR * alpha + baseR * (1 - alpha))
+  const g = Math.round(overlayG * alpha + baseG * (1 - alpha))
+  const b = Math.round(overlayB * alpha + baseB * (1 - alpha))
+  
+  // 转换回十六进制
+  const toHex = (n: number) => n.toString(16).padStart(2, '0').toUpperCase()
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`
+}
+
+/**
  * 解析输入字符串
  * 文本字段不支持 +- 操作
  */
@@ -35,6 +122,13 @@ export function parseInput(input: string | null, isTextField = false): ParseResu
   if (isTextField) {
     return { mode: 'set', value: 0 } // value不用于文本字段
   }
+
+  // 验证四则运算表达式的合法性
+  const validation = validateArithmeticExpression(trimmed)
+  if (!validation.valid) {
+    return { mode: 'set', error: validation.error }
+  }
+  
 
   // 检查操作符
   if (trimmed.startsWith('+')) {

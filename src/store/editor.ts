@@ -206,17 +206,84 @@ export const useEditorStore = defineStore('editor', {
       this.selectedIds = []
     },
 
+    /*
+    _applyDeepPatch(obj: any, patch: any) {
+      for (const [key, value] of Object.entries(patch)) {
+        if (key.includes('.')) {
+          const keys = key.split('.')
+          let current = obj
+          
+          // 迭代到倒数第一个 key 之前
+          for (let i = 0; i < keys.length - 1; i++) {
+            const k = keys[i]
+            // 确保路径存在
+            if (!current[k]) {
+              current[k] = {}
+            }
+            current = current[k]
+          }
+          
+          // 直接设置最深层的值
+          // Vue 3 的 reactive 能够拦截到这种深度赋值
+          current[keys[keys.length - 1]] = value
+        } else {
+          obj[key] = value
+        }
+      }
+    },
+    */
+    _applyDeepPatch(obj: any, patch: any) {
+      for (const [key, value] of Object.entries(patch)) {
+        console.log('写入:', key, value, typeof value)
+
+        // ✅ 情况1：路径写法（优先级最高）
+        if (key.includes('.')) {
+          const keys = key.split('.')
+          let current = obj
+
+          for (let i = 0; i < keys.length - 1; i++) {
+            const k = keys[i]
+            if (!current[k] || typeof current[k] !== 'object') {
+              current[k] = {}
+            }
+            current = current[k]
+          }
+
+          current[keys[keys.length - 1]] = value
+          continue
+        }
+
+        // ✅ 情况2：value 是对象 → 递归 merge
+        if (
+          value &&
+          typeof value === 'object' &&
+          !Array.isArray(value)
+        ) {
+          if (!obj[key] || typeof obj[key] !== 'object') {
+            obj[key] = {}
+          }
+
+          this._applyDeepPatch(obj[key], value)
+          continue
+        }
+
+        // ✅ 情况3：普通值
+        obj[key] = value
+      }
+    },
+
     updateDanmaku(id: string, patch: any) {
+      console.log('正在更新弹幕:', id, '补丁内容:', patch);
       const d = this.danmakus.find((d: any) => d.id === id)
       if (!d) return
 
-      Object.assign(d, patch)
+      this._applyDeepPatch(d, patch)
     },
 
     updateSelectedDanmakus(patch: any) {
       this.danmakus.forEach((d: any) => {
         if (this.selectedIds.includes(d.id)) {
-          Object.assign(d, patch)
+          this._applyDeepPatch(d, patch)
         }
       })
     },

@@ -73,10 +73,20 @@ function getStyle(d: any) {
     d.transform.start.y +
     (d.transform.end.y - d.transform.start.y) * progress
 
-  // 透明度插值
+  function clamp(value: number, min: number, max: number) {
+    return Math.max(min, Math.min(max, value))
+  }
+    //生命周期进度（用于透明度）
+  const lifeProgress = clamp(
+    (currentTime - d.startTime) / d.animation.duration,
+    0,
+    1
+  )
+
+  //  透明度插值
   const opacity =
     d.opacity.from +
-    (d.opacity.to - d.opacity.from) * progress
+    (d.opacity.to - d.opacity.from) * lifeProgress
 
   // 3D Transform
   const transform = `
