@@ -10,9 +10,10 @@
       <button @click="load">加载工程</button>
       <button @click="download">导出JSON</button>
       <button @click="importProject">导入工程</button>
+      <button @click="clearCache" style="background: #f44336;">清空缓存工程</button>
       
-      <!-- 快捷键配置：播放头移动范围 -->
-      <span style="margin-left: 20px; color: #999;">播放头移动范围:</span>
+      <!-- 快捷键配置：播放头移动步长 -->
+      <span style="margin-left: 20px; color: #999;">播放头移动步长:</span>
       <input
         type="text"
         v-model="playheadStepInput"
@@ -22,6 +23,18 @@
         title="输入毫秒数(如33)或帧率(如/60表示60fps)"
       />
       <span style="margin-left: 8px; color: #999;">当前: {{ store.playheadStepMs.toFixed(6) }}ms</span>
+      
+      <!-- 弹幕生存时间配置 -->
+      <span style="margin-left: 20px; color: #999;">创建弹幕生存时间:</span>
+      <input
+        type="text"
+        v-model="danmakuDurationInput"
+        @change="onDanmakuDurationChange"
+        placeholder="如 1000 或 *2"
+        style="width: 80px; padding: 4px 8px; margin-left: 8px;"
+        title="输入毫秒数(如1000)或倍数(如*2表示2倍moveDuration)"
+      />
+      <span style="margin-left: 8px; color: #999;">当前: {{ store.danmakuDuration.value }}{{ store.danmakuDuration.mode === 'multiplier' ? '倍' : 'ms' }}</span>
       
       <input
         type="file"
@@ -72,6 +85,13 @@ const isSyncing = ref(false) // 标志位：是否正在同步
 // 快捷键配置相关
 const playheadStepInput = ref(`${store.playheadStepMs.toFixed(6)}`)
 
+// 弹幕生存时间配置
+const danmakuDurationInput = ref(
+  store.danmakuDuration.mode === 'multiplier'
+    ? `*${store.danmakuDuration.value}`
+    : `${store.danmakuDuration.value}`
+)
+
 // 处理播放头步长输入变化
 function onPlayheadStepChange(e: Event) {
   const input = (e.target as HTMLInputElement).value.trim()
@@ -99,6 +119,30 @@ function onPlayheadStepChange(e: Event) {
   if (stepMs > 0 && stepMs <= 10000) {
     store.playheadStepMs = stepMs
     playheadStepInput.value = `${stepMs.toFixed(6)}`
+  }
+}
+
+// 处理弹幕生存时间输入变化
+function onDanmakuDurationChange(e: Event) {
+  const input = (e.target as HTMLInputElement).value.trim()
+  
+  if (!input) return
+  
+  // 检查是否是倍数格式 '*2'
+  if (input.startsWith('*')) {
+    const multiplierStr = input.substring(1)
+    const multiplier = parseFloat(multiplierStr)
+    if (multiplier > 0) {
+      store.setDanmakuDuration('multiplier', multiplier)
+      danmakuDurationInput.value = input
+    }
+  } else {
+    // 否则按ms处理
+    const ms = parseFloat(input)
+    if (ms > 0) {
+      store.setDanmakuDuration('ms', ms)
+      danmakuDurationInput.value = input
+    }
   }
 }
 
@@ -188,6 +232,11 @@ function onVideoFileChange(e: Event) {
     // 使用 Object URL 创建本地视频 URL
     const url = URL.createObjectURL(file)
     store.setVideoUrl(url)
+    
+    // 设置视频文件的磁盘路径（用于导出）
+    // 在浏览器中，我们无法直接获取完整路径，但可以保存文件名和大小作为标识
+    store.setVideoFilePath(`file:///${file.name}`)
+    console.log('视频文件路径已设置:', file.name)
   }
 }
 
@@ -214,6 +263,13 @@ function onFileChange(e: Event) {
   if (file) {
     store.loadFromFile(file)
   }
+}
+
+/**
+ * 清空缓存工程
+ */
+function clearCache() {
+  store.clearCache()
 }
 
 function formatTime(ms: number) {

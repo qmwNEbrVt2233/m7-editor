@@ -209,6 +209,135 @@ function handlePan(e: KeyboardEvent) {
 function handleKeyboardShortcuts(e: KeyboardEvent) {
   handleZoom(e)
   handlePan(e)
+  
+  const isCtrl = e.ctrlKey || e.metaKey
+  const isAlt = e.altKey
+  const isShift = e.shiftKey
+  
+  // 避免在输入框中触发快捷键
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+    return
+  }
+  
+  // ====== 需求#1：弹幕创建/删除/复制/粘贴 ======
+  
+  // `;` 创建单条弹幕
+  if (e.key === ';' && !isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    store.createSingleDanmaku()
+    console.log('[快捷键] 创建单条弹幕')
+    return
+  }
+  
+  // `del` 删除弹幕
+  if (e.key === 'Delete' && !isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    if (store.selectedIds.length > 0) {
+      store.deleteSelectedDanmakus()
+      console.log('[快捷键] 删除选中弹幕')
+    }
+    return
+  }
+  
+  // `ctrl+c` 复制
+  if (e.key === 'c' && isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    store.copySelectedDanmakus()
+    console.log('[快捷键] 复制弹幕')
+    return
+  }
+  
+  // `ctrl+v` 粘贴
+  if (e.key === 'v' && isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    store.pasteDanmakus().catch((err) => {
+      console.error('[快捷键] 粘贴失败:', err)
+    })
+    console.log('[快捷键] 粘贴弹幕')
+    return
+  }
+  
+  // ====== 需求#2：回滚/重做 ======
+  
+  // `ctrl+z` 撤销
+  if (e.key === 'z' && isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    store.undo()
+    console.log('[快捷键] 撤销')
+    return
+  }
+  
+  // `ctrl+y` 重做
+  if (e.key === 'y' && isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    store.redo()
+    console.log('[快捷键] 重做')
+    return
+  }
+  
+  // ====== 需求#3：定位播放头到弹幕位置 ======
+  
+  // `[` 移动播放头到当前操作弹幕的起始位置
+  if (e.key === '[' && !isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    if (activeBlockId.value) {
+      const danmaku = store.danmakus.find((d: any) => d.id === activeBlockId.value)
+      if (danmaku) {
+        store.setTime(danmaku.startTime)
+        console.log('[快捷键] 移动播放头到弹幕起始位置:', danmaku.startTime)
+      }
+    } else if (store.selectedIds.length > 0) {
+      // 如果没有activeBlockId但有选中的弹幕，使用第一个选中的
+      const firstSelected = store.danmakus.find((d: any) => d.id === store.selectedIds[0])
+      if (firstSelected) {
+        store.setTime(firstSelected.startTime)
+        console.log('[快捷键] 移动播放头到弹幕起始位置:', firstSelected.startTime)
+      }
+    }
+    return
+  }
+  
+  // `]` 移动播放头到当前操作弹幕的结束位置
+  if (e.key === ']' && !isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    if (activeBlockId.value) {
+      const danmaku = store.danmakus.find((d: any) => d.id === activeBlockId.value)
+      if (danmaku) {
+        const endTime = danmaku.startTime + danmaku.animation.duration
+        store.setTime(endTime)
+        console.log('[快捷键] 移动播放头到弹幕结束位置:', endTime)
+      }
+    } else if (store.selectedIds.length > 0) {
+      // 如果没有activeBlockId但有选中的弹幕，使用第一个选中的
+      const firstSelected = store.danmakus.find((d: any) => d.id === store.selectedIds[0])
+      if (firstSelected) {
+        const endTime = firstSelected.startTime + firstSelected.animation.duration
+        store.setTime(endTime)
+        console.log('[快捷键] 移动播放头到弹幕结束位置:', endTime)
+      }
+    }
+    return
+  }
+  
+  // ====== 保存工程快捷键 ======
+  
+  // `ctrl+d` 保存工程
+  if (e.key === 'd' && isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    store.saveToLocal()
+    console.log('[快捷键] 保存工程')
+    return
+  }
+  
+  // ====== 清空缓存快捷键 ======
+  
+  // `ctrl+del` 清空缓存工程
+  if (e.key === 'Delete' && isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    store.clearCache()
+    console.log('[快捷键] 清空缓存工程')
+    return
+  }
 }
 
 onMounted(() => {
@@ -329,7 +458,7 @@ function getLayerDanmakus(layer: number) {
 
 function onBlockMouseDown(e: MouseEvent, d: any) {
   const isCtrlPressed = e.ctrlKey || e.metaKey
-  
+  store._checkAndRecordSnapshot()
   // Ctrl按下时不进入拖动模式，让onSelect处理多选
   if (isCtrlPressed) {
     return
@@ -414,6 +543,7 @@ function onSelect(e: MouseEvent, d: any) {
 }
 
 function onResizeStart(e: MouseEvent, d: any, side: 'left' | 'right') {
+  store._checkAndRecordSnapshot()
   dragMode.value = side === 'left' ? 'resize-left' : 'resize-right'
 
   if (!store.selectedIds.includes(d.id)) {
