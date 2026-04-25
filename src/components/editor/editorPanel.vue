@@ -87,7 +87,7 @@
             <div class="color-input-group">
               <input
                 type="color"
-                v-model="colorPicker"
+                v-model.lazy="colorPicker"
                 @change="updateField('content.color', colorPicker)"
                 class="color-picker"
               />
@@ -384,10 +384,19 @@ const color = computed<string>({
 
 const colorPicker = computed<string>({
   get: () => {
+    const cacheValue = editCache.value['content.color']
+    
+    // 使用正则校验，确保只给拾色器传递合法的 #RRGGBB 格式
+    const hexRegex = /^#[0-9a-fA-F]{6}$/
+    if (cacheValue !== undefined && hexRegex.test(cacheValue)) {
+      return cacheValue
+    }
+
     const values = getFieldValues('content.color')
     if (values.length === 0) return '#ffffff'
+    
     const first = selectedDanmakus.value[0]?.content.color
-    return first || '#ffffff'
+    return (first && hexRegex.test(first)) ? first : '#ffffff'
   },
   set: (v) => {
     editCache.value['content.color'] = v
@@ -396,9 +405,16 @@ const colorPicker = computed<string>({
 
 const stroke = computed<boolean>({
   get: () => {
+    //优先从缓存中获取当前正在编辑的值
+    if (editCache.value['content.stroke'] !== undefined) {
+      return editCache.value['content.stroke']
+    }
+
+    // 如果缓存没值，再走原本的 Store 读取逻辑
     if (selectedDanmakus.value.length === 1) {
       return selectedDanmakus.value[0]?.content.stroke || false
     }
+    
     const values = getFieldValues('content.stroke').filter(v => v !== null)
     return values.length > 0 && values.every(v => v === true)
   },
@@ -501,21 +517,49 @@ function updateField(path: string, inputValue: string | number | boolean) {
   }
 
   updateDebounceTimer.value = setTimeout(() => {
-    // 1. 定义不需要进行四则运算解析的字段列表
+    // 优先处理颜色字段（拦截常规输入和 Alpha 混合）
+    if (path === 'content.color') {
+      const inputStr = String(inputValue)
+      
+      // 检查是否是 Alpha 混合格式 (e.g., "FFFFFF@0.5")
+      const alphaResult = parseColorWithAlpha(inputStr)
+      
+      if (alphaResult) {
+        // 对所有选中的弹幕应用 Alpha 混合
+        selectedDanmakus.value.forEach((d) => {
+          const currentColor = d.content.color || '#ffffff'
+          const blendedColor = blendColor(currentColor, alphaResult.color, alphaResult.alpha)
+          store.updateDanmaku(d.id, { 'content.color': blendedColor })
+        })
+        delete editCache.value[path]
+        return // 处理完毕，提前退出
+      }
+      
+      // 否则按普通颜色处理并规范化（补全 # 号等）
+      const normalized = normalizeColor(inputStr)
+      if (!normalized) {
+        console.warn('颜色格式无效（支持 #RRGGBB 或 RRGGBB@Alpha 格式）')
+        return
+      }
+      
+      store.updateSelectedDanmakus({ 'content.color': normalized })
+      delete editCache.value[path]
+      return
+    }
+
+    // 定义不需要进行四则运算解析的字段列表
     const bypassValidationFields = [
       'content.text',
       'content.font',
       'animation.easing',
       'opacity.from',
       'opacity.to',
-      'content.stroke',
-      'content.color'
+      'content.stroke'
     ]
     const shouldBypass = bypassValidationFields.includes(path)
 
-    // 2. 处理这些直值更新的字段
+    // 处理这些直值更新的字段
     if (shouldBypass) {
-      // 针对文本内容的特殊长度校验
       if (path === 'content.text') {
         const textValue = String(inputValue)
         if (!isTextLengthValid(textValue)) {
@@ -523,15 +567,13 @@ function updateField(path: string, inputValue: string | number | boolean) {
           return
         }
       }
-
-      const updates: Record<string, any> = {}
-      // 透明度(opacity)强制转为数字，其他字段保持原样(string)
-      updates[path] = path.startsWith('opacity.') ? Number(inputValue) : inputValue
       
+      const updates: Record<string, any> = {}
+      updates[path] = inputValue
       store.updateSelectedDanmakus(updates)
       delete editCache.value[path]
       return
-    }
+      }
 
     const parseResult = parseInput(String(inputValue), false) 
 

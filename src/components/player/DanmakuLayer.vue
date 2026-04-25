@@ -94,21 +94,31 @@ function getStyle(d: any) {
     rotateZ(${d.transform.zRotate}deg)
     rotateY(${360 - d.transform.yRotate}deg)
   `
-
-  return {
+  const style: any = {
     position: 'absolute' as const,
     transform,
     opacity,
-
     color: d.content.color,
     fontSize: d.content.size + 'px',
     fontFamily: d.content.font,
     fontWeight: 'bold' as const,
     lineHeight: 1,
-
-    // 性能优化
     willChange: 'transform, opacity',
   }
+  
+  if (d.content.stroke === true) {
+    style.textShadow = `
+      1px 1px 1px #000,
+      -1px -1px 1px #000,
+      -1px 1px 1px #000,
+      1px -1px 1px #000,
+      1px 0px 1px #000,
+      0px 1px 1px #000,
+      -1px 0px 1px #000,
+      0px -1px 1px #000
+    `
+  }
+  return style
 }
 
 // 换行支持
