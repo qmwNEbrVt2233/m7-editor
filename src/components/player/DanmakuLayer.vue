@@ -1,10 +1,10 @@
 <template>
   <div class="layer">
     <div
-      v-for="d in visibleDanmakus"
+      v-for="(d, index) in visibleDanmakus"
       :key="d.id"
       class="danmaku"
-      :style="getStyle(d)"
+      :style="getStyle(d, +index)"
     >
       <div
         class="danmaku-content"
@@ -20,13 +20,27 @@ import { useEditorStore } from '../../store/editor'
 
 const store = useEditorStore()
 
-// 可见弹幕过滤（生存时间）
+// 可见弹幕过滤并排序
 const visibleDanmakus = computed(() => {
-  return store.danmakus.filter((d: any) => {
+  // 1. 首先过滤出当前时间点可见的弹幕
+  const filtered = store.danmakus.filter((d: any) => {
     return (
       store.currentTime >= d.startTime &&
       store.currentTime <= d.startTime + d.animation.duration
     )
+  })
+
+  // 💡 修改点 2：应用层级排序规则
+  // 规则#1: startTime 小的在前（z-index小）
+  // 规则#2: startTime 一致时，layer 小的在前
+  return filtered.sort((a: any, b: any) => {
+    if (a.startTime !== b.startTime) {
+      return a.startTime - b.startTime
+    }
+    // 如果没有 layer 字段，默认为 0
+    const layerA = a.layer || 0
+    const layerB = b.layer || 0
+    return layerA - layerB
   })
 })
 
@@ -42,7 +56,7 @@ function applyEasing(progress: number, easing: string) {
 }
 
 // 核心样式计算
-function getStyle(d: any) {
+function getStyle(d: any, index: number) {
   const currentTime = store.currentTime
   const t = currentTime - d.startTime
 
@@ -94,20 +108,18 @@ function getStyle(d: any) {
     rotateZ(${d.transform.zRotate}deg)
     rotateY(${360 - d.transform.yRotate}deg)
   `
-  const style: any = {
+  return {
     position: 'absolute' as const,
     transform,
     opacity,
+    zIndex: index,
     color: d.content.color,
     fontSize: d.content.size + 'px',
     fontFamily: d.content.font,
     fontWeight: 'bold' as const,
     lineHeight: 1,
     willChange: 'transform, opacity',
-  }
-  
-  if (d.content.stroke === true) {
-    style.textShadow = `
+    textShadow: d.content.stroke ? `
       1px 1px 1px #000,
       -1px -1px 1px #000,
       -1px 1px 1px #000,
@@ -116,9 +128,8 @@ function getStyle(d: any) {
       0px 1px 1px #000,
       -1px 0px 1px #000,
       0px -1px 1px #000
-    `
+      `: undefined
   }
-  return style
 }
 
 // 换行支持

@@ -456,9 +456,10 @@ function getLayerDanmakus(layer: number) {
   )
 }
 
+let hasRecordedSnapshotDuringDrag = false
+
 function onBlockMouseDown(e: MouseEvent, d: any) {
   const isCtrlPressed = e.ctrlKey || e.metaKey
-  store._checkAndRecordSnapshot()
   // Ctrl按下时不进入拖动模式，让onSelect处理多选
   if (isCtrlPressed) {
     return
@@ -466,6 +467,7 @@ function onBlockMouseDown(e: MouseEvent, d: any) {
   
   draggingBlock.value = d
   dragMode.value = 'move'
+  hasRecordedSnapshotDuringDrag = false
 
   if (!store.selectedIds.includes(d.id)) {
     store.selectDanmaku(d.id)
@@ -491,11 +493,40 @@ function onBlockMouseDown(e: MouseEvent, d: any) {
     
     // dragStartLayer应该考虑ruler高度(20px)和scrollTop
     dragStartLayer.value = Math.floor((e.clientY - timelineRect.top - 20 + scrollTop) / rowHeight)
+
+    window.addEventListener('mousemove', onGlobalMouseMove)
+    window.addEventListener('mouseup', onGlobalMouseUp)
   }
   
   // 记录全局鼠标位置（用于计算多选拖动的delta）
   dragStartPageX.value = e.pageX
   dragStartPageY.value = e.pageY
+}
+
+function onGlobalMouseMove(e: MouseEvent) {
+  if (dragMode.value !== 'move') return
+
+  // 计算位移距离，防止极其微小的抖动误触发
+  const dx = Math.abs(e.pageX - dragStartPageX.value)
+  const dy = Math.abs(e.pageY - dragStartPageY.value)
+
+  // 只有当鼠标移动超过 3px 时，才认为是真的“拖拽”
+  if ((dx > 3 || dy > 3) && !hasRecordedSnapshotDuringDrag) {
+    console.log('检测到真实拖拽，记录快照')
+    store._checkAndRecordSnapshot() // 此时记录的是移动前的初始选中状态 
+    hasRecordedSnapshotDuringDrag = true
+  }
+
+  // 执行具体的拖拽位移逻辑...
+  onMouseMove(e) 
+}
+
+function onGlobalMouseUp() {
+  // 销毁监听，重置状态
+  window.removeEventListener('mousemove', onGlobalMouseMove)
+  window.removeEventListener('mouseup', onGlobalMouseUp)
+  dragMode.value = null
+  hasRecordedSnapshotDuringDrag = false
 }
 
 const dragMode = ref<'move' | 'resize-left' | 'resize-right' | null>(null)
@@ -543,6 +574,7 @@ function onSelect(e: MouseEvent, d: any) {
 }
 
 function onResizeStart(e: MouseEvent, d: any, side: 'left' | 'right') {
+  console.log('拉伸事件')
   store._checkAndRecordSnapshot()
   dragMode.value = side === 'left' ? 'resize-left' : 'resize-right'
 
@@ -612,7 +644,7 @@ function snapTime(time: number) {
 function onMouseMove(e: MouseEvent) {
   // 框选模式
   if (isBoxSelectingMode.value) {
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const rect = document.querySelector('.timeline')!.getBoundingClientRect()
     const tracksElement = document.querySelector('.tracks') as HTMLElement
     const scrollTop = tracksElement.scrollTop
     
@@ -633,7 +665,7 @@ function onMouseMove(e: MouseEvent) {
   // 问题3修复：从.tracks获取scrollTop，而不是e.currentTarget（timeline）
   const tracksElement = document.querySelector('.tracks') as HTMLElement
   const scrollTop = tracksElement.scrollTop
-  const timelineRect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  const timelineRect = document.querySelector('.timeline')!.getBoundingClientRect()
   
   const x = e.clientX - timelineRect.left
   const y = e.clientY - timelineRect.top - 20 + scrollTop // -20是ruler的高度

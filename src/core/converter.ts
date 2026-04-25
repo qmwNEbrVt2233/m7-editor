@@ -12,7 +12,7 @@ export function toXML(list: DanmakuItem[]) {
         0,
         '0',
         Math.floor(Math.random() * 100000),
-        0
+        10
       ].join(',')
 
       const body = JSON.stringify([
