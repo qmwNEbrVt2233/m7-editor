@@ -38,7 +38,7 @@ export const useEditorStore = defineStore('editor', {
           opacity: { from: 1, to: 1 },
           animation: {
             duration: 2000,
-            moveDuration: 0,
+            moveDuration: 500,
             delay: 0,
             easing: 'speedup'
           }

@@ -1,40 +1,54 @@
 <template>
   <div class="player">
     <div class="controls">
-      <img src="/favicon.svg" width="35" height="35">
-      <button @click="toggle">
-        {{ store.playing ? '暂停' : '播放' }}
-      </button>
-      <button @click="importVideo">导入视频</button>
-      <button @click="save">保存工程</button>
-      <button @click="load">加载工程</button>
-      <button @click="download">导出JSON</button>
-      <button @click="importProject">导入工程</button>
-      <button @click="clearCache" style="background: #f44336;">清空缓存工程</button>
+      <img src="/favicon.svg" width="35" height="35" alt="logo">
       
-      <!-- 快捷键配置：播放头移动步长 -->
-      <span style="margin-left: 20px; color: #999;">播放头移动步长:</span>
-      <input
-        type="text"
-        v-model="playheadStepInput"
-        @change="onPlayheadStepChange"
-        placeholder="如 33 或 /60"
-        style="width: 80px; padding: 4px 8px; margin-left: 8px;"
-        title="输入毫秒数(如33)或帧率(如/60表示60fps)"
-      />
-      <span style="margin-left: 8px; color: #999;">当前: {{ store.playheadStepMs.toFixed(6) }}ms</span>
-      
-      <!-- 弹幕生存时间配置 -->
-      <span style="margin-left: 20px; color: #999;">创建弹幕生存时间:</span>
-      <input
-        type="text"
-        v-model="danmakuDurationInput"
-        @change="onDanmakuDurationChange"
-        placeholder="如 1000 或 *2"
-        style="width: 80px; padding: 4px 8px; margin-left: 8px;"
-        title="输入毫秒数(如1000)或倍数(如*2表示2倍moveDuration)"
-      />
-      <span style="margin-left: 8px; color: #999;">当前: {{ store.danmakuDuration.value }}{{ store.danmakuDuration.mode === 'multiplier' ? '倍' : 'ms' }}</span>
+      <select v-model="activeMenu" class="menu-select">
+        <option value="file">文件</option>
+        <option value="config">配置</option>
+      </select>
+
+      <div v-if="activeMenu === 'file'" class="menu-panel">
+        <button @click="toggle" class="btn">
+          {{ store.playing ? '暂停' : '播放' }}
+        </button>
+        <button @click="importVideo" class="btn">导入视频</button>
+        <button @click="save" class="btn">保存工程</button>
+        <button @click="load" class="btn">加载工程</button>
+        <button @click="download" class="btn">导出JSON</button>
+        <button @click="importProject" class="btn">导入工程</button>
+        <button @click="clearCache" class="btn btn-danger">清空缓存工程</button>
+      </div>
+
+      <div v-if="activeMenu === 'config'" class="menu-panel">
+        <div class="config-group">
+          <span>播放头移动步长:</span>
+          <input
+            type="text"
+            v-model="playheadStepInput"
+            @change="onPlayheadStepChange"
+            placeholder="如 33 或 /60"
+            class="dark-input"
+            title="输入毫秒数(如33)或帧率(如/60表示60fps)"
+          />
+          <span class="status-text">当前: {{ store.playheadStepMs.toFixed(6) }}ms</span>
+        </div>
+        
+        <div class="divider"></div>
+
+        <div class="config-group">
+          <span>创建弹幕生存时间:</span>
+          <input
+            type="text"
+            v-model="danmakuDurationInput"
+            @change="onDanmakuDurationChange"
+            placeholder="如 1000 或 *2"
+            class="dark-input"
+            title="输入毫秒数(如1000)或倍数(如*2表示2倍moveDuration)"
+          />
+          <span class="status-text">当前: {{ store.danmakuDuration.value }}{{ store.danmakuDuration.mode === 'multiplier' ? '倍' : 'ms' }}</span>
+        </div>
+      </div>
       
       <input
         type="file"
@@ -81,6 +95,7 @@ const projectInput = ref<HTMLInputElement | null>(null)
 const lastSyncTime = ref(0) // 上次同步的时间戳
 const previousCurrentTime = ref(0) // 上一帧的currentTime
 const isSyncing = ref(false) // 标志位：是否正在同步
+const activeMenu = ref<'file' | 'config'>('file')
 
 // 快捷键配置相关
 const playheadStepInput = ref(`${store.playheadStepMs.toFixed(6)}`)
@@ -289,6 +304,118 @@ function formatTime(ms: number) {
   padding: 12px;
 }
 
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  z-index: 1;
+  background-color: #1e1e1e;
+  padding: 3px 16px;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  position: fixed;
+}
+
+/* 下拉菜单样式 */
+.menu-select {
+  background-color: #2d2d2d;
+  color: #e0e0e0;
+  border: 1px solid #444;
+  padding: 10px 12px;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.menu-select:hover,
+.menu-select:focus {
+  border-color: #666;
+}
+
+/* 子面板容器 */
+.menu-panel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 通用按钮黑色风格 */
+.btn {
+  padding: 10px 14px;
+  background: #2d2d2d;
+  color: #e0e0e0;
+  border: 1px solid #444;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s ease;
+}
+
+.btn:hover {
+  background: #3d3d3d;
+  border-color: #666;
+  color: #fff;
+}
+
+.btn:active {
+  background: #222;
+}
+
+/* 危险操作按钮（清空缓存） */
+.btn-danger {
+  background: #5c2018;
+  color: #ffb3b3;
+  border-color: #8a2e24;
+}
+
+.btn-danger:hover {
+  background: #7a2820;
+  border-color: #a3382d;
+  color: #fff;
+}
+
+/* 配置组文本与输入框 */
+.config-group {
+  display: flex;
+  align-items: center;
+  color: #b0b0b0;
+  font-size: 13px;
+}
+
+.dark-input {
+  background: #2a2a2a;
+  color: #fff;
+  border: 1px solid #444;
+  width: 80px;
+  padding: 10px 8px;
+  margin: 0 8px;
+  border-radius: 3px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.dark-input:focus {
+  border-color: #64b5f6;
+}
+
+.status-text {
+  color: #888;
+  font-size: 12px;
+}
+
+/* 面板内的分割线 */
+.divider {
+  width: 1px;
+  height: 20px;
+  background-color: #444;
+  margin: 0 4px;
+}
+
+/* 屏幕和视频区 */
 .screen {
   width: 800px;
   height: 450px;
@@ -304,29 +431,6 @@ function formatTime(ms: number) {
   width: 100%;
   height: 100%;
   object-fit: contain;
-}
-
-.controls {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  z-index: 1
-}
-
-.controls button {
-  padding: 8px 16px;
-  background: #4caf50;
-  color: white;
-  border: none;
-  border-radius: 2px;
-  cursor: pointer;
-  font-size: 14px;
-  transition: background 0.2s;
-  outline: 2px solid #AAAAAA;
-}
-
-.controls button:hover {
-  background: #45a049;
 }
 
 .video-info {
