@@ -3,6 +3,7 @@ import type { DanmakuItem } from '@/core/danmaku.ts'
 import { saveProject, loadProject } from '../localstorage/projectStorage'
 import { historyManager } from '@/core/history'
 import { watch } from 'vue'
+import { parseXML, toXML } from '@/core/converter.ts'
 
 let hasPendingChange = false
 
@@ -174,6 +175,19 @@ export const useEditorStore = defineStore('editor', {
       URL.revokeObjectURL(url)
     },
 
+    downloadXml() {
+      const xml = toXML(this.danmakus)
+      const blob = new Blob([xml], { type: 'application/xml;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'danmaku.xml'
+      a.click()
+
+      URL.revokeObjectURL(url)
+    },
+
     loadFromFile(file: File) {
       const reader = new FileReader()
 
@@ -194,6 +208,38 @@ export const useEditorStore = defineStore('editor', {
           console.log('文件加载成功')
         } catch (e) {
           console.error('文件解析失败', e)
+        }
+      }
+
+      reader.readAsText(file)
+    },
+
+    loadXmlFromFile(file: File) {
+      const reader = new FileReader()
+
+      reader.onload = () => {
+        try {
+          const xml = String(reader.result ?? '')
+          const { danmakus, errors } = parseXML(xml)
+
+          this.danmakus = danmakus
+          this.selectedIds = []
+          this.currentTime = 0
+
+          historyManager.clear()
+          historyManager.recordSnapshot(this.danmakus, `导入XML(${danmakus.length}条弹幕)`)
+
+          errors.forEach((error) => {
+            console.warn('[XML 导入] 已跳过异常弹幕:', error.message, error.metadata)
+          })
+
+          if (errors.length > 0) {
+            console.warn(`[XML 导入] 共跳过 ${errors.length} 条异常弹幕`)
+          }
+
+          console.log('XML 导入成功:', danmakus.length, '条弹幕')
+        } catch (error) {
+          console.error('XML 解析失败', error)
         }
       }
 

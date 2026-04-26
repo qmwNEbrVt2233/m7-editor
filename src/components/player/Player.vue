@@ -17,6 +17,8 @@
         <button @click="load" class="btn">加载工程</button>
         <button @click="download" class="btn">导出JSON</button>
         <button @click="importProject" class="btn">导入工程</button>
+        <button @click="exportXml" class="btn">导出XML</button>
+        <button @click="importXml" class="btn">导入XML</button>
         <button @click="clearCache" class="btn btn-danger">清空缓存工程</button>
       </div>
 
@@ -64,6 +66,13 @@
         style="display: none"
         accept=".json"
       />
+      <input
+        type="file"
+        ref="xmlInput"
+        @change="onXmlFileChange"
+        style="display: none"
+        accept=".xml,text/xml,application/xml"
+      />
     </div>
     
     <div class="screen">
@@ -86,13 +95,13 @@
 <script setup lang="ts">
 import { useEditorStore } from '../../store/editor'
 import DanmakuLayer from './DanmakuLayer.vue'
-import { ref, watch, onMounted, nextTick, computed } from 'vue'
+import { ref, watch, onMounted, nextTick } from 'vue'
 
 const store = useEditorStore()
 const videoRef = ref<HTMLVideoElement | null>(null)
 const videoInput = ref<HTMLInputElement | null>(null)
 const projectInput = ref<HTMLInputElement | null>(null)
-const lastSyncTime = ref(0) // 上次同步的时间戳
+const xmlInput = ref<HTMLInputElement | null>(null)
 const previousCurrentTime = ref(0) // 上一帧的currentTime
 const isSyncing = ref(false) // 标志位：是否正在同步
 const activeMenu = ref<'file' | 'config'>('file')
@@ -189,7 +198,6 @@ watch(
       if (videoDelta > 0.05) {
         isSyncing.value = true
         videoRef.value.currentTime = videoTime
-        lastSyncTime.value = performance.now()
         
         nextTick(() => {
           isSyncing.value = false
@@ -241,6 +249,10 @@ function importProject() {
   projectInput.value?.click()
 }
 
+function importXml() {
+  xmlInput.value?.click()
+}
+
 function onVideoFileChange(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
   if (file) {
@@ -273,10 +285,23 @@ function download() {
   store.downloadProject()
 }
 
+function exportXml() {
+  store.downloadXml()
+}
+
 function onFileChange(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
   if (file) {
     store.loadFromFile(file)
+  }
+}
+
+function onXmlFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (file) {
+    store.loadXmlFromFile(file)
+    input.value = ''
   }
 }
 
