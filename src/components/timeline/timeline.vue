@@ -69,7 +69,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useEditorStore } from '../../store/editor'
 
 const store = useEditorStore()
@@ -91,6 +91,28 @@ function initContainerWidth() {
   const timelineEl = document.querySelector('.timeline')
   if (timelineEl) {
     containerWidth.value = timelineEl.clientWidth
+  }
+}
+
+function ensurePlayheadVisible() {
+  const visibleDuration = containerWidth.value / scale.value
+  if (!Number.isFinite(visibleDuration) || visibleDuration <= 0) {
+    return
+  }
+
+  const currentTime = store.currentTime
+  const visibleStart = offset.value
+  const visibleEnd = visibleStart + visibleDuration
+  const edgePaddingPx = Math.min(containerWidth.value * 1)
+  const edgePaddingTime = edgePaddingPx / scale.value
+
+  if (currentTime < visibleStart) {
+    offset.value = Math.max(0, currentTime - edgePaddingTime)
+    return
+  }
+
+  if (currentTime > visibleEnd) {
+    offset.value = Math.max(0, currentTime - visibleDuration + edgePaddingTime)
   }
 }
 
@@ -353,6 +375,13 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyboardShortcuts)
   window.removeEventListener('resize', initContainerWidth)
 })
+
+watch(
+  () => store.currentTime,
+  () => {
+    ensurePlayheadVisible()
+  }
+)
 
 // ===== 刻度计算 =====
 // 预设步长

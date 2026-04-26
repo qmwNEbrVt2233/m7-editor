@@ -1,21 +1,22 @@
 <template>
   <div class="player">
     <div class="controls">
-      <img src="/favicon.svg" width="35" height="35" alt="logo">
-      
+      <a href="https://github.com/qmwNEbrVt2233/m7-editor"><img src="/favicon.svg" width="35" height="35" alt="logo"></a>
+
+      <button @click="toggle" class="btn">
+        <img :src="store.playing ? '/pause.svg' : '/play.svg'" alt="toggle" width="13" height="13"/>
+      </button>
+
       <select v-model="activeMenu" class="menu-select">
         <option value="file">文件</option>
         <option value="config">配置</option>
       </select>
 
       <div v-if="activeMenu === 'file'" class="menu-panel">
-        <button @click="toggle" class="btn">
-          {{ store.playing ? '暂停' : '播放' }}
-        </button>
         <button @click="importVideo" class="btn">导入视频</button>
         <button @click="save" class="btn">保存工程</button>
         <button @click="load" class="btn">加载工程</button>
-        <button @click="download" class="btn">导出JSON</button>
+        <button @click="download" class="btn">导出工程</button>
         <button @click="importProject" class="btn">导入工程</button>
         <button @click="exportXml" class="btn">导出XML</button>
         <button @click="importXml" class="btn">导入XML</button>
