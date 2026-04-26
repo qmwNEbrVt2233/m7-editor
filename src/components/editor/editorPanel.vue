@@ -196,7 +196,7 @@
               <label>初始 (From)</label>
               <input
                 type="number"
-                v-model="opacityFrom"
+                v-model.lazy="opacityFrom"
                 @change="updateField('opacity.from', opacityFrom)"
                 min="0"
                 max="1"
@@ -216,7 +216,7 @@
               <label>结束 (To)</label>
               <input
                 type="number"
-                v-model="opacityTo"
+                v-model.lazy="opacityTo"
                 @change="updateField('opacity.to', opacityTo)"
                 min="0"
                 max="1"

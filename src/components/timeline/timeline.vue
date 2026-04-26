@@ -11,9 +11,12 @@
         v-for="tick in ticks"
         :key="tick.time"
         class="tick"
+        :class="{ 'major': tick.isMajor }"
         :style="{ left: tick.x + 'px' }"
       >
-        {{ formatTime(tick.time) }}
+        <span v-if="tick.isMajor" class="tick-label">
+          {{ tick.label }}
+        </span>
       </div>
     </div>
 
@@ -352,24 +355,44 @@ onUnmounted(() => {
 })
 
 // ===== 刻度计算 =====
+// 预设步长
+const TIME_STEPS = [100, 500, 1000, 2000, 5000, 10000]
+
 const ticks = computed(() => {
   const list = []
+  
+  // 目标：主刻度之间的物理间距保持在 80px - 160px 左右
+  const targetPx = 100
+  const idealStep = targetPx / scale.value
+  
+  // 找到最合适的步长
+  const step = TIME_STEPS.find(s => s >= idealStep) || 20000
+  // 子刻度：固定将主刻度五等分
+  const subStep = step / 5
 
-  const start = Math.floor(offset.value / step) * step
+  const start = Math.floor(offset.value / subStep) * subStep
   const end = offset.value + containerWidth.value / scale.value
 
-  for (let t = start; t < end; t += step) {
+  for (let t = start; t < end; t += subStep) {
+    const currentTime = Math.round(t * 1000) / 1000 // 防止浮点误差
+    const isMajor = Math.abs(currentTime % step) < 0.001
+
     list.push({
-      time: t,
-      x: (t - offset.value) * scale.value
+      time: currentTime,
+      x: (currentTime - offset.value) * scale.value,
+      isMajor,
+      // 只有主刻度返回格式化后的数字串，子刻度不返回内容
+      label: isMajor ? formatTime(currentTime) : ''
     })
   }
 
   return list
 })
 
+// 无单位格式化：1000ms -> 1, 1500ms -> 1.5, 500ms -> 500
 function formatTime(ms: number) {
-  return (ms / 1000).toFixed(1)
+  if (ms === 0) return '0'
+  return parseFloat((ms / 1000).toFixed(2)).toString()
 }
 
 // ===== 播放头 =====
@@ -812,13 +835,31 @@ function onMouseUp() {
   flex-shrink: 0;
 }
 
+/* 基础刻度线（子刻度） */
 .tick {
   position: absolute;
-  top: 0;
+  bottom: 0;
+  width: 1px;
+  height: 6px;
+  background: #555;
+}
+
+/* 主刻度线 */
+.tick.major {
+  height: 12px;
+  background: #888;
+}
+
+/* 刻度数字 */
+.tick-label {
+  position: absolute;
+  top: -2px;
+  left: 4px;
   color: #aaa;
   font-size: 10px;
+  font-family: monospace;
   white-space: nowrap;
-  padding: 2px 4px;
+  pointer-events: none; /* 防止文字干扰鼠标事件 */
 }
 
 /* 播放头 */
