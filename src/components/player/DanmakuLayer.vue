@@ -148,7 +148,7 @@ function formatText(text: string) {
   pointer-events: none;
 
   /* 关键：开启3D透视 */
-  perspective: 1000px;
+  perspective: 500px;
 }
 
 .danmaku {
