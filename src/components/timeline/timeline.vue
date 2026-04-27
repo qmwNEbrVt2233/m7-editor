@@ -657,13 +657,15 @@ function roundTime(time: number) {
   return Math.round(time)
 }
 
-function snapTime(time: number) {
-  const threshold = 30 // ms 吸附范围
+const SNAP_DISTANCE_PX = 5
+const MIN_BLOCK_DURATION = 50
 
-  let targets: number[] = []
+function getSnapThresholdMs() {
+  return SNAP_DISTANCE_PX / scale.value
+}
 
-  // 播放头
-  targets.push(store.currentTime)
+function getSnapTargets() {
+  const targets: number[] = [store.currentTime]
 
   // 所有弹幕起点和结束点（排除正在被拖动的对象）
   store.danmakus.forEach((d: any) => {
@@ -673,24 +675,58 @@ function snapTime(time: number) {
     }
   })
 
-  // 找最近的吸附点
-  let closestTarget = null
+  return targets
+}
+
+function snapTime(time: number) {
+  const threshold = getSnapThresholdMs()
+  const targets = getSnapTargets()
+
+  let closestTarget: number | null = null
   let minDistance = Infinity
 
-  for (let t of targets) {
-    const distance = Math.abs(t - time)
+  for (const target of targets) {
+    const distance = Math.abs(target - time)
     if (distance < minDistance) {
       minDistance = distance
-      closestTarget = t
+      closestTarget = target
     }
   }
 
-  // 如果最近的点在阈值范围内，就吸附到它，否则返回原时间
-  if (closestTarget !== null && minDistance < threshold) {
+  if (closestTarget !== null && minDistance <= threshold) {
     return roundTime(closestTarget)
   }
 
   return roundTime(time)
+}
+
+function snapMoveStartTime(startTime: number, duration: number) {
+  const threshold = getSnapThresholdMs()
+  const targets = getSnapTargets()
+  const endTime = startTime + duration
+
+  let snappedStartTime = startTime
+  let minDistance = Infinity
+
+  for (const target of targets) {
+    const startDistance = Math.abs(target - startTime)
+    if (startDistance < minDistance) {
+      minDistance = startDistance
+      snappedStartTime = target
+    }
+
+    const endDistance = Math.abs(target - endTime)
+    if (endDistance < minDistance) {
+      minDistance = endDistance
+      snappedStartTime = target - duration
+    }
+  }
+
+  if (minDistance <= threshold) {
+    return roundTime(Math.max(0, snappedStartTime))
+  }
+
+  return roundTime(Math.max(0, startTime))
 }
 
 function onMouseMove(e: MouseEvent) {
@@ -731,8 +767,9 @@ function onMouseMove(e: MouseEvent) {
     
     if (activeInitial) {
       // 计算activeBlockId弹幕应该移动到的位置
-      let deltaTime = Math.max(0, rawTime - dragOffsetX.value / scale.value) - activeInitial.startTime
-      deltaTime = snapTime(activeInitial.startTime + deltaTime) - activeInitial.startTime
+      const rawStartTime = Math.max(0, rawTime - dragOffsetX.value / scale.value)
+      const snappedStartTime = snapMoveStartTime(rawStartTime, activeInitial.duration)
+      const deltaTime = snappedStartTime - activeInitial.startTime
       
       // 使用dragStartLayer计算deltaLayer
       const deltaLayer = layer - dragStartLayer.value
@@ -758,7 +795,7 @@ function onMouseMove(e: MouseEvent) {
     if (activeInitial) {
       // 计算activeBlockId弹幕的startTime改变量
       const end = activeInitial.startTime + activeInitial.duration
-      const newStartTime = Math.min(leftTime, end - 50)
+      const newStartTime = Math.min(leftTime, end - MIN_BLOCK_DURATION)
       const deltaStartTime = newStartTime - activeInitial.startTime
       
       // 将delta应用到所有选中弹幕
@@ -769,7 +806,7 @@ function onMouseMove(e: MouseEvent) {
         
         const initialEnd = initial.startTime + initial.duration
         const newStart = Math.max(0, initial.startTime + deltaStartTime)
-        d.startTime = Math.min(newStart, initialEnd - 50)
+        d.startTime = Math.min(newStart, initialEnd - MIN_BLOCK_DURATION)
         d.animation.duration = Math.round(initialEnd - d.startTime)
       })
     }
@@ -792,7 +829,7 @@ function onMouseMove(e: MouseEvent) {
         const initial = dragInitialStates.value.get(id)
         if (!d || !initial) return
         
-        const newDuration = Math.max(50, initial.duration + deltaDuration)
+        const newDuration = Math.max(MIN_BLOCK_DURATION, initial.duration + deltaDuration)
         d.animation.duration = newDuration
       })
     }

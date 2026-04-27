@@ -373,37 +373,80 @@ export const useEditorStore = defineStore('editor', {
     },
     
     /**
-     * 检查是否写入了transform.end，如果是则移动播放头到弹幕结束位置
+     * 检查是否需要移动播放头
      */
     _checkAndMovePlayhead(patch: any, danmakuId: string): void {
-      // 检查是否包含transform.end的修改
-      const hasEndX = patch['transform.end.x'] !== undefined || 
-                      (patch.transform?.end?.x !== undefined)
-      const hasEndY = patch['transform.end.y'] !== undefined || 
-                      (patch.transform?.end?.y !== undefined)
-      const hasEndopacityto = patch['opacity.to'] !== undefined || 
-                      (patch.opacity?.to.y !== undefined)
-      const hasStartX = patch['transform.start.x'] !== undefined || 
-                      (patch.transform?.start?.x !== undefined)
-      const hasStartY = patch['transform.start.y'] !== undefined || 
-                      (patch.transform?.start?.y !== undefined)
-      const hasStartopacityfrom = patch['opacity.from'] !== undefined || 
-                      (patch.opacity?.from !== undefined)
-      if (hasEndX || hasEndY || hasEndopacityto) {
+      const hasChangedGrop1 = patch['transform.end.x'] !== undefined || 
+                      (patch.transform?.end?.x !== undefined) ||
+                      patch['transform.end.y'] !== undefined || 
+                      (patch.transform?.end?.y !== undefined) ||
+                      patch['opacity.to'] !== undefined || 
+                      (patch.opacity?.to !== undefined)
+      const hasChangedGrop2 = patch['opacity.from'] !== undefined || 
+                      (patch.opacity?.from !== undefined) ||
+                      patch['content.text'] !== undefined || 
+                      (patch.content?.text !== undefined) ||
+                      patch['content.font'] !== undefined || 
+                      (patch.content?.font !== undefined) ||
+                      patch['content.size'] !== undefined || 
+                      (patch.content?.size !== undefined) ||
+                      patch['content.color'] !== undefined || 
+                      (patch.content?.color !== undefined) ||
+                      patch['content.stroke'] !== undefined || 
+                      (patch.content?.stroke !== undefined) ||
+                      patch['transform.start.x'] !== undefined || 
+                      (patch.transform?.start?.x !== undefined)||
+                      patch['transform.start.y'] !== undefined || 
+                      (patch.transform?.start?.y !== undefined) ||
+                      patch['transform.zRotate'] !== undefined || 
+                      (patch.transform?.zRotate !== undefined) ||
+                      patch['transform.yRotate'] !== undefined || 
+                      (patch.transform?.yRotate !== undefined) ||
+                      patch['animation.moveDuration'] !== undefined || 
+                      (patch.animation?.moveDuration !== undefined) ||
+                      patch['animation.delay'] !== undefined || 
+                      (patch.animation?.delay !== undefined) ||
+                      patch['animation.easing'] !== undefined || 
+                      (patch.animation?.easing !== undefined)
+      const hasDuration = patch['animation.duration'] !== undefined || 
+                      (patch.animation?.duration !== undefined)
+      const hasStartTime = patch['startTime'] !== undefined || 
+                      (patch.startTime !== undefined)
+      if (hasChangedGrop1) {
         const danmaku = this.danmakus.find((d) => d.id === danmakuId)
         if (danmaku) {
           const endTime = danmaku.startTime + danmaku.animation.duration
           this.setTime(endTime)
-          console.log('endX/Y/opacity被写入，移动播放头到弹幕结束位置:', endTime)
+          console.log('移动播放头到弹幕结束位置:', endTime)
         }
       }
-      if (hasStartX || hasStartY || hasStartopacityfrom) {
+      if (hasChangedGrop2) {
         const danmaku = this.danmakus.find((d) => d.id === danmakuId)
         if (danmaku) {
           const startTime = danmaku.startTime
           this.setTime(startTime)
-          console.log('startX/Y/opacity被写入，移动播放头到弹幕开始位置:', startTime)
+          console.log('移动播放头到弹幕开始位置:', startTime)
         }
+      }
+      if (hasDuration) {
+        const danmaku = this.danmakus.find((d) => d.id === danmakuId)
+        setTimeout(() => {
+          if (danmaku) {
+            const endTime = danmaku.startTime + danmaku.animation.duration
+            this.setTime(endTime)
+            console.log('移动播放头到弹幕结束位置:', endTime)
+          }
+        }, 10)
+      }
+      if (hasStartTime) {
+        const danmaku = this.danmakus.find((d) => d.id === danmakuId)
+        setTimeout(() => {
+          if (danmaku) {
+            const startTime = danmaku.startTime
+            this.setTime(startTime)
+            console.log('移动播放头到弹幕开始位置:', startTime)
+          }
+        }, 10)
       }
     },
 
