@@ -4,7 +4,7 @@
       <a href="https://github.com/qmwNEbrVt2233/m7-editor"><img src="/favicon.svg" width="35" height="35" alt="logo"></a>
 
       <button @click="toggle" class="btn">
-        <img :src="store.playing ? '/pause.svg' : '/play.svg'" alt="toggle" width="13" height="13"/>
+        <img :src="store.playing ? './pause.svg' : './play.svg'" alt="toggle" width="13" height="13"/>
       </button>
 
       <select v-model="activeMenu" class="menu-select">
