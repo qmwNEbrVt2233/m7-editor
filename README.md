@@ -1,6 +1,6 @@
 <font size="10">   m7-editor</font>
 
-<img src="./favicon.svg" alt="m7-editor"  style="width: 200px; height: 200px;">
+<img src="public/favicon.svg" alt="m7-editor"  style="width: 200px; height: 200px;">
 
 m7-editor是一个面向 M7 / B 站特效弹幕场景的可视化编辑器。  
 它提供视频预览、时间轴排布、批量属性编辑、工程保存，以及 XML / JSON 导入导出能力，适合用于编辑带有位移、透明度、旋转、描边、分层的高级弹幕。
@@ -15,6 +15,7 @@ m7-editor是一个面向 M7 / B 站特效弹幕场景的可视化编辑器。
 - 支持工程保存到本地缓存、导出工程 JSON、导入工程 JSON
 - 支持导出 XML 弹幕文件
 - 支持导入 XML 弹幕文件，并在导入时自动重建 layer、避让时间冲突
+- 支持按 screen 宽高进行 XML 坐标比例导入与可选比例导出
 - 支持撤销 / 重做、复制 / 粘贴、播放头快速定位等编辑快捷键
 
 ## 技术栈
@@ -65,12 +66,12 @@ npm run preview
 
 ## 界面说明
 
-<img src="./f296d43c-3c7f-430d-99ce-ff8b4e578899.png">
+<img src="public\f296d43c-3c7f-430d-99ce-ff8b4e578899.png">
 项目界面主要分为三部分：
 
 ### 1. 播放器区域
 
-- 文件 ⬇
+- 文件菜单栏
   - 导入视频
   - 播放 / 暂停
   - 保存工程到本地缓存
@@ -80,9 +81,13 @@ npm run preview
   - 导出 XML
   - 导入 XML
   - 清空缓存工程
-- 配置 ⬇
+- 配置菜单栏
   - 配置播放头步长
   - 配置新建弹幕的默认生存时间
+- 播放器与XML菜单栏
+  - 设置 XML 是否按比例导出
+  - 配置 `screen width`
+  - 配置 `screen height`
 
 ### 2. 编辑面板
 
@@ -176,6 +181,7 @@ npm run preview
 - 项目元数据
 - 视频信息
 - 时间轴信息
+- 播放器与导出设置
 - 全部弹幕数据
 
 适合在本项目内继续编辑、备份或分享工程。
@@ -189,9 +195,29 @@ npm run preview
 - 导出时会按 `startTime -> layer` 排序
 - 同一 `startTime` 下会使用 fake `sendTime` 保证导出顺序
 - `Microsoft YaHei` 会按项目要求做特殊格式处理
+- 可按当前 `screen width/height` 将像素坐标导出为比例坐标
 - 导入时会根据 XML 中的 `date/sendTime` 反推 layer 顺序
+- 导入时若坐标位于 `0 <= value < 1`，会按当前 `screen width/height` 视为比例坐标并转成像素
 - 导入时会额外执行时间冲突避让，避免大量弹幕挤在同一 layer
 - 如果单条 XML 弹幕解析失败，会跳过该条并继续导入其他弹幕
+
+### 粘贴弹幕
+
+当前粘贴功能支持比早期版本更宽松的输入格式，这意味着你可以直接从导出的工程 JSON 中复制需要的弹幕内容进行粘贴。
+
+支持的常见格式包括：
+
+- 直接复制的弹幕数组
+- 整个 `project.json`，会自动提取其中的 `danmakus`
+- 单条弹幕对象
+- 从 `danmakus` 数组中截取出来的若干对象片段
+- 带尾逗号的 JSON 片段
+
+粘贴后仍会自动执行：
+
+- 新 ID 分配
+- 播放头对齐的时间偏移
+- layer 冲突避让
 
 ## 使用建议
 
@@ -264,7 +290,7 @@ npm run preview
 - XML 导入可能出现问题，请不要高估解析工具
 - 弹幕数量过多会很卡很卡（待优化）
 - 弹幕渲染依旧不完全还原b站（望大佬相助）
-- 暂不支持坐标按比例定位
+- XML 比例坐标导入导出依赖当前播放器设置中的 `screen width/height` **若要使用请提前修改宽高！否则转为坐标时会与预期不符！**
 
 ## 联系作者
 
