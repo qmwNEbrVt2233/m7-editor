@@ -9,5 +9,11 @@ export interface Project {
     offset: number
   }
 
+  player?: {
+    screenWidth: number
+    screenHeight: number
+    exportXmlAsRatio: boolean
+  }
+
   danmakus: any[]
 }

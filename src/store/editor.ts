@@ -7,6 +7,81 @@ import { parseXML, toXML } from '@/core/converter.ts'
 
 let hasPendingChange = false
 
+function isDanmakuLike(value: unknown): value is DanmakuItem {
+  if (!value || typeof value !== 'object') return false
+
+  const candidate = value as Record<string, any>
+  return (
+    candidate.startTime !== undefined &&
+    candidate.content &&
+    candidate.transform &&
+    candidate.opacity &&
+    candidate.animation
+  )
+}
+
+function extractDanmakusFromParsedJson(parsed: unknown): DanmakuItem[] | null {
+  if (Array.isArray(parsed)) {
+    const danmakus = parsed.filter(isDanmakuLike)
+    return danmakus.length > 0 ? (danmakus as DanmakuItem[]) : null
+  }
+
+  if (parsed && typeof parsed === 'object') {
+    const record = parsed as Record<string, any>
+
+    if (Array.isArray(record.danmakus)) {
+      const danmakus = record.danmakus.filter(isDanmakuLike)
+      return danmakus.length > 0 ? (danmakus as DanmakuItem[]) : null
+    }
+
+    if (isDanmakuLike(record)) {
+      return [record as DanmakuItem]
+    }
+  }
+
+  return null
+}
+
+function tryParseDanmakusJson(text: string): DanmakuItem[] | null {
+  const parsed = JSON.parse(text)
+  return extractDanmakusFromParsedJson(parsed)
+}
+
+function parsePastedDanmakusText(text: string): DanmakuItem[] {
+  const trimmed = text.trim().replace(/^\uFEFF/, '')
+  if (!trimmed) {
+    throw new Error('剪贴板内容为空')
+  }
+
+  const sanitized = trimmed.replace(/,\s*([}\]])/g, '$1')
+  const wrappedAsArray = `[${sanitized.replace(/^\s*,+|,+\s*$/g, '')}]`
+
+  const candidates = Array.from(new Set([
+    trimmed,
+    sanitized,
+    wrappedAsArray
+  ]))
+
+  let lastError: unknown = null
+
+  for (const candidate of candidates) {
+    try {
+      const danmakus = tryParseDanmakusJson(candidate)
+      if (danmakus && danmakus.length > 0) {
+        return JSON.parse(JSON.stringify(danmakus)) as DanmakuItem[]
+      }
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  if (lastError instanceof Error) {
+    throw lastError
+  }
+
+  throw new Error('粘贴数据中未找到可用的弹幕')
+}
+
 export const useEditorStore = defineStore('editor', {
   state: () => {
     const saved = loadProject()
@@ -79,7 +154,11 @@ export const useEditorStore = defineStore('editor', {
       danmakuDuration: {
         mode: 'ms' as 'ms' | 'multiplier',
         value: 1000
-      }
+      },
+      // 播放器与 XML 导出设置
+      screenWidth: saved?.player?.screenWidth || 800,
+      screenHeight: saved?.player?.screenHeight || 450,
+      exportXmlAsRatio: saved?.player?.exportXmlAsRatio || false
     }
   },
 
@@ -154,6 +233,16 @@ export const useEditorStore = defineStore('editor', {
         this.videoDuration = project.video.duration
       }
 
+      if (project.player?.screenWidth) {
+        this.screenWidth = project.player.screenWidth
+      }
+      if (project.player?.screenHeight) {
+        this.screenHeight = project.player.screenHeight
+      }
+      if (typeof project.player?.exportXmlAsRatio === 'boolean') {
+        this.exportXmlAsRatio = project.player.exportXmlAsRatio
+      }
+
       console.log('加载完成')
     },
 
@@ -176,7 +265,11 @@ export const useEditorStore = defineStore('editor', {
     },
 
     downloadXml() {
-      const xml = toXML(this.danmakus)
+      const xml = toXML(this.danmakus, {
+        useRatioPosition: this.exportXmlAsRatio,
+        screenWidth: this.screenWidth,
+        screenHeight: this.screenHeight
+      })
       const blob = new Blob([xml], { type: 'application/xml;charset=utf-8' })
       const url = URL.createObjectURL(blob)
 
@@ -205,6 +298,16 @@ export const useEditorStore = defineStore('editor', {
             this.videoDuration = project.video.duration
           }
 
+          if (project.player?.screenWidth) {
+            this.screenWidth = project.player.screenWidth
+          }
+          if (project.player?.screenHeight) {
+            this.screenHeight = project.player.screenHeight
+          }
+          if (typeof project.player?.exportXmlAsRatio === 'boolean') {
+            this.exportXmlAsRatio = project.player.exportXmlAsRatio
+          }
+
           console.log('文件加载成功')
         } catch (e) {
           console.error('文件解析失败', e)
@@ -220,7 +323,10 @@ export const useEditorStore = defineStore('editor', {
       reader.onload = () => {
         try {
           const xml = String(reader.result ?? '')
-          const { danmakus, errors } = parseXML(xml)
+          const { danmakus, errors } = parseXML(xml, {
+            screenWidth: this.screenWidth,
+            screenHeight: this.screenHeight
+          })
 
           this.danmakus = danmakus
           this.selectedIds = []
@@ -492,8 +598,28 @@ export const useEditorStore = defineStore('editor', {
           url: this.videoFilePath || this.videoUrl, // 优先使用文件路径
           duration: this.videoDuration
         },
+        player: {
+          screenWidth: this.screenWidth,
+          screenHeight: this.screenHeight,
+          exportXmlAsRatio: this.exportXmlAsRatio
+        },
         danmakus: this.danmakus
       }
+    },
+
+    /**
+     * 设置播放器 screen 尺寸
+     */
+    setScreenSize(width: number, height: number) {
+      this.screenWidth = Math.max(1, Math.round(width))
+      this.screenHeight = Math.max(1, Math.round(height))
+    },
+
+    /**
+     * 设置 XML 导出是否使用比例坐标
+     */
+    setExportXmlAsRatio(enabled: boolean) {
+      this.exportXmlAsRatio = enabled
     },
 
     /**
@@ -658,10 +784,10 @@ export const useEditorStore = defineStore('editor', {
     async pasteDanmakus(): Promise<void> {
       try {
         const text = await navigator.clipboard.readText()
-        const danmakusToAdd = JSON.parse(text) as DanmakuItem[]
+        const danmakusToAdd = parsePastedDanmakusText(text)
 
         if (!Array.isArray(danmakusToAdd)) {
-          console.error('[操作] 粘贴数据格式错误: 不是数组')
+          console.error('[操作] 粘贴数据格式错误: 未解析出弹幕数组')
           return
         }
 

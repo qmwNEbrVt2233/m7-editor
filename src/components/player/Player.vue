@@ -10,6 +10,7 @@
       <select v-model="activeMenu" class="menu-select">
         <option value="file">文件</option>
         <option value="config">配置</option>
+        <option value="player">播放器与XML</option>
       </select>
 
       <div v-if="activeMenu === 'file'" class="menu-panel">
@@ -52,6 +53,41 @@
           <span class="status-text">当前: {{ store.danmakuDuration.value }}{{ store.danmakuDuration.mode === 'multiplier' ? '倍' : 'ms' }}</span>
         </div>
       </div>
+
+      <div v-if="activeMenu === 'player'" class="menu-panel">
+        <label class="config-group checkbox-group">
+          <input
+            type="checkbox"
+            v-model="exportXmlAsRatio"
+            @change="onExportRatioChange"
+          />
+          <span>XML按百分比导出</span>
+        </label>
+
+        <div class="divider"></div>
+
+        <div class="config-group">
+          <span>宽:</span>
+          <input
+            type="number"
+            v-model="screenWidthInput"
+            @change="onScreenSizeChange"
+            min="1"
+            class="dark-input"
+          />
+        </div>
+
+        <div class="config-group">
+          <span>高:</span>
+          <input
+            type="number"
+            v-model="screenHeightInput"
+            @change="onScreenSizeChange"
+            min="1"
+            class="dark-input"
+          />
+        </div>
+      </div>
       
       <input
         type="file"
@@ -76,7 +112,7 @@
       />
     </div>
     
-    <div class="screen">
+    <div class="screen" :style="screenStyle">
       <video
         v-if="store.videoUrl"
         ref="videoRef"
@@ -96,7 +132,7 @@
 <script setup lang="ts">
 import { useEditorStore } from '../../store/editor'
 import DanmakuLayer from './DanmakuLayer.vue'
-import { ref, watch, onMounted, nextTick } from 'vue'
+import { ref, watch, onMounted, nextTick, computed } from 'vue'
 
 const store = useEditorStore()
 const videoRef = ref<HTMLVideoElement | null>(null)
@@ -105,7 +141,7 @@ const projectInput = ref<HTMLInputElement | null>(null)
 const xmlInput = ref<HTMLInputElement | null>(null)
 const previousCurrentTime = ref(0) // 上一帧的currentTime
 const isSyncing = ref(false) // 标志位：是否正在同步
-const activeMenu = ref<'file' | 'config'>('file')
+const activeMenu = ref<'file' | 'config' | 'player'>('file')
 
 // 快捷键配置相关
 const playheadStepInput = ref(`${store.playheadStepMs.toFixed(6)}`)
@@ -116,6 +152,15 @@ const danmakuDurationInput = ref(
     ? `*${store.danmakuDuration.value}`
     : `${store.danmakuDuration.value}`
 )
+
+const screenWidthInput = ref(String(store.screenWidth))
+const screenHeightInput = ref(String(store.screenHeight))
+const exportXmlAsRatio = ref(store.exportXmlAsRatio)
+
+const screenStyle = computed(() => ({
+  width: `${store.screenWidth}px`,
+  height: `${store.screenHeight}px`
+}))
 
 // 处理播放头步长输入变化
 function onPlayheadStepChange(e: Event) {
@@ -171,12 +216,48 @@ function onDanmakuDurationChange(e: Event) {
   }
 }
 
+function onScreenSizeChange() {
+  const width = parseInt(screenWidthInput.value, 10)
+  const height = parseInt(screenHeightInput.value, 10)
+
+  if (width > 0 && height > 0) {
+    store.setScreenSize(width, height)
+    screenWidthInput.value = String(store.screenWidth)
+    screenHeightInput.value = String(store.screenHeight)
+  }
+}
+
+function onExportRatioChange() {
+  store.setExportXmlAsRatio(exportXmlAsRatio.value)
+}
+
 // 初始化视频元素引用
 onMounted(() => {
   if (videoRef.value) {
     store.setVideoElement(videoRef.value)
   }
 })
+
+watch(
+  () => store.screenWidth,
+  (width) => {
+    screenWidthInput.value = String(width)
+  }
+)
+
+watch(
+  () => store.screenHeight,
+  (height) => {
+    screenHeightInput.value = String(height)
+  }
+)
+
+watch(
+  () => store.exportXmlAsRatio,
+  (enabled) => {
+    exportXmlAsRatio.value = enabled
+  }
+)
 
 // 监听currentTime变化，同步视频
 watch(
@@ -410,6 +491,15 @@ function formatTime(ms: number) {
   align-items: center;
   color: #b0b0b0;
   font-size: 13px;
+}
+
+.checkbox-group {
+  gap: 8px;
+  cursor: pointer;
+}
+
+.checkbox-group input[type='checkbox'] {
+  cursor: pointer;
 }
 
 .dark-input {
