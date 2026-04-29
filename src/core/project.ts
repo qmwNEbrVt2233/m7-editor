@@ -12,7 +12,7 @@ export interface Project {
   player?: {
     screenWidth: number
     screenHeight: number
-    exportXmlAsRatio: boolean
+    maxLayers: number
   }
 
   danmakus: any[]

@@ -10,7 +10,8 @@
       <select v-model="activeMenu" class="menu-select">
         <option value="file">文件</option>
         <option value="config">配置</option>
-        <option value="player">播放器与XML</option>
+        <option value="player">播放器</option>
+        <option value="preprocess">预处理</option>
       </select>
 
       <div v-if="activeMenu === 'file'" class="menu-panel">
@@ -52,20 +53,23 @@
           />
           <span class="status-text">当前: {{ store.danmakuDuration.value }}{{ store.danmakuDuration.mode === 'multiplier' ? '倍' : 'ms' }}</span>
         </div>
-      </div>
-
-      <div v-if="activeMenu === 'player'" class="menu-panel">
-        <label class="config-group checkbox-group">
-          <input
-            type="checkbox"
-            v-model="exportXmlAsRatio"
-            @change="onExportRatioChange"
-          />
-          <span>XML按百分比导出</span>
-        </label>
 
         <div class="divider"></div>
 
+        <div class="config-group">
+          <span>Layer:</span>
+          <input
+            type="number"
+            v-model="maxLayersInput"
+            @change="onMaxLayersChange"
+            min="1"
+            class="dark-input"
+          />
+          <span class="status-text">当前: {{ store.maxLayers }}</span>
+        </div>
+      </div>
+
+      <div v-if="activeMenu === 'player'" class="menu-panel">
         <div class="config-group">
           <span>宽:</span>
           <input
@@ -87,6 +91,37 @@
             class="dark-input"
           />
         </div>
+      </div>
+
+      <div v-if="activeMenu === 'preprocess'" class="menu-panel">
+        <label class="config-group checkbox-group">
+          <input
+            type="checkbox"
+            v-model="exportXmlAsRatio"
+            @change="onExportRatioChange"
+          />
+          <span>XML按百分比导出</span>
+        </label>
+
+        <div class="divider"></div>
+
+        <label class="config-group checkbox-group">
+          <input
+            type="checkbox"
+            v-model="importXmlDurationOffsetEnabled"
+            @change="onImportDurationOffsetChange"
+          />
+          <span>对导入xml进行-50ms处理</span>
+        </label>
+
+        <label class="config-group checkbox-group">
+          <input
+            type="checkbox"
+            v-model="exportXmlDurationOffsetEnabled"
+            @change="onExportDurationOffsetChange"
+          />
+          <span>对导出xml进行+50ms处理</span>
+        </label>
       </div>
       
       <input
@@ -141,7 +176,7 @@ const projectInput = ref<HTMLInputElement | null>(null)
 const xmlInput = ref<HTMLInputElement | null>(null)
 const previousCurrentTime = ref(0) // 上一帧的currentTime
 const isSyncing = ref(false) // 标志位：是否正在同步
-const activeMenu = ref<'file' | 'config' | 'player'>('file')
+const activeMenu = ref<'file' | 'config' | 'player' | 'preprocess'>('file')
 
 // 快捷键配置相关
 const playheadStepInput = ref(`${store.playheadStepMs.toFixed(6)}`)
@@ -155,7 +190,10 @@ const danmakuDurationInput = ref(
 
 const screenWidthInput = ref(String(store.screenWidth))
 const screenHeightInput = ref(String(store.screenHeight))
+const maxLayersInput = ref(String(store.maxLayers))
 const exportXmlAsRatio = ref(store.exportXmlAsRatio)
+const importXmlDurationOffsetEnabled = ref(store.importXmlDurationOffsetEnabled)
+const exportXmlDurationOffsetEnabled = ref(store.exportXmlDurationOffsetEnabled)
 
 const screenStyle = computed(() => ({
   width: `${store.screenWidth}px`,
@@ -231,6 +269,22 @@ function onExportRatioChange() {
   store.setExportXmlAsRatio(exportXmlAsRatio.value)
 }
 
+function onImportDurationOffsetChange() {
+  store.setImportXmlDurationOffsetEnabled(importXmlDurationOffsetEnabled.value)
+}
+
+function onExportDurationOffsetChange() {
+  store.setExportXmlDurationOffsetEnabled(exportXmlDurationOffsetEnabled.value)
+}
+
+function onMaxLayersChange() {
+  const maxLayers = parseInt(maxLayersInput.value, 10)
+  if (maxLayers > 0) {
+    store.setMaxLayers(maxLayers)
+  }
+  maxLayersInput.value = String(store.maxLayers)
+}
+
 // 初始化视频元素引用
 onMounted(() => {
   if (videoRef.value) {
@@ -256,6 +310,27 @@ watch(
   () => store.exportXmlAsRatio,
   (enabled) => {
     exportXmlAsRatio.value = enabled
+  }
+)
+
+watch(
+  () => store.importXmlDurationOffsetEnabled,
+  (enabled) => {
+    importXmlDurationOffsetEnabled.value = enabled
+  }
+)
+
+watch(
+  () => store.exportXmlDurationOffsetEnabled,
+  (enabled) => {
+    exportXmlDurationOffsetEnabled.value = enabled
+  }
+)
+
+watch(
+  () => store.maxLayers,
+  (value) => {
+    maxLayersInput.value = String(value)
   }
 )
 

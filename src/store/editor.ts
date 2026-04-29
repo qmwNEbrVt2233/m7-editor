@@ -6,6 +6,32 @@ import { watch } from 'vue'
 import { parseXML, toXML } from '@/core/converter.ts'
 
 let hasPendingChange = false
+let hasSelectionSnapshotWatcher = false
+
+function clearPendingChangeTracking() {
+  hasPendingChange = false
+}
+
+function ensureSelectionSnapshotWatcher(store: {
+  selectedIds: string[]
+  danmakus: DanmakuItem[]
+}) {
+  if (hasSelectionSnapshotWatcher) {
+    return
+  }
+
+  watch(
+    () => store.selectedIds.length,
+    (newLen, oldLen) => {
+      if (hasPendingChange && oldLen > 0 && newLen === 0) {
+        historyManager.recordSnapshot(store.danmakus, '数据修改')
+        hasPendingChange = false
+      }
+    }
+  )
+
+  hasSelectionSnapshotWatcher = true
+}
 
 function isDanmakuLike(value: unknown): value is DanmakuItem {
   if (!value || typeof value !== 'object') return false
@@ -158,7 +184,10 @@ export const useEditorStore = defineStore('editor', {
       // 播放器与 XML 导出设置
       screenWidth: saved?.player?.screenWidth || 800,
       screenHeight: saved?.player?.screenHeight || 450,
-      exportXmlAsRatio: saved?.player?.exportXmlAsRatio || false
+      maxLayers: saved?.player?.maxLayers || 100,
+      exportXmlAsRatio: false,
+      importXmlDurationOffsetEnabled: true,
+      exportXmlDurationOffsetEnabled: true
     }
   },
 
@@ -239,8 +268,8 @@ export const useEditorStore = defineStore('editor', {
       if (project.player?.screenHeight) {
         this.screenHeight = project.player.screenHeight
       }
-      if (typeof project.player?.exportXmlAsRatio === 'boolean') {
-        this.exportXmlAsRatio = project.player.exportXmlAsRatio
+      if (typeof project.player?.maxLayers === 'number') {
+        this.setMaxLayers(project.player.maxLayers)
       }
 
       console.log('加载完成')
@@ -268,7 +297,8 @@ export const useEditorStore = defineStore('editor', {
       const xml = toXML(this.danmakus, {
         useRatioPosition: this.exportXmlAsRatio,
         screenWidth: this.screenWidth,
-        screenHeight: this.screenHeight
+        screenHeight: this.screenHeight,
+        durationOffsetMs: this.exportXmlDurationOffsetEnabled ? 50 : 0
       })
       const blob = new Blob([xml], { type: 'application/xml;charset=utf-8' })
       const url = URL.createObjectURL(blob)
@@ -304,8 +334,8 @@ export const useEditorStore = defineStore('editor', {
           if (project.player?.screenHeight) {
             this.screenHeight = project.player.screenHeight
           }
-          if (typeof project.player?.exportXmlAsRatio === 'boolean') {
-            this.exportXmlAsRatio = project.player.exportXmlAsRatio
+          if (typeof project.player?.maxLayers === 'number') {
+            this.setMaxLayers(project.player.maxLayers)
           }
 
           console.log('文件加载成功')
@@ -325,7 +355,9 @@ export const useEditorStore = defineStore('editor', {
           const xml = String(reader.result ?? '')
           const { danmakus, errors } = parseXML(xml, {
             screenWidth: this.screenWidth,
-            screenHeight: this.screenHeight
+            screenHeight: this.screenHeight,
+            durationOffsetMs: this.importXmlDurationOffsetEnabled ? -50 : 0,
+            maxLayers: this.maxLayers
           })
 
           this.danmakus = danmakus
@@ -334,6 +366,7 @@ export const useEditorStore = defineStore('editor', {
 
           historyManager.clear()
           historyManager.recordSnapshot(this.danmakus, `导入XML(${danmakus.length}条弹幕)`)
+          clearPendingChangeTracking()
 
           errors.forEach((error) => {
             console.warn('[XML 导入] 已跳过异常弹幕:', error.message, error.metadata)
@@ -459,23 +492,12 @@ export const useEditorStore = defineStore('editor', {
      * 检查是否需要记录快照（当没有弹幕被选中时）
     */ 
     _checkAndRecordSnapshot(): void {
-      const store = useEditorStore()
-      // 延迟执行，等待状态稳定
-      setTimeout(() => {
-        watch(
-          () => store.selectedIds.length,
-          (newLen, oldLen) => {
-            // 从有选中 → 无选中
-            if (oldLen > 0 && newLen === 0) {
-              console.log('记录快照（selection 结束）')
-              historyManager.recordSnapshot(store.danmakus, '数据修改')
-              if (hasPendingChange) {
-                hasPendingChange = false
-              }
-            }
-          }
-        )
-      }, 50)
+      ensureSelectionSnapshotWatcher(this)
+      hasPendingChange = true
+    },
+
+    _clearPendingChangeTracking(): void {
+      clearPendingChangeTracking()
     },
     
     /**
@@ -601,7 +623,7 @@ export const useEditorStore = defineStore('editor', {
         player: {
           screenWidth: this.screenWidth,
           screenHeight: this.screenHeight,
-          exportXmlAsRatio: this.exportXmlAsRatio
+          maxLayers: this.maxLayers
         },
         danmakus: this.danmakus
       }
@@ -620,6 +642,24 @@ export const useEditorStore = defineStore('editor', {
      */
     setExportXmlAsRatio(enabled: boolean) {
       this.exportXmlAsRatio = enabled
+    },
+
+    setImportXmlDurationOffsetEnabled(enabled: boolean) {
+      this.importXmlDurationOffsetEnabled = enabled
+    },
+
+    setExportXmlDurationOffsetEnabled(enabled: boolean) {
+      this.exportXmlDurationOffsetEnabled = enabled
+    },
+
+    setMaxLayers(value: number) {
+      const normalized = Math.max(1, Math.round(value))
+      const maxUsedLayer = this.danmakus.reduce((max, danmaku) => {
+        return Math.max(max, danmaku.layer)
+      }, -1)
+      const minimumAllowed = Math.max(1, maxUsedLayer + 1)
+
+      this.maxLayers = Math.max(normalized, minimumAllowed)
     },
 
     /**
@@ -655,7 +695,7 @@ export const useEditorStore = defineStore('editor', {
     assignLayersForDanmakus(danmakusToAdd: DanmakuItem[]): void {
       danmakusToAdd.forEach((newDanmaku) => {
         let layer = newDanmaku.layer
-        const maxLayers = 100
+        const maxLayers = this.maxLayers
 
         // 如果当前layer有冲突，则尝试更高的layer
         while (
@@ -740,6 +780,7 @@ export const useEditorStore = defineStore('editor', {
 
       // 记录历史
       historyManager.recordSnapshot(this.danmakus, '创建弹幕')
+      clearPendingChangeTracking()
 
       console.log('[操作] 创建单条弹幕:', newDanmaku.id)
     },
@@ -754,6 +795,7 @@ export const useEditorStore = defineStore('editor', {
 
       // 记录历史
       historyManager.recordSnapshot(this.danmakus, `删除${idsToDelete.length}条弹幕`)
+      clearPendingChangeTracking()
 
       console.log('[操作] 删除弹幕:', idsToDelete)
     },
@@ -822,6 +864,7 @@ export const useEditorStore = defineStore('editor', {
 
         // 记录历史
         historyManager.recordSnapshot(this.danmakus, `粘贴${danmakusToAdd.length}条弹幕`)
+        clearPendingChangeTracking()
 
         console.log('[操作] 粘贴弹幕:', danmakusToAdd.length, '条')
       } catch (error) {
@@ -837,12 +880,9 @@ export const useEditorStore = defineStore('editor', {
       // 按layer排序
       const sorted = [...danmakusToAdd].sort((a, b) => a.layer - b.layer)
       
-      // 用于跟踪已添加的弹幕
-      const allExistingDanmakus = [...this.danmakus, ...danmakusToAdd]
-      
       sorted.forEach((danmakuToProcess) => {
         let layer = danmakuToProcess.layer
-        const maxLayers = 100
+        const maxLayers = this.maxLayers
         
         // 对于每条弹幕，检查它与所有其他弹幕的冲突
         while (layer < maxLayers) {
@@ -894,6 +934,7 @@ export const useEditorStore = defineStore('editor', {
       if (result) {
         this.danmakus = result
         this.selectedIds = []
+        clearPendingChangeTracking()
       }
     },
 
@@ -905,6 +946,7 @@ export const useEditorStore = defineStore('editor', {
       if (result) {
         this.danmakus = result
         this.selectedIds = []
+        clearPendingChangeTracking()
       }
     },
 
@@ -914,6 +956,7 @@ export const useEditorStore = defineStore('editor', {
     initHistory(): void {
       historyManager.clear()
       historyManager.recordSnapshot(this.danmakus, '项目初始化')
+      clearPendingChangeTracking()
     },
 
     /**
@@ -935,6 +978,38 @@ export const useEditorStore = defineStore('editor', {
         // 重新加载以恢复默认状态
         window.location.reload()
       }
+    },
+
+    moveSelectedLayers(delta: number): void {
+      if (!Number.isFinite(delta) || delta === 0 || this.selectedIds.length === 0) {
+        return
+      }
+
+      const selectedDanmakus = this.danmakus.filter((d: DanmakuItem) => this.selectedIds.includes(d.id))
+      if (selectedDanmakus.length === 0) {
+        return
+      }
+
+      const minLayer = Math.min(...selectedDanmakus.map((d) => d.layer))
+      const maxLayer = Math.max(...selectedDanmakus.map((d) => d.layer))
+
+      let appliedDelta = Math.trunc(delta)
+      if (appliedDelta < 0) {
+        appliedDelta = Math.max(appliedDelta, -minLayer)
+      } else {
+        appliedDelta = Math.min(appliedDelta, (this.maxLayers - 1) - maxLayer)
+      }
+
+      if (appliedDelta === 0) {
+        return
+      }
+
+      selectedDanmakus.forEach((danmaku) => {
+        danmaku.layer += appliedDelta
+      })
+
+      historyManager.recordSnapshot(this.danmakus, `调整${selectedDanmakus.length}条弹幕层级`)
+      clearPendingChangeTracking()
     }
   }
 })

@@ -17,7 +17,8 @@ const DEFAULT_DURATION_MS = 1000
 const DEFAULT_MOVE_DURATION_MS = 500
 const DEFAULT_SCREEN_WIDTH = 800
 const DEFAULT_SCREEN_HEIGHT = 450
-const MAX_LAYERS = 100
+const DEFAULT_MAX_LAYERS = 100
+const MIN_IMPORTED_DURATION_MS = 10
 
 /**
  * XML 导出配置
@@ -26,6 +27,7 @@ export interface XmlExportOptions {
   useRatioPosition?: boolean
   screenWidth?: number
   screenHeight?: number
+  durationOffsetMs?: number
 }
 
 /**
@@ -34,6 +36,8 @@ export interface XmlExportOptions {
 export interface XmlImportOptions {
   screenWidth?: number
   screenHeight?: number
+  durationOffsetMs?: number
+  maxLayers?: number
 }
 
 /**
@@ -99,6 +103,13 @@ function normalizeScreenWidth(value: unknown): number {
  */
 function normalizeScreenHeight(value: unknown): number {
   return Math.max(1, Math.round(toSafeNumber(value, DEFAULT_SCREEN_HEIGHT)))
+}
+
+/**
+ * 规范化最大 layer 数
+ */
+function normalizeMaxLayers(value: unknown): number {
+  return Math.max(1, Math.round(toSafeNumber(value, DEFAULT_MAX_LAYERS)))
 }
 
 /**
@@ -237,7 +248,7 @@ function hasLayerConflict(
  * 3. 同一时刻内，sendTime 越大，layer 越靠上
  * 4. 同时做时间冲突避让，避免重叠弹幕挤在同一层
  */
-function assignLayersForImportedDanmakus(entries: ParsedXmlDanmaku[]): DanmakuItem[] {
+function assignLayersForImportedDanmakus(entries: ParsedXmlDanmaku[], maxLayers: number): DanmakuItem[] {
   const sortedEntries = [...entries].sort((a, b) => {
     return a.item.startTime - b.item.startTime ||
       a.sendTime - b.sendTime ||
@@ -257,7 +268,7 @@ function assignLayersForImportedDanmakus(entries: ParsedXmlDanmaku[]): DanmakuIt
       let targetLayer = minimumLayerForCurrentStartTime
 
       while (
-        targetLayer < MAX_LAYERS &&
+        targetLayer < maxLayers &&
         hasLayerConflict(
           assignedDanmakus,
           currentEntry.item.startTime,
@@ -268,7 +279,7 @@ function assignLayersForImportedDanmakus(entries: ParsedXmlDanmaku[]): DanmakuIt
         targetLayer++
       }
 
-      currentEntry.item.layer = Math.min(targetLayer, MAX_LAYERS - 1)
+      currentEntry.item.layer = Math.min(targetLayer, maxLayers - 1)
       currentEntry.item.id = String(nextId)
       nextId++
 
@@ -332,9 +343,16 @@ function createDanmakuFromXmlNode(
   const opacity = parseOpacity(body[2])
   const screenWidth = normalizeScreenWidth(options.screenWidth)
   const screenHeight = normalizeScreenHeight(options.screenHeight)
+  const durationOffsetMs = Math.round(toSafeNumber(options.durationOffsetMs, 0))
 
   const startX = convertCoordinateFromXml(body[0], screenWidth)
   const startY = convertCoordinateFromXml(body[1], screenHeight)
+  const importedDurationMs = Math.max(
+    1,
+    Math.round(toSafeNumber(body[3], DEFAULT_DURATION_MS / 1000) * 1000)
+  )
+  const adjustedDurationMs = importedDurationMs + durationOffsetMs
+  const finalDurationMs = adjustedDurationMs <= 0 ? MIN_IMPORTED_DURATION_MS : adjustedDurationMs
 
   const item: DanmakuItem = {
     id: String(index + 1),
@@ -358,7 +376,7 @@ function createDanmakuFromXmlNode(
     },
     opacity,
     animation: {
-      duration: Math.max(1, Math.round(toSafeNumber(body[3], DEFAULT_DURATION_MS / 1000) * 1000)),
+      duration: finalDurationMs,
       moveDuration: Math.max(0, Math.round(toSafeNumber(body[9], DEFAULT_MOVE_DURATION_MS))),
       delay: Math.max(0, Math.round(toSafeNumber(body[10], 0))),
       easing: toSafeNumber(body[13], 1) === 1 ? 'speedup' : 'speeddown'
@@ -380,6 +398,10 @@ function buildXmlDanmakuTag(
   sendTime: number,
   options: Required<XmlExportOptions>
 ): string {
+  const durationMs = Math.max(
+    1,
+    Math.round(toSafeNumber(danmaku.animation.duration, DEFAULT_DURATION_MS) + options.durationOffsetMs)
+  )
   const p = [
     (danmaku.startTime / 1000).toFixed(5),
     7,
@@ -396,7 +418,7 @@ function buildXmlDanmakuTag(
     convertCoordinateToXml(danmaku.transform.start.x, options.screenWidth, options.useRatioPosition),
     convertCoordinateToXml(danmaku.transform.start.y, options.screenHeight, options.useRatioPosition),
     `${clampOpacity(danmaku.opacity.from)}-${clampOpacity(danmaku.opacity.to)}`,
-    Number((Math.max(1, toSafeNumber(danmaku.animation.duration, DEFAULT_DURATION_MS)) / 1000).toFixed(3)),
+    Number((durationMs / 1000).toFixed(3)),
     danmaku.content.text,
     toSafeNumber(danmaku.transform.zRotate, 0),
     toSafeNumber(danmaku.transform.yRotate, 0),
@@ -425,7 +447,8 @@ export function toXML(list: DanmakuItem[], options: XmlExportOptions = {}): stri
   const normalizedOptions: Required<XmlExportOptions> = {
     useRatioPosition: options.useRatioPosition ?? false,
     screenWidth: normalizeScreenWidth(options.screenWidth),
-    screenHeight: normalizeScreenHeight(options.screenHeight)
+    screenHeight: normalizeScreenHeight(options.screenHeight),
+    durationOffsetMs: Math.round(toSafeNumber(options.durationOffsetMs, 0))
   }
 
   const sortedDanmakus = [...list].sort((a, b) => {
@@ -481,6 +504,7 @@ export function parseXML(xml: string, options: XmlImportOptions = {}): XmlParseR
   const parsedDanmakus: ParsedXmlDanmaku[] = []
   const errors: XmlDanmakuParseError[] = []
 
+  const maxLayers = normalizeMaxLayers(options.maxLayers)
   nodes.forEach((node, index) => {
     try {
       parsedDanmakus.push(createDanmakuFromXmlNode(node, index, options))
@@ -501,7 +525,7 @@ export function parseXML(xml: string, options: XmlImportOptions = {}): XmlParseR
   })
 
   return {
-    danmakus: assignLayersForImportedDanmakus(parsedDanmakus),
+    danmakus: assignLayersForImportedDanmakus(parsedDanmakus, maxLayers),
     errors
   }
 }

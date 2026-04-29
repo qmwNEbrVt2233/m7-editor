@@ -1,6 +1,7 @@
 <template>
   <div
     class="timeline"
+    ref="timelineRef"
     @mousedown="onMouseDown"
     @mousemove="onMouseMove"
     @mouseup="onMouseUp"
@@ -27,9 +28,9 @@
     ></div>
 
     <!-- 弹幕块 -->
-    <div class="tracks">
+    <div class="tracks" ref="tracksRef">
       <div
-        v-for="layer in 100"
+        v-for="layer in store.maxLayers"
         :key="layer"
         class="track-row"
         :style="{ top: (layer - 1) * rowHeight + 'px' }"
@@ -51,7 +52,7 @@
       </div>
 
       <!-- 用于显示滚动条的占位符 -->
-      <div class="scrollbar-spacer"></div>
+      <div class="scrollbar-spacer" :style="{ height: scrollbarSpacerHeight + 'px' }"></div>
       
       <!-- 框选矩形 -->
       <div
@@ -71,8 +72,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useEditorStore } from '../../store/editor'
+import { historyManager } from '../../core/history'
 
 const store = useEditorStore()
+const timelineRef = ref<HTMLElement | null>(null)
+const tracksRef = ref<HTMLElement | null>(null)
 
 // ⭐ 时间轴核心参数
 const scale = ref(0.1) // 1ms = 0.1px
@@ -88,7 +92,7 @@ const rowHeight = 30
 
 // 初始化容器宽度
 function initContainerWidth() {
-  const timelineEl = document.querySelector('.timeline')
+  const timelineEl = timelineRef.value
   if (timelineEl) {
     containerWidth.value = timelineEl.clientWidth
   }
@@ -243,6 +247,14 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
     return
   }
+
+  if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !isCtrl && !isAlt && !isShift) {
+    if (store.selectedIds.length > 0) {
+      e.preventDefault()
+      store.moveSelectedLayers(e.key === 'ArrowUp' ? -1 : 1)
+    }
+    return
+  }
   
   // ====== 需求#1：弹幕创建/删除/复制/粘贴 ======
   
@@ -374,6 +386,9 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyboardShortcuts)
   window.removeEventListener('resize', initContainerWidth)
+  if (offsetAnimationFrame !== null) {
+    cancelAnimationFrame(offsetAnimationFrame)
+  }
 })
 
 watch(
@@ -429,6 +444,10 @@ const playheadX = computed(() => {
   return (store.currentTime - offset.value) * scale.value
 })
 
+const scrollbarSpacerHeight = computed(() => {
+  return Math.max(store.maxLayers * rowHeight, rowHeight)
+})
+
 // ===== 弹幕块 =====
 function getBlockStyle(d: any) {
   return {
@@ -457,7 +476,8 @@ function onMouseDown(e: MouseEvent) {
     // 进入框选模式
     isBoxSelectingMode.value = true
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    const tracksElement = document.querySelector('.tracks') as HTMLElement
+    const tracksElement = tracksRef.value
+    if (!tracksElement) return
     const scrollTop = tracksElement.scrollTop
     
     selectionBox.value = {
@@ -487,6 +507,7 @@ function updateTime(e: MouseEvent) {
 const draggingBlock = ref<null | any>(null)
 const dragOffsetX = ref(0)
 const dragOffsetY = ref(0)
+const dragInteractionChanged = ref(false)
 
 // 记录拖动时所有选中弹幕的初始状态
 interface DragState {
@@ -509,6 +530,94 @@ function getLayerDanmakus(layer: number) {
 }
 
 let hasRecordedSnapshotDuringDrag = false
+let hasRecordedSnapshotDuringResize = false
+let lastAutoScrollAt = 0
+let offsetAnimationFrame: number | null = null
+
+const AUTO_SCROLL_X_TRIGGER_PX = 50
+const AUTO_SCROLL_Y_TRIGGER_PX = 20
+const AUTO_SCROLL_X_STEP_PX = 130
+const AUTO_SCROLL_Y_STEP_PX = 30
+const AUTO_SCROLL_INTERVAL_MS = 100
+const DRAG_THRESHOLD_PX = 3
+
+function animateOffsetTo(targetOffset: number) {
+  const clampedTarget = Math.max(0, targetOffset)
+  if (!Number.isFinite(clampedTarget)) {
+    return
+  }
+
+  if (offsetAnimationFrame !== null) {
+    cancelAnimationFrame(offsetAnimationFrame)
+  }
+
+  const startOffset = offset.value
+  const delta = clampedTarget - startOffset
+  if (Math.abs(delta) < 0.001) {
+    offset.value = clampedTarget
+    return
+  }
+
+  const startTime = performance.now()
+  const duration = 120
+
+  const step = (now: number) => {
+    const progress = Math.min(1, (now - startTime) / duration)
+    const eased = 1 - Math.pow(1 - progress, 3)
+    offset.value = startOffset + delta * eased
+
+    if (progress < 1) {
+      offsetAnimationFrame = requestAnimationFrame(step)
+    } else {
+      offset.value = clampedTarget
+      offsetAnimationFrame = null
+    }
+  }
+
+  offsetAnimationFrame = requestAnimationFrame(step)
+}
+
+function maybeAutoScrollDuringDrag(e: MouseEvent) {
+  if (!dragMode.value || !timelineRef.value || !tracksRef.value) {
+    return
+  }
+
+  const now = performance.now()
+  if (now - lastAutoScrollAt < AUTO_SCROLL_INTERVAL_MS) {
+    return
+  }
+
+  const timelineRect = timelineRef.value.getBoundingClientRect()
+  const tracksRect = tracksRef.value.getBoundingClientRect()
+  let didScroll = false
+
+  if (e.clientX <= timelineRect.left + AUTO_SCROLL_X_TRIGGER_PX) {
+    animateOffsetTo(offset.value - AUTO_SCROLL_X_STEP_PX / scale.value)
+    didScroll = true
+  } else if (e.clientX >= timelineRect.right - AUTO_SCROLL_X_TRIGGER_PX) {
+    animateOffsetTo(offset.value + AUTO_SCROLL_X_STEP_PX / scale.value)
+    didScroll = true
+  }
+
+  if (e.clientY <= tracksRect.top + AUTO_SCROLL_Y_TRIGGER_PX) {
+    const nextTop = Math.max(0, tracksRef.value.scrollTop - AUTO_SCROLL_Y_STEP_PX)
+    if (nextTop !== tracksRef.value.scrollTop) {
+      tracksRef.value.scrollTo({ top: nextTop, behavior: 'smooth' })
+      didScroll = true
+    }
+  } else if (e.clientY >= tracksRect.bottom - AUTO_SCROLL_Y_TRIGGER_PX) {
+    const maxScrollTop = Math.max(0, tracksRef.value.scrollHeight - tracksRef.value.clientHeight)
+    const nextTop = Math.min(maxScrollTop, tracksRef.value.scrollTop + AUTO_SCROLL_Y_STEP_PX)
+    if (nextTop !== tracksRef.value.scrollTop) {
+      tracksRef.value.scrollTo({ top: nextTop, behavior: 'smooth' })
+      didScroll = true
+    }
+  }
+
+  if (didScroll) {
+    lastAutoScrollAt = now
+  }
+}
 
 function onBlockMouseDown(e: MouseEvent, d: any) {
   const isCtrlPressed = e.ctrlKey || e.metaKey
@@ -520,6 +629,8 @@ function onBlockMouseDown(e: MouseEvent, d: any) {
   draggingBlock.value = d
   dragMode.value = 'move'
   hasRecordedSnapshotDuringDrag = false
+  dragInteractionChanged.value = false
+  lastAutoScrollAt = 0
 
   if (!store.selectedIds.includes(d.id)) {
     store.selectDanmaku(d.id)
@@ -536,8 +647,9 @@ function onBlockMouseDown(e: MouseEvent, d: any) {
   if (activeDanmaku) {
     const activeStartTimeX = (activeDanmaku.startTime - offset.value) * scale.value
     
-    const timelineRect = (document.querySelector('.timeline') as HTMLElement).getBoundingClientRect()
-    const tracksElement = document.querySelector('.tracks') as HTMLElement
+    const timelineRect = timelineRef.value?.getBoundingClientRect()
+    const tracksElement = tracksRef.value
+    if (!timelineRect || !tracksElement) return
     const scrollTop = tracksElement.scrollTop
     
     dragOffsetX.value = e.clientX - timelineRect.left - activeStartTimeX
@@ -556,29 +668,49 @@ function onBlockMouseDown(e: MouseEvent, d: any) {
 }
 
 function onGlobalMouseMove(e: MouseEvent) {
-  if (dragMode.value !== 'move') return
+  if (!dragMode.value) return
 
   // 计算位移距离，防止极其微小的抖动误触发
   const dx = Math.abs(e.pageX - dragStartPageX.value)
   const dy = Math.abs(e.pageY - dragStartPageY.value)
 
-  // 只有当鼠标移动超过 3px 时，才认为是真的“拖拽”
-  if ((dx > 3 || dy > 3) && !hasRecordedSnapshotDuringDrag) {
-    console.log('检测到真实拖拽，记录快照')
-    store._checkAndRecordSnapshot() // 此时记录的是移动前的初始选中状态 
+  if (dragMode.value === 'move' && (dx > DRAG_THRESHOLD_PX || dy > DRAG_THRESHOLD_PX) && !hasRecordedSnapshotDuringDrag) {
     hasRecordedSnapshotDuringDrag = true
+    dragInteractionChanged.value = true
   }
 
-  // 执行具体的拖拽位移逻辑...
+  if ((dragMode.value === 'resize-left' || dragMode.value === 'resize-right') && dx > DRAG_THRESHOLD_PX && !hasRecordedSnapshotDuringResize) {
+    hasRecordedSnapshotDuringResize = true
+    dragInteractionChanged.value = true
+  }
+
   onMouseMove(e) 
 }
 
 function onGlobalMouseUp() {
-  // 销毁监听，重置状态
   window.removeEventListener('mousemove', onGlobalMouseMove)
   window.removeEventListener('mouseup', onGlobalMouseUp)
+  finishBlockInteraction()
+}
+
+function finishBlockInteraction() {
+  const completedMode = dragMode.value
+
+  if (dragInteractionChanged.value && completedMode) {
+    historyManager.recordSnapshot(
+      store.danmakus,
+      completedMode === 'move' ? '拖动弹幕' : '调整弹幕时长'
+    )
+    store._clearPendingChangeTracking()
+  }
+
   dragMode.value = null
+  draggingBlock.value = null
+  activeBlockId.value = null
+  draggingIds.value = []
+  dragInteractionChanged.value = false
   hasRecordedSnapshotDuringDrag = false
+  hasRecordedSnapshotDuringResize = false
 }
 
 const dragMode = ref<'move' | 'resize-left' | 'resize-right' | null>(null)
@@ -626,9 +758,10 @@ function onSelect(e: MouseEvent, d: any) {
 }
 
 function onResizeStart(e: MouseEvent, d: any, side: 'left' | 'right') {
-  console.log('拉伸事件')
-  store._checkAndRecordSnapshot()
   dragMode.value = side === 'left' ? 'resize-left' : 'resize-right'
+  dragInteractionChanged.value = false
+  hasRecordedSnapshotDuringResize = false
+  lastAutoScrollAt = 0
 
   if (!store.selectedIds.includes(d.id)) {
     store.selectDanmaku(d.id)
@@ -644,12 +777,17 @@ function onResizeStart(e: MouseEvent, d: any, side: 'left' | 'right') {
   const activeDanmaku = store.danmakus.find((d: any) => d.id === activeBlockId.value)
   if (activeDanmaku) {
     const activeStartTimeX = (activeDanmaku.startTime - offset.value) * scale.value
-    const timelineRect = (document.querySelector('.timeline') as HTMLElement).getBoundingClientRect()
+    const timelineRect = timelineRef.value?.getBoundingClientRect()
+    if (!timelineRect) return
     dragOffsetX.value = e.clientX - timelineRect.left - activeStartTimeX
   }
   
   // 记录鼠标位置（用于计算resize的delta）
   dragStartPageX.value = e.pageX
+  dragStartPageY.value = e.pageY
+
+  window.addEventListener('mousemove', onGlobalMouseMove)
+  window.addEventListener('mouseup', onGlobalMouseUp)
 }
 
 // 时间舍入函数，确保精度
@@ -658,7 +796,7 @@ function roundTime(time: number) {
 }
 
 const SNAP_DISTANCE_PX = 5
-const MIN_BLOCK_DURATION = 50
+const MIN_BLOCK_DURATION = 10
 
 function getSnapThresholdMs() {
   return SNAP_DISTANCE_PX / scale.value
@@ -732,8 +870,9 @@ function snapMoveStartTime(startTime: number, duration: number) {
 function onMouseMove(e: MouseEvent) {
   // 框选模式
   if (isBoxSelectingMode.value) {
-    const rect = document.querySelector('.timeline')!.getBoundingClientRect()
-    const tracksElement = document.querySelector('.tracks') as HTMLElement
+    const rect = timelineRef.value?.getBoundingClientRect()
+    const tracksElement = tracksRef.value
+    if (!rect || !tracksElement) return
     const scrollTop = tracksElement.scrollTop
     
     selectionBox.value.endX = e.clientX - rect.left
@@ -751,15 +890,17 @@ function onMouseMove(e: MouseEvent) {
   if (!dragMode.value) return
 
   // 问题3修复：从.tracks获取scrollTop，而不是e.currentTarget（timeline）
-  const tracksElement = document.querySelector('.tracks') as HTMLElement
+  const tracksElement = tracksRef.value
+  const currentTimeline = timelineRef.value
+  if (!tracksElement || !currentTimeline) return
   const scrollTop = tracksElement.scrollTop
-  const timelineRect = document.querySelector('.timeline')!.getBoundingClientRect()
+  const timelineRect = currentTimeline.getBoundingClientRect()
   
   const x = e.clientX - timelineRect.left
   const y = e.clientY - timelineRect.top - 20 + scrollTop // -20是ruler的高度
 
   const rawTime = x / scale.value + offset.value
-  const layer = Math.floor(y / rowHeight)
+  const layer = Math.max(0, Math.min(store.maxLayers - 1, Math.floor(y / rowHeight)))
 
   if (dragMode.value === 'move') {
     // 批量拖动：基于activeBlockId计算delta，然后应用到所有选中弹幕
@@ -772,7 +913,16 @@ function onMouseMove(e: MouseEvent) {
       const deltaTime = snappedStartTime - activeInitial.startTime
       
       // 使用dragStartLayer计算deltaLayer
-      const deltaLayer = layer - dragStartLayer.value
+      const initialLayers = draggingIds.value
+        .map((id) => dragInitialStates.value.get(id)?.layer)
+        .filter((value): value is number => value !== undefined)
+      const minInitialLayer = initialLayers.length > 0 ? Math.min(...initialLayers) : 0
+      const maxInitialLayer = initialLayers.length > 0 ? Math.max(...initialLayers) : 0
+      const proposedDeltaLayer = layer - dragStartLayer.value
+      const deltaLayer = Math.min(
+        (store.maxLayers - 1) - maxInitialLayer,
+        Math.max(-minInitialLayer, proposedDeltaLayer)
+      )
       
       // 应用delta给所有选中弹幕
       draggingIds.value.forEach(id => {
@@ -781,7 +931,7 @@ function onMouseMove(e: MouseEvent) {
         if (!d || !initial) return
         
         d.startTime = Math.max(0, initial.startTime + deltaTime)
-        d.layer = Math.max(0, initial.layer + deltaLayer)
+        d.layer = Math.max(0, Math.min(store.maxLayers - 1, initial.layer + deltaLayer))
       })
     }
   }
@@ -834,6 +984,8 @@ function onMouseMove(e: MouseEvent) {
       })
     }
   }
+
+  maybeAutoScrollDuringDrag(e)
 }
 
 function onMouseUp() {
@@ -871,11 +1023,9 @@ function onMouseUp() {
   }
   
   dragging.value = false
-  dragMode.value = null
-  activeBlockId.value = null // 清除当前操作的弹幕块ID
-  
-  // 不清空dragInitialStates，在下一次拖动开始时通过recordDragInitialStates()更新
-  draggingIds.value = []
+  if (dragMode.value) {
+    finishBlockInteraction()
+  }
 }
 </script>
 
@@ -946,6 +1096,7 @@ function onMouseUp() {
   overflow-y: scroll;
   overflow-x: hidden;
   scrollbar-gutter: stable;
+  scroll-behavior: smooth;
 }
 
 .tracks::-webkit-scrollbar {
@@ -1017,7 +1168,6 @@ function onMouseUp() {
 
 .scrollbar-spacer {
   position: relative;
-  height: 3000px;
   pointer-events: none;
 }
 

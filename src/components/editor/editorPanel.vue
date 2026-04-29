@@ -47,7 +47,8 @@
             <label>文本内容 (0-255个字符，换行占2个)</label>
             <textarea
               v-model="text"
-              @change="updateField('content.text', text)"
+              @change="onTextChange"
+              @keydown="onTextInputKeydown"
               placeholder="输入弹幕文本内容"
               class="text-input"
             ></textarea>
@@ -197,7 +198,7 @@
               <input
                 type="number"
                 v-model.lazy="opacityFrom"
-                @change="updateField('opacity.from', opacityFrom)"
+                @change="onOpacityFieldChange('opacity.from', opacityFrom)"
                 min="0"
                 max="1"
                 step="0.1"
@@ -205,7 +206,7 @@
               <input
                 type="range"
                 v-model="opacityFrom"
-                @change="updateField('opacity.from', opacityFrom)"
+                @input="onOpacityFieldChange('opacity.from', opacityFrom)"
                 min="0"
                 max="1"
                 step="0.01"
@@ -217,7 +218,7 @@
               <input
                 type="number"
                 v-model.lazy="opacityTo"
-                @change="updateField('opacity.to', opacityTo)"
+                @change="onOpacityFieldChange('opacity.to', opacityTo)"
                 min="0"
                 max="1"
                 step="0.1"
@@ -225,7 +226,7 @@
               <input
                 type="range"
                 v-model="opacityTo"
-                @change="updateField('opacity.to', opacityTo)"
+                @input="onOpacityFieldChange('opacity.to', opacityTo)"
                 min="0"
                 max="1"
                 step="0.01"
@@ -510,6 +511,128 @@ const easing = computed<string>({
   }
 })
 
+let skipNextTextChange = false
+
+function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
+  // 优先处理颜色字段（拦截常规输入和 Alpha 混合）
+  if (path === 'content.color') {
+    const inputStr = String(inputValue)
+    
+    // 检查是否是 Alpha 混合格式 (e.g., "FFFFFF@0.5")
+    const alphaResult = parseColorWithAlpha(inputStr)
+    
+    if (alphaResult) {
+      // 对所有选中的弹幕应用 Alpha 混合
+      selectedDanmakus.value.forEach((d) => {
+        const currentColor = d.content.color || '#ffffff'
+        const blendedColor = blendColor(currentColor, alphaResult.color, alphaResult.alpha)
+        store.updateDanmaku(d.id, { 'content.color': blendedColor })
+      })
+      delete editCache.value[path]
+      return
+    }
+    
+    // 否则按普通颜色处理并规范化（补全 # 号等）
+    const normalized = normalizeColor(inputStr)
+    if (!normalized) {
+      console.warn('颜色格式无效（支持 #RRGGBB 或 RRGGBB@Alpha 格式）')
+      return
+    }
+    
+    store.updateSelectedDanmakus({ 'content.color': normalized })
+    delete editCache.value[path]
+    return
+  }
+
+  const bypassValidationFields = [
+    'content.text',
+    'content.font',
+    'animation.easing',
+    'opacity.from',
+    'opacity.to',
+    'content.stroke'
+  ]
+  const shouldBypass = bypassValidationFields.includes(path)
+
+  if (shouldBypass) {
+    if (path === 'content.text') {
+      const textValue = String(inputValue)
+      if (!isTextLengthValid(textValue)) {
+        console.warn('文本超出字符限制（最多255个字符，换行符占用2个）')
+        return
+      }
+    }
+    
+    const updates: Record<string, any> = {}
+    updates[path] = inputValue
+    store.updateSelectedDanmakus(updates)
+    delete editCache.value[path]
+    return
+  }
+
+  const parseResult = parseInput(String(inputValue), false) 
+
+  if (parseResult.error) {
+    console.warn(`字段 ${path} 验证失败: ${parseResult.error}`)
+    return
+  }
+
+  const updates: Record<string, any> = {}
+
+  if (typeof inputValue === 'boolean') {
+    updates[path] = inputValue
+    store.updateSelectedDanmakus(updates)
+    delete editCache.value[path]
+    return
+  }
+
+  if (parseResult.mode === 'set' && typeof inputValue === 'string' && (path === 'content.font' || path === 'animation.easing')) {
+    updates[path] = inputValue
+    store.updateSelectedDanmakus(updates)
+    delete editCache.value[path]
+    return
+  }
+
+  if (parseResult.mode === 'multiple') {
+    return
+  }
+
+  const fieldValues = getNumericFieldValues(path)
+  if (fieldValues.length === 0) return
+
+  let newValue: number
+  if (parseResult.mode === 'set') {
+    newValue = parseResult.value!
+  } else {
+    newValue = applyOperation(fieldValues[0], parseResult)
+  }
+
+  const validation = validateField(path.split('.').pop() || '', newValue)
+  if (!validation.valid) {
+    console.warn(validation.message)
+    const rule = M7_RULES[path.split('.').pop() as keyof typeof M7_RULES]
+    if (rule) {
+      newValue = validateRange(newValue, rule.min, rule.max)
+    }
+  }
+
+  if (parseResult.mode !== 'set' && selectedDanmakus.value.length > 1) {
+    selectedDanmakus.value.forEach((d, idx) => {
+      const originalValue = fieldValues[idx]
+      if (typeof originalValue !== 'number') return
+      const updatedValue = applyOperation(originalValue, parseResult)
+      const rule = M7_RULES[path.split('.').pop() as keyof typeof M7_RULES]
+      const validated = validateRange(updatedValue, rule?.min || 0, rule?.max || Infinity)
+      store.updateDanmaku(d.id, { [path]: validated })
+    })
+  } else {
+    updates[path] = newValue
+    store.updateSelectedDanmakus(updates)
+  }
+
+  delete editCache.value[path]
+}
+
 // 核心更新逻辑
 function updateField(path: string, inputValue: string | number | boolean) {
   if (updateDebounceTimer.value) {
@@ -517,165 +640,43 @@ function updateField(path: string, inputValue: string | number | boolean) {
   }
 
   updateDebounceTimer.value = setTimeout(() => {
-    // 优先处理颜色字段（拦截常规输入和 Alpha 混合）
-    if (path === 'content.color') {
-      const inputStr = String(inputValue)
-      
-      // 检查是否是 Alpha 混合格式 (e.g., "FFFFFF@0.5")
-      const alphaResult = parseColorWithAlpha(inputStr)
-      
-      if (alphaResult) {
-        // 对所有选中的弹幕应用 Alpha 混合
-        selectedDanmakus.value.forEach((d) => {
-          const currentColor = d.content.color || '#ffffff'
-          const blendedColor = blendColor(currentColor, alphaResult.color, alphaResult.alpha)
-          store.updateDanmaku(d.id, { 'content.color': blendedColor })
-        })
-        delete editCache.value[path]
-        return // 处理完毕，提前退出
-      }
-      
-      // 否则按普通颜色处理并规范化（补全 # 号等）
-      const normalized = normalizeColor(inputStr)
-      if (!normalized) {
-        console.warn('颜色格式无效（支持 #RRGGBB 或 RRGGBB@Alpha 格式）')
-        return
-      }
-      
-      store.updateSelectedDanmakus({ 'content.color': normalized })
-      delete editCache.value[path]
-      return
-    }
+    applyFieldUpdate(path, inputValue)
+  }, 100)
+}
 
-    // 定义不需要进行四则运算解析的字段列表
-    const bypassValidationFields = [
-      'content.text',
-      'content.font',
-      'animation.easing',
-      'opacity.from',
-      'opacity.to',
-      'content.stroke'
-    ]
-    const shouldBypass = bypassValidationFields.includes(path)
+function onTextChange() {
+  if (skipNextTextChange) {
+    skipNextTextChange = false
+    return
+  }
 
-    // 处理这些直值更新的字段
-    if (shouldBypass) {
-      if (path === 'content.text') {
-        const textValue = String(inputValue)
-        if (!isTextLengthValid(textValue)) {
-          console.warn('文本超出字符限制（最多255个字符，换行符占用2个）')
-          return
-        }
-      }
-      
-      const updates: Record<string, any> = {}
-      updates[path] = inputValue
-      store.updateSelectedDanmakus(updates)
-      delete editCache.value[path]
-      return
-      }
+  updateField('content.text', text.value)
+}
 
-    const parseResult = parseInput(String(inputValue), false) 
+function onTextInputKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Enter' || e.shiftKey) {
+    return
+  }
 
-    if (parseResult.error) {
-      console.warn(`字段 ${path} 验证失败: ${parseResult.error}`)
-      return
-    }
+  e.preventDefault()
+  skipNextTextChange = true
 
-    // 构建Pinia更新payload
-    const updates: Record<string, any> = {}
+  if (updateDebounceTimer.value) {
+    clearTimeout(updateDebounceTimer.value)
+  }
 
-    // 处理boolean字段（如stroke等）
-    if (typeof inputValue === 'boolean') {
-      updates[path] = inputValue
-      store.updateSelectedDanmakus(updates)
-      delete editCache.value[path]
-      return
-    }
+  applyFieldUpdate('content.text', text.value)
+  ;(e.target as HTMLTextAreaElement).blur()
+}
 
-    // 处理文本字段（如font、easing等）
-    if (parseResult.mode === 'set' && typeof inputValue === 'string' && (path === 'content.font' || path === 'animation.easing')) {
-      updates[path] = inputValue
-      store.updateSelectedDanmakus(updates)
-      delete editCache.value[path]
-      return
-    }
+function onOpacityFieldChange(path: 'opacity.from' | 'opacity.to', value: string | number) {
+  const numericValue = Number(value)
+  if (!Number.isFinite(numericValue)) {
+    return
+  }
 
-    // 处理颜色字段
-    if (path === 'content.color') {
-      // 首先检查是否是Alpha混合格式 (e.g., "FFFFFF@0.5" 或 "#FFFFFF@0.5")
-      const alphaResult = parseColorWithAlpha(String(inputValue))
-      
-      if (alphaResult) {
-        // 对所有选中的弹幕应用Alpha混合
-        selectedDanmakus.value.forEach((d) => {
-          const currentColor = d.content.color || '#ffffff'
-          const blendedColor = blendColor(currentColor, alphaResult.color, alphaResult.alpha)
-          store.updateDanmaku(d.id, { 'content.color': blendedColor })
-        })
-        delete editCache.value[path]
-        return
-      }
-      
-      // 否则按普通颜色处理
-      const normalized = normalizeColor(String(inputValue))
-      if (!normalized) {
-        console.warn('颜色格式无效（支持 #RRGGBB 或 RRGGBB@Alpha 格式）')
-        return
-      }
-      updates[path] = normalized
-      store.updateSelectedDanmakus(updates)
-      delete editCache.value[path]
-      return
-    }
-
-    // 处理数值字段
-    if (parseResult.mode === 'multiple') {
-      // 多个不同值的情况，不做任何更新
-      return
-    }
-
-    const fieldValues = getNumericFieldValues(path)
-    if (fieldValues.length === 0) return
-
-    let newValue: number
-    if (parseResult.mode === 'set') {
-      newValue = parseResult.value!
-    } else {
-      // 对所有值应用相同的操作
-      newValue = applyOperation(fieldValues[0], parseResult)
-    }
-
-    // 根据字段类型进行范围验证
-    const validation = validateField(path.split('.').pop() || '', newValue)
-    if (!validation.valid) {
-      console.warn(validation.message)
-      // 进行范围修正
-      const rule = M7_RULES[path.split('.').pop() as keyof typeof M7_RULES]
-      if (rule) {
-        newValue = validateRange(newValue, rule.min, rule.max)
-      }
-    }
-
-    // 对多选情况应用不同的操作
-    if (parseResult.mode !== 'set' && selectedDanmakus.value.length > 1) {
-      // 批量应用操作，每个弹幕单独计算
-      selectedDanmakus.value.forEach((d, idx) => {
-        const originalValue = fieldValues[idx]
-        if (typeof originalValue !== 'number') return
-        const updatedValue = applyOperation(originalValue, parseResult)
-        const rule = M7_RULES[path.split('.').pop() as keyof typeof M7_RULES]
-        const validated = validateRange(updatedValue, rule?.min || 0, rule?.max || Infinity)
-        store.updateDanmaku(d.id, { [path]: validated })
-      })
-    } else {
-      // 单选或直接赋值：统一设置为相同值
-      updates[path] = newValue
-      store.updateSelectedDanmakus(updates)
-    }
-
-    delete editCache.value[path]
-  }, 100) // 100ms防抖
+  const normalizedValue = validateRange(numericValue, 0, 1)
+  updateField(path, normalizedValue)
 }
 
 // 解析时间值（支持±*/ 操作）
