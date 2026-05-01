@@ -31,6 +31,12 @@ const timelineHeight = ref(window.innerHeight - 530)
 
 // 全局快捷键
 function handleKeyDown(e: KeyboardEvent) {
+  
+  // 避免在输入框中触发快捷键
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+    return
+  }
+  
   // 空格播放/暂停
   if (e.code === 'Space') {
     e.preventDefault()

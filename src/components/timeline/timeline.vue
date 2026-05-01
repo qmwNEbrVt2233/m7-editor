@@ -85,9 +85,6 @@ const offset = ref(0)
 // 可视宽度（从容器动态获取）
 const containerWidth = ref(800)
 
-// 刻度间隔（1秒）
-const step = 1000
-
 const rowHeight = 30
 
 // 初始化容器宽度
@@ -156,6 +153,11 @@ function handleZoom(e: KeyboardEvent) {
 function handlePan(e: KeyboardEvent) {
   const isCtrl = e.ctrlKey || e.metaKey
   const isAlt = e.altKey
+  
+  // 避免在输入框中触发快捷键
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+    return
+  }
   
   // 计算移动的距离
   let panDistance = 0 // 0表示不移动

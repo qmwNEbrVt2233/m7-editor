@@ -162,5 +162,6 @@ function formatText(text: string) {
 
 .danmaku-content {
   word-break: break-word;
+  white-space: pre
 }
 </style>

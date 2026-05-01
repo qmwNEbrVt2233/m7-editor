@@ -541,7 +541,7 @@ export const useEditorStore = defineStore('editor', {
       const hasStartTime = patch['startTime'] !== undefined || 
                       (patch.startTime !== undefined)
       if (hasChangedGrop1) {
-        const danmaku = this.danmakus.find((d) => d.id === danmakuId)
+        const danmaku = this.danmakus.find((d: any) => d.id === danmakuId)
         if (danmaku) {
           const endTime = danmaku.startTime + danmaku.animation.duration
           this.setTime(endTime)
@@ -549,7 +549,7 @@ export const useEditorStore = defineStore('editor', {
         }
       }
       if (hasChangedGrop2) {
-        const danmaku = this.danmakus.find((d) => d.id === danmakuId)
+        const danmaku = this.danmakus.find((d: any) => d.id === danmakuId)
         if (danmaku) {
           const startTime = danmaku.startTime
           this.setTime(startTime)
@@ -557,7 +557,7 @@ export const useEditorStore = defineStore('editor', {
         }
       }
       if (hasDuration) {
-        const danmaku = this.danmakus.find((d) => d.id === danmakuId)
+        const danmaku = this.danmakus.find((d: any) => d.id === danmakuId)
         setTimeout(() => {
           if (danmaku) {
             const endTime = danmaku.startTime + danmaku.animation.duration
@@ -567,7 +567,7 @@ export const useEditorStore = defineStore('editor', {
         }, 10)
       }
       if (hasStartTime) {
-        const danmaku = this.danmakus.find((d) => d.id === danmakuId)
+        const danmaku = this.danmakus.find((d: any) => d.id === danmakuId)
         setTimeout(() => {
           if (danmaku) {
             const startTime = danmaku.startTime
@@ -609,7 +609,7 @@ export const useEditorStore = defineStore('editor', {
     exportProject() {
       return {
         meta: {
-          version: '1.0',
+          version: '0.2.0',
           createdAt: Date.now()
         },
         timeline: {
@@ -654,7 +654,7 @@ export const useEditorStore = defineStore('editor', {
 
     setMaxLayers(value: number) {
       const normalized = Math.max(1, Math.round(value))
-      const maxUsedLayer = this.danmakus.reduce((max, danmaku) => {
+      const maxUsedLayer = this.danmakus.reduce((max: number, danmaku: any) => {
         return Math.max(max, danmaku.layer)
       }, -1)
       const minimumAllowed = Math.max(1, maxUsedLayer + 1)
@@ -746,7 +746,7 @@ export const useEditorStore = defineStore('editor', {
       const newDanmaku: DanmakuItem = {
         id: this.generateNewId(),
         layer: 0,
-        startTime: this.currentTime,
+        startTime: Math.round(this.currentTime),
         content: {
           text: '请输入弹幕内容',
           font: 'Microsoft YaHei',
@@ -990,8 +990,8 @@ export const useEditorStore = defineStore('editor', {
         return
       }
 
-      const minLayer = Math.min(...selectedDanmakus.map((d) => d.layer))
-      const maxLayer = Math.max(...selectedDanmakus.map((d) => d.layer))
+      const minLayer = Math.min(...selectedDanmakus.map((d: any) => d.layer))
+      const maxLayer = Math.max(...selectedDanmakus.map((d: any) => d.layer))
 
       let appliedDelta = Math.trunc(delta)
       if (appliedDelta < 0) {
@@ -1004,7 +1004,7 @@ export const useEditorStore = defineStore('editor', {
         return
       }
 
-      selectedDanmakus.forEach((danmaku) => {
+      selectedDanmakus.forEach((danmaku: any) => {
         danmaku.layer += appliedDelta
       })
 
