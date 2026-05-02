@@ -22,7 +22,7 @@ const store = useEditorStore()
 
 // 可见弹幕过滤并排序
 const visibleDanmakus = computed(() => {
-  // 1. 首先过滤出当前时间点可见的弹幕
+  // 过滤出当前时间点可见的弹幕
   const filtered = store.danmakus.filter((d: any) => {
     return (
       store.currentTime >= d.startTime &&
@@ -30,7 +30,7 @@ const visibleDanmakus = computed(() => {
     )
   })
 
-  // 💡 修改点 2：应用层级排序规则
+  // 应用层级排序规则
   // 规则#1: startTime 小的在前（z-index小）
   // 规则#2: startTime 一致时，layer 小的在前
   return filtered.sort((a: any, b: any) => {

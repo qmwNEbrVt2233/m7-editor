@@ -28,26 +28,32 @@
     ></div>
 
     <!-- 弹幕块 -->
-    <div class="tracks" ref="tracksRef">
+    <div class="tracks" ref="tracksRef" @scroll="onTracksScroll">
       <div
-        v-for="layer in store.maxLayers"
+        v-for="layer in visibleLayers"
         :key="layer"
         class="track-row"
         :style="{ top: (layer - 1) * rowHeight + 'px' }"
       >
-        <!-- 当前layer的弹幕 -->
         <div
-          v-for="d in getLayerDanmakus(layer - 1)"
+          v-for="d in getVisibleDanmakusForLayer(layer - 1)"
           :key="d.id"
           class="block"
           :class="{ selected: store.selectedIds.includes(d.id) }"
           :style="getBlockStyle(d)"
           @mousedown.stop="onBlockMouseDown($event, d)"
           @click.stop="onSelect($event, d)"
+          @mouseenter="onBlockMouseEnter(d.id)"
+          @mouseleave="onBlockMouseLeave"
         >
-          <div class="handle left" @mousedown.stop="onResizeStart($event, d, 'left')" />
-          <div class="handle right" @mousedown.stop="onResizeStart($event, d, 'right')" />
-          {{ d.content.text }}
+          <!-- 宽度过小时隐藏文字 -->
+          <span v-if="d.animation.duration * scale >= 10">{{ d.content.text }}</span>
+
+          <!-- 手柄只在悬停时渲染 -->
+          <template v-if="hoveredBlockId === d.id">
+            <div class="handle left" @mousedown.stop="onResizeStart($event, d, 'left')" />
+            <div class="handle right" @mousedown.stop="onResizeStart($event, d, 'right')" />
+          </template>
         </div>
       </div>
 
@@ -86,6 +92,49 @@ const offset = ref(0)
 const containerWidth = ref(800)
 
 const rowHeight = 30
+
+// ---------- 纵向虚拟滚动相关 ----------
+const tracksScrollTop = ref(0)
+const tracksViewHeight = ref(0)
+
+function onTracksScroll() {
+  if (!tracksRef.value) return
+  tracksScrollTop.value = tracksRef.value.scrollTop
+}
+
+function updateTracksViewHeight() {
+  if (tracksRef.value) {
+    tracksViewHeight.value = tracksRef.value.clientHeight
+  }
+}
+
+// 可见的层范围（1-based）
+const visibleLayers = computed(() => {
+  const maxLayer = store.maxLayers
+  if (maxLayer <= 0) return []
+  
+  const startIdx = Math.floor(tracksScrollTop.value / rowHeight) // 0-based
+  const endIdx = Math.ceil((tracksScrollTop.value + tracksViewHeight.value) / rowHeight)
+  const startLayer = Math.max(1, startIdx + 1)
+  const endLayer = Math.min(maxLayer, endIdx)
+  
+  const layers: number[] = []
+  for (let i = startLayer; i <= endLayer; i++) {
+    layers.push(i)
+  }
+  return layers
+})
+
+let tracksResizeObserver: ResizeObserver | null = null
+
+const hoveredBlockId = ref<string | null>(null)
+
+function onBlockMouseEnter(id: string) {
+  hoveredBlockId.value = id
+}
+function onBlockMouseLeave() {
+  hoveredBlockId.value = null
+}
 
 // 初始化容器宽度
 function initContainerWidth() {
@@ -381,8 +430,22 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
 
 onMounted(() => {
   initContainerWidth()
+  updateTracksViewHeight()
   window.addEventListener('keydown', handleKeyboardShortcuts)
-  window.addEventListener('resize', initContainerWidth)
+  window.addEventListener('resize', () => {
+    initContainerWidth()
+    updateTracksViewHeight()
+  })
+  // 初始化时确保第一次垂直范围正确
+  if (tracksRef.value) {
+    tracksScrollTop.value = tracksRef.value.scrollTop
+  }
+  if (tracksRef.value) {
+    tracksResizeObserver = new ResizeObserver(() => {
+      updateTracksViewHeight()
+    })
+    tracksResizeObserver.observe(tracksRef.value)
+  }
 })
 
 onUnmounted(() => {
@@ -390,6 +453,10 @@ onUnmounted(() => {
   window.removeEventListener('resize', initContainerWidth)
   if (offsetAnimationFrame !== null) {
     cancelAnimationFrame(offsetAnimationFrame)
+  }
+  if (tracksResizeObserver) {
+    tracksResizeObserver.disconnect()
+    tracksResizeObserver = null
   }
 })
 
@@ -460,6 +527,27 @@ function getBlockStyle(d: any) {
   }
 }
 
+// ---------- 横向虚拟滚动 ----------
+// 判断弹幕是否在水平可视区域内
+function isHorizontallyVisible(d: any) {
+  const visibleStart = offset.value
+  const visibleEnd = offset.value + containerWidth.value / scale.value
+  const blockStart = d.startTime
+  const blockEnd = d.startTime + d.animation.duration
+  // 相交即渲染
+  return blockEnd >= visibleStart && blockStart <= visibleEnd
+}
+
+// 获取某一层内所有应渲染的弹幕（先拿到该层全部弹幕，再做横向过滤）
+function getLayerDanmakus(layer: number) {
+  if (!Array.isArray(store.danmakus)) return []
+  return store.danmakus.filter((d) => d && typeof d === 'object' && d.layer === layer)
+}
+
+function getVisibleDanmakusForLayer(layer: number) {
+  return getLayerDanmakus(layer).filter(isHorizontallyVisible)
+}
+
 // ===== 拖动播放头 =====
 const dragging = ref(false)
 
@@ -523,13 +611,6 @@ const dragStartPageY = ref(0)
 
 // 当前操作的弹幕块ID（用于准确标识用户在拖动/resize哪个弹幕块）
 const activeBlockId = ref<string | null>(null)
-
-function getLayerDanmakus(layer: number) {
-  if (!Array.isArray(store.danmakus)) return []
-  return store.danmakus.filter(
-    (d) => d && typeof d === 'object' && d.layer === layer
-  )
-}
 
 let hasRecordedSnapshotDuringDrag = false
 let hasRecordedSnapshotDuringResize = false
