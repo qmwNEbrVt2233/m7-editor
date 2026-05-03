@@ -135,13 +135,15 @@ function parseOpacity(value: unknown): { from: number; to: number } {
 
 /**
  * 将 #RRGGBB 转为 XML 所需的十进制颜色值
+ * 若转换结果为 0，则修正为 1
  */
 function colorToDecimal(color: string): number {
   const normalized = /^#?[0-9a-fA-F]{6}$/.test(color)
     ? color.replace('#', '')
     : DEFAULT_COLOR.replace('#', '')
 
-  return parseInt(normalized, 16)
+  const decimal = parseInt(normalized, 16)
+  return decimal === 0 ? 1 : decimal
 }
 
 /**
@@ -209,15 +211,28 @@ function convertCoordinateFromXml(value: unknown, axisSize: number, fallback = 0
 /**
  * 导出 XML 时：
  * 若用户开启“按比例导出”，则将像素坐标换算为比例值
+ * 若比例值超过 1 则修正为 0.999 并通过 exceeded 标记
  * 否则保持像素值原样导出
  */
-function convertCoordinateToXml(value: number, axisSize: number, useRatioPosition: boolean): number {
+function convertCoordinateToXml(
+  value: number,
+  axisSize: number,
+  useRatioPosition: boolean
+): { value: number; exceeded: boolean } {
   if (!useRatioPosition) {
-    return toSafeNumber(value, 0)
+    return { value: toSafeNumber(value, 0), exceeded: false }
   }
 
   const ratio = toSafeNumber(value, 0) / axisSize
-  return Number(ratio.toFixed(6))
+  let finalRatio = Number(ratio.toFixed(6))
+  let exceeded = false
+
+  if (finalRatio > 1) {
+    finalRatio = 0.999
+    exceeded = true
+  }
+
+  return { value: finalRatio, exceeded }
 }
 
 /**
@@ -392,12 +407,13 @@ function createDanmakuFromXmlNode(
 
 /**
  * 构造单条 XML d 节点文本
+ * 同时收集是否存在比例坐标越界的标记
  */
 function buildXmlDanmakuTag(
   danmaku: DanmakuItem,
   sendTime: number,
   options: Required<XmlExportOptions>
-): string {
+): { tag: string; exceeded: boolean } {
   const durationMs = Math.max(
     1,
     Math.round(toSafeNumber(danmaku.animation.duration, DEFAULT_DURATION_MS) + options.durationOffsetMs)
@@ -414,16 +430,46 @@ function buildXmlDanmakuTag(
     10
   ].join(',')
 
+  let exceeded = false
+
+  const startXCoord = convertCoordinateToXml(
+    danmaku.transform.start.x,
+    options.screenWidth,
+    options.useRatioPosition
+  )
+  if (startXCoord.exceeded) exceeded = true
+
+  const startYCoord = convertCoordinateToXml(
+    danmaku.transform.start.y,
+    options.screenHeight,
+    options.useRatioPosition
+  )
+  if (startYCoord.exceeded) exceeded = true
+
+  const endXCoord = convertCoordinateToXml(
+    danmaku.transform.end.x,
+    options.screenWidth,
+    options.useRatioPosition
+  )
+  if (endXCoord.exceeded) exceeded = true
+
+  const endYCoord = convertCoordinateToXml(
+    danmaku.transform.end.y,
+    options.screenHeight,
+    options.useRatioPosition
+  )
+  if (endYCoord.exceeded) exceeded = true
+
   const body = JSON.stringify([
-    convertCoordinateToXml(danmaku.transform.start.x, options.screenWidth, options.useRatioPosition),
-    convertCoordinateToXml(danmaku.transform.start.y, options.screenHeight, options.useRatioPosition),
+    startXCoord.value,
+    startYCoord.value,
     `${clampOpacity(danmaku.opacity.from)}-${clampOpacity(danmaku.opacity.to)}`,
     Number((durationMs / 1000).toFixed(3)),
     danmaku.content.text,
     toSafeNumber(danmaku.transform.zRotate, 0),
     toSafeNumber(danmaku.transform.yRotate, 0),
-    convertCoordinateToXml(danmaku.transform.end.x, options.screenWidth, options.useRatioPosition),
-    convertCoordinateToXml(danmaku.transform.end.y, options.screenHeight, options.useRatioPosition),
+    endXCoord.value,
+    endYCoord.value,
     Math.max(0, Math.round(toSafeNumber(danmaku.animation.moveDuration, DEFAULT_MOVE_DURATION_MS))),
     Math.max(0, Math.round(toSafeNumber(danmaku.animation.delay, 0))),
     danmaku.content.stroke ? 1 : 0,
@@ -431,7 +477,8 @@ function buildXmlDanmakuTag(
     danmaku.animation.easing === 'speedup' ? 1 : 0
   ])
 
-  return `  <d p="${p}">${escapeXmlText(body)}</d>`
+  const tag = `  <d p="${p}">${escapeXmlText(body)}</d>`
+  return { tag, exceeded }
 }
 
 /**
@@ -442,6 +489,7 @@ function buildXmlDanmakuTag(
  * 2. startTime 相同则按 layer 排序
  * 3. 生成 fake sendTime，保证同一时刻内 layer 越大，sendTime 越大
  * 4. 根据用户设置决定坐标是导出为像素还是比例
+ * 5. 若比例导出时有坐标超过屏幕，则修正为 0.999 并弹出一次性提示
  */
 export function toXML(list: DanmakuItem[], options: XmlExportOptions = {}): string {
   const normalizedOptions: Required<XmlExportOptions> = {
@@ -458,9 +506,17 @@ export function toXML(list: DanmakuItem[], options: XmlExportOptions = {}): stri
   })
 
   const baseSendTime = Math.floor(Date.now() / 1000)
+  let anyExceeded = false
+
   const danmakuTags = sortedDanmakus.map((danmaku, index) => {
-    return buildXmlDanmakuTag(danmaku, baseSendTime + index, normalizedOptions)
+    const { tag, exceeded } = buildXmlDanmakuTag(danmaku, baseSendTime + index, normalizedOptions)
+    if (exceeded) anyExceeded = true
+    return tag
   }).join('\n')
+
+  if (anyExceeded) {
+    alert('您的工程内有超过屏幕大小的弹幕，导出后坐标会被修正至0.999，这会导致您的弹幕导出后显示与预期不符')
+  }
 
   const xmlParts = [
     '<?xml version="1.0" encoding="UTF-8"?>',
