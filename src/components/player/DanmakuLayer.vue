@@ -15,29 +15,67 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { shallowRef, computed, watch } from 'vue'
 import { useEditorStore } from '../../store/editor'
 
 const store = useEditorStore()
 
-// 可见弹幕过滤并排序
+const BUFFER_WINDOW = 10000 // 缓存窗口：10秒
+const PRELOAD_THRESHOLD = 2000 // 预加载阈值：2秒
+const JITTER_TOLERANCE = 500 // 抖动容差：500ms（解决视频时间微小倒退导致的频繁重算）
+
+// 使用 shallowRef 拒绝深度 Proxy 劫持
+const activeBuffer = shallowRef<any[]>([])
+let currentBufferStart = -1
+let currentBufferEnd = -1
+
+// 低频刷新核心
+function updateBuffer(time: number) {
+  console.log(`[Buffer] 正在重构缓冲池，当前时间: ${time}`)
+  currentBufferStart = time
+  currentBufferEnd = time + BUFFER_WINDOW
+  
+  activeBuffer.value = store.danmakus.filter((d: any) => {
+    const dEnd = d.startTime + d.animation.duration
+    return dEnd >= currentBufferStart && d.startTime <= currentBufferEnd
+  })
+  console.log(`缓存池大小：${activeBuffer.value.length}条弹幕`)
+}
+
+// 监听时间轴：加入容差判断
+watch(() => store.currentTime, (newTime) => {
+  // 减去 JITTER_TOLERANCE，忽略播放器的微小时间回退
+  if (
+    newTime < currentBufferStart - JITTER_TOLERANCE || 
+    newTime > currentBufferEnd - PRELOAD_THRESHOLD
+  ) {
+    updateBuffer(newTime)
+  }
+}, { immediate: true })
+
+// 对编辑器修改引发的全量重算进行防抖（Debounce）
+let editTimeout: any = null
+watch(() => store.danmakus, () => {
+  // 播放期间如果 store 发生莫名其妙的微小变动，防抖可以阻止其引发高频重算
+  if (editTimeout) clearTimeout(editTimeout)
+  editTimeout = setTimeout(() => {
+    updateBuffer(store.currentTime)
+  }, 200) // 延迟 200ms 重建
+}, { deep: true }) 
+
+
+// --- 高频刷新：实时可见弹幕 ---
 const visibleDanmakus = computed(() => {
-  // 过滤出当前时间点可见的弹幕
-  const filtered = store.danmakus.filter((d: any) => {
-    return (
-      store.currentTime >= d.startTime &&
-      store.currentTime <= d.startTime + d.animation.duration
-    )
+  const time = store.currentTime
+  
+  const filtered = activeBuffer.value.filter((d: any) => {
+    return time >= d.startTime && time <= d.startTime + d.animation.duration
   })
 
-  // 应用层级排序规则
-  // 规则#1: startTime 小的在前（z-index小）
-  // 规则#2: startTime 一致时，layer 小的在前
   return filtered.sort((a: any, b: any) => {
     if (a.startTime !== b.startTime) {
       return a.startTime - b.startTime
     }
-    // 如果没有 layer 字段，默认为 0
     const layerA = a.layer || 0
     const layerB = b.layer || 0
     return layerA - layerB

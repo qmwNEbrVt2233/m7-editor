@@ -36,7 +36,7 @@
         :style="{ top: (layer - 1) * rowHeight + 'px' }"
       >
         <div
-          v-for="d in getVisibleDanmakusForLayer(layer - 1)"
+          v-for="d in (visibleDanmakusByLayer[layer - 1] || [])"
           :key="d.id"
           class="block"
           :class="{ selected: store.selectedIds.includes(d.id) }"
@@ -528,25 +528,24 @@ function getBlockStyle(d: any) {
 }
 
 // ---------- 横向虚拟滚动 ----------
-// 判断弹幕是否在水平可视区域内
-function isHorizontallyVisible(d: any) {
-  const visibleStart = offset.value
-  const visibleEnd = offset.value + containerWidth.value / scale.value
-  const blockStart = d.startTime
-  const blockEnd = d.startTime + d.animation.duration
-  // 相交即渲染
-  return blockEnd >= visibleStart && blockStart <= visibleEnd
-}
-
-// 获取某一层内所有应渲染的弹幕（先拿到该层全部弹幕，再做横向过滤）
-function getLayerDanmakus(layer: number) {
-  if (!Array.isArray(store.danmakus)) return []
-  return store.danmakus.filter((d) => d && typeof d === 'object' && d.layer === layer)
-}
-
-function getVisibleDanmakusForLayer(layer: number) {
-  return getLayerDanmakus(layer).filter(isHorizontallyVisible)
-}
+const visibleDanmakusByLayer = computed(() => {
+  const map: Record<number, any[]> = {}
+  if (!Array.isArray(store.danmakus)) return map
+  const visStart = offset.value
+  const visEnd = offset.value + containerWidth.value / scale.value
+  for (const d of store.danmakus) {
+    if (!d || typeof d !== 'object') continue
+    const blockStart = d.startTime
+    const blockEnd = d.startTime + d.animation.duration
+    // 相交即渲染
+    if (blockEnd >= visStart && blockStart <= visEnd) {
+      const layer = d.layer
+      if (!map[layer]) map[layer] = []
+      map[layer].push(d)
+    }
+  }
+  return map
+})
 
 // ===== 拖动播放头 =====
 const dragging = ref(false)
