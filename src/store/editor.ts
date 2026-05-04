@@ -5,6 +5,64 @@ import { historyManager } from '@/core/history'
 import { watch } from 'vue'
 import { parseXML, toXML } from '@/core/converter.ts'
 
+type SavePickerAcceptType = {
+  description: string
+  accept: Record<string, string[]>
+}
+
+type SavePickerWindow = Window & {
+  showSaveFilePicker?: (options?: {
+    suggestedName?: string
+    types?: SavePickerAcceptType[]
+  }) => Promise<{
+    createWritable: () => Promise<{
+      write: (data: Blob | string) => Promise<void>
+      close: () => Promise<void>
+    }>
+  }>
+}
+
+function triggerBlobDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+
+  URL.revokeObjectURL(url)
+}
+
+async function saveBlobWithFallback(
+  blob: Blob,
+  filename: string,
+  acceptType: SavePickerAcceptType
+) {
+  const savePickerWindow = window as SavePickerWindow
+
+  if (typeof savePickerWindow.showSaveFilePicker !== 'function') {
+    triggerBlobDownload(blob, filename)
+    return
+  }
+
+  try {
+    const fileHandle = await savePickerWindow.showSaveFilePicker({
+      suggestedName: filename,
+      types: [acceptType]
+    })
+    const writable = await fileHandle.createWritable()
+    await writable.write(blob)
+    await writable.close()
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return
+    }
+
+    console.warn('[保存] File System Access API 保存失败，回退到 Blob 下载', error)
+    triggerBlobDownload(blob, filename)
+  }
+}
+
 let hasPendingChange = false
 let hasSelectionSnapshotWatcher = false
 
@@ -275,7 +333,7 @@ export const useEditorStore = defineStore('editor', {
       console.log('加载完成')
     },
 
-    downloadProject() {
+    async downloadProject() {
       const project = this.exportProject()
 
       const blob = new Blob(
@@ -283,17 +341,15 @@ export const useEditorStore = defineStore('editor', {
         { type: 'application/json' }
       )
 
-      const url = URL.createObjectURL(blob)
-
-      const a = document.createElement('a')
-      a.href = url
-      a.download = 'project.json'
-      a.click()
-
-      URL.revokeObjectURL(url)
+      await saveBlobWithFallback(blob, 'project.json', {
+        description: 'JSON 工程文件',
+        accept: {
+          'application/json': ['.json']
+        }
+      })
     },
 
-    downloadXml() {
+    async downloadXml() {
       const xml = toXML(this.danmakus, {
         useRatioPosition: this.exportXmlAsRatio,
         screenWidth: this.screenWidth,
@@ -301,14 +357,14 @@ export const useEditorStore = defineStore('editor', {
         durationOffsetMs: this.exportXmlDurationOffsetEnabled ? 50 : 0
       })
       const blob = new Blob([xml], { type: 'application/xml;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
 
-      const a = document.createElement('a')
-      a.href = url
-      a.download = 'danmaku.xml'
-      a.click()
-
-      URL.revokeObjectURL(url)
+      await saveBlobWithFallback(blob, 'danmaku.xml', {
+        description: 'XML 弹幕文件',
+        accept: {
+          'application/xml': ['.xml'],
+          'text/xml': ['.xml']
+        }
+      })
     },
 
     loadFromFile(file: File) {

@@ -50,7 +50,7 @@ function handleKeyDown(e: KeyboardEvent) {
   // Ctrl+S 导出JSON
   if ((e.ctrlKey || e.metaKey) && e.code === 'KeyS') {
     e.preventDefault()
-    store.downloadProject()
+    void store.downloadProject()
   }
 }
 

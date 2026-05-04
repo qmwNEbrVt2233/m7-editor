@@ -16,12 +16,12 @@
 
       <div v-if="activeMenu === 'file'" class="menu-panel">
         <button @click="importVideo" class="btn">导入视频</button>
-        <button @click="save" class="btn">保存工程</button>
-        <button @click="load" class="btn">加载工程</button>
-        <button @click="download" class="btn">导出工程</button>
+        <button @click="saveProject" class="btn">保存工程</button>
         <button @click="importProject" class="btn">导入工程</button>
         <button @click="exportXml" class="btn">导出XML</button>
         <button @click="importXml" class="btn">导入XML</button>
+        <button @click="saveCache" class="btn">保存缓存</button>
+        <button @click="loadCache" class="btn">加载缓存</button>
         <button @click="clearCache" class="btn btn-danger">清空缓存工程</button>
       </div>
 
@@ -430,20 +430,20 @@ function onVideoLoaded() {
   }
 }
 
-function save() {
+async function saveProject() {
+  await store.downloadProject()
+}
+
+async function exportXml() {
+  await store.downloadXml()
+}
+
+function saveCache() {
   store.saveToLocal()
 }
 
-function load() {
+function loadCache() {
   store.loadFromLocal()
-}
-
-function download() {
-  store.downloadProject()
-}
-
-function exportXml() {
-  store.downloadXml()
 }
 
 function onFileChange(e: Event) {
