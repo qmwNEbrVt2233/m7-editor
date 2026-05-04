@@ -62,14 +62,9 @@
       
       <!-- 框选矩形 -->
       <div
-        v-if="selectionBox.visible"
+        v-if="selectionBoxStyle"
         class="selection-box"
-        :style="{
-          left: Math.min(selectionBox.startX, selectionBox.endX) + 'px',
-          top: Math.min(selectionBox.startY, selectionBox.endY) + 'px',
-          width: Math.abs(selectionBox.endX - selectionBox.startX) + 'px',
-          height: Math.abs(selectionBox.endY - selectionBox.startY) + 'px'
-        }"
+        :style="selectionBoxStyle"
       />
     </div>
   </div>
@@ -92,6 +87,7 @@ const offset = ref(0)
 const containerWidth = ref(800)
 
 const rowHeight = 30
+const RULER_HEIGHT = 20
 
 // ---------- 纵向虚拟滚动相关 ----------
 const tracksScrollTop = ref(0)
@@ -215,8 +211,8 @@ function handlePan(e: KeyboardEvent) {
     // Ctrl+Alt: 移动30000ms (30秒)
     panDistance = 30000
   } else if (isCtrl && !isAlt && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
-    // Ctrl: 移动10000ms
-    panDistance = 10000
+    // Ctrl: 移动视图的一半
+    panDistance = containerWidth.value * 0.5 / scale.value
   } else if (!isCtrl && !isAlt && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
     // 普通方向键: 移动播放头到最近的stepMs的整数倍位置（排除当前位置）
     const stepMs = store.playheadStepMs
@@ -564,17 +560,18 @@ function onMouseDown(e: MouseEvent) {
   if (isCtrlPressed && !isOnBlock && !isOnHandle) {
     // 进入框选模式
     isBoxSelectingMode.value = true
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    const tracksElement = tracksRef.value
-    if (!tracksElement) return
-    const scrollTop = tracksElement.scrollTop
-    
+    lastAutoScrollAt = 0
+    const anchorTime = getTimeFromClientX(e.clientX)
+    const anchorLayer = getLayerFromClientY(e.clientY)
+
     selectionBox.value = {
       visible: true,
-      startX: e.clientX - rect.left,
-      startY: e.clientY - rect.top - 20 + scrollTop, // 考虑ruler高度(20px)和scrollTop
-      endX: e.clientX - rect.left,
-      endY: e.clientY - rect.top - 20 + scrollTop
+      anchorTime,
+      anchorLayer,
+      anchorClientX: e.clientX,
+      anchorClientY: e.clientY,
+      pointerClientX: e.clientX,
+      pointerClientY: e.clientY
     }
     return
   }
@@ -660,7 +657,7 @@ function animateOffsetTo(targetOffset: number) {
 }
 
 function maybeAutoScrollDuringDrag(e: MouseEvent) {
-  if (!dragMode.value || !timelineRef.value || !tracksRef.value) {
+  if ((!dragMode.value && !isBoxSelectingMode.value) || !timelineRef.value || !tracksRef.value) {
     return
   }
 
@@ -737,8 +734,8 @@ function onBlockMouseDown(e: MouseEvent, d: any) {
     dragOffsetX.value = e.clientX - timelineRect.left - activeStartTimeX
     dragOffsetY.value = e.clientY - timelineRect.top
     
-    // dragStartLayer应该考虑ruler高度(20px)和scrollTop
-    dragStartLayer.value = Math.floor((e.clientY - timelineRect.top - 20 + scrollTop) / rowHeight)
+    // dragStartLayer应该考虑ruler高度和scrollTop
+    dragStartLayer.value = Math.floor((e.clientY - timelineRect.top - RULER_HEIGHT + scrollTop) / rowHeight)
 
     window.addEventListener('mousemove', onGlobalMouseMove)
     window.addEventListener('mouseup', onGlobalMouseUp)
@@ -804,21 +801,91 @@ const dragStartLayer = ref(0)
 // 框选相关
 interface SelectionBox {
   visible: boolean
-  startX: number
-  startY: number
-  endX: number
-  endY: number
+  anchorTime: number
+  anchorLayer: number
+  anchorClientX: number
+  anchorClientY: number
+  pointerClientX: number
+  pointerClientY: number
 }
 
 const selectionBox = ref<SelectionBox>({
   visible: false,
-  startX: 0,
-  startY: 0,
-  endX: 0,
-  endY: 0
+  anchorTime: 0,
+  anchorLayer: 0,
+  anchorClientX: 0,
+  anchorClientY: 0,
+  pointerClientX: 0,
+  pointerClientY: 0
 })
 
+// 框选相关
 const isBoxSelectingMode = ref(false)
+
+function clampLayer(layer: number) {
+  return Math.max(0, Math.min(store.maxLayers - 1, layer))
+}
+
+function getTimeFromClientX(clientX: number) {
+  const rect = timelineRef.value?.getBoundingClientRect()
+  if (!rect) {
+    return 0
+  }
+
+  const x = clientX - rect.left
+  return roundTime(Math.max(0, x / scale.value + offset.value))
+}
+
+function getLayerFromClientY(clientY: number) {
+  const tracksRect = tracksRef.value?.getBoundingClientRect()
+  if (!tracksRect) {
+    return 0
+  }
+
+  const y = clientY - tracksRect.top + tracksScrollTop.value
+  return clampLayer(Math.floor(y / rowHeight))
+}
+
+const selectionRange = computed(() => {
+  if (!selectionBox.value.visible) {
+    return null
+  }
+
+  const pointerTime = getTimeFromClientX(selectionBox.value.pointerClientX)
+  const pointerLayer = getLayerFromClientY(selectionBox.value.pointerClientY)
+
+  return {
+    minTime: Math.min(selectionBox.value.anchorTime, pointerTime),
+    maxTime: Math.max(selectionBox.value.anchorTime, pointerTime),
+    minLayer: Math.min(selectionBox.value.anchorLayer, pointerLayer),
+    maxLayer: Math.max(selectionBox.value.anchorLayer, pointerLayer)
+  }
+})
+
+const selectionBoxStyle = computed(() => {
+  if (!selectionRange.value) {
+    return null
+  }
+
+  return {
+    left: (selectionRange.value.minTime - offset.value) * scale.value + 'px',
+    top: selectionRange.value.minLayer * rowHeight + 'px',
+    width: (selectionRange.value.maxTime - selectionRange.value.minTime) * scale.value + 'px',
+    height: (selectionRange.value.maxLayer - selectionRange.value.minLayer + 1) * rowHeight + 'px'
+  }
+})
+
+function resetSelectionBox() {
+  selectionBox.value = {
+    visible: false,
+    anchorTime: 0,
+    anchorLayer: 0,
+    anchorClientX: 0,
+    anchorClientY: 0,
+    pointerClientX: 0,
+    pointerClientY: 0
+  }
+}
 
 function recordDragInitialStates() {
   dragInitialStates.value.clear()
@@ -952,13 +1019,9 @@ function snapMoveStartTime(startTime: number, duration: number) {
 function onMouseMove(e: MouseEvent) {
   // 框选模式
   if (isBoxSelectingMode.value) {
-    const rect = timelineRef.value?.getBoundingClientRect()
-    const tracksElement = tracksRef.value
-    if (!rect || !tracksElement) return
-    const scrollTop = tracksElement.scrollTop
-    
-    selectionBox.value.endX = e.clientX - rect.left
-    selectionBox.value.endY = e.clientY - rect.top - 20 + scrollTop // 考虑ruler高度(20px)和scrollTop
+    selectionBox.value.pointerClientX = e.clientX
+    selectionBox.value.pointerClientY = e.clientY
+    maybeAutoScrollDuringDrag(e)
     return
   }
   
@@ -979,10 +1042,10 @@ function onMouseMove(e: MouseEvent) {
   const timelineRect = currentTimeline.getBoundingClientRect()
   
   const x = e.clientX - timelineRect.left
-  const y = e.clientY - timelineRect.top - 20 + scrollTop // -20是ruler的高度
+  const y = e.clientY - timelineRect.top - RULER_HEIGHT + scrollTop // ruler高度补偿
 
   const rawTime = x / scale.value + offset.value
-  const layer = Math.max(0, Math.min(store.maxLayers - 1, Math.floor(y / rowHeight)))
+  const layer = clampLayer(Math.floor(y / rowHeight))
 
   if (dragMode.value === 'move') {
     // 批量拖动：基于activeBlockId计算delta，然后应用到所有选中弹幕
@@ -1074,33 +1137,29 @@ function onMouseUp() {
   // 框选模式处理
   if (isBoxSelectingMode.value) {
     isBoxSelectingMode.value = false
-    
-    // 计算选择框的边界
-    const minX = Math.min(selectionBox.value.startX, selectionBox.value.endX)
-    const maxX = Math.max(selectionBox.value.startX, selectionBox.value.endX)
-    const minY = Math.min(selectionBox.value.startY, selectionBox.value.endY)
-    const maxY = Math.max(selectionBox.value.startY, selectionBox.value.endY)
+    const range = selectionRange.value
     
     // 找出被选中的弹幕
     const selectedInBox: string[] = []
-    store.danmakus.forEach((d: any) => {
-      const blockLeft = (d.startTime - offset.value) * scale.value
-      const blockRight = blockLeft + d.animation.duration * scale.value
-      const blockTop = d.layer * rowHeight + 20 // +20是因为ruler的高度
-      const blockBottom = blockTop + 28
-      
-      // 检查弹幕块是否与选择框相交
-      if (blockRight > minX && blockLeft < maxX && blockBottom > minY && blockTop < maxY) {
-        selectedInBox.push(d.id)
-      }
-    })
+    if (range) {
+      store.danmakus.forEach((d: any) => {
+        const blockStart = d.startTime
+        const blockEnd = d.startTime + d.animation.duration
+        const intersectsTime = blockEnd > range.minTime && blockStart < range.maxTime
+        const intersectsLayer = d.layer >= range.minLayer && d.layer <= range.maxLayer
+
+        if (intersectsTime && intersectsLayer) {
+          selectedInBox.push(d.id)
+        }
+      })
+    }
     
     // 更新选中状态（框选会替换之前的选择）
     if (selectedInBox.length > 0) {
       store.selectedIds = selectedInBox
     }
     
-    selectionBox.value.visible = false
+    resetSelectionBox()
     return
   }
   
