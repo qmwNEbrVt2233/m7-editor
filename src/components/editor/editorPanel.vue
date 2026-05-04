@@ -193,15 +193,13 @@
         <section class="editor-section">
           <h3>🌫 透明度 (0-1)</h3>
           <div class="form-row">
-            <div class="form-group">
+            <div class="form-group" style="width: 145px;">
               <label>初始 (From)</label>
               <input
-                type="number"
-                v-model.lazy="opacityFrom"
+                type="text"
+                v-model="opacityFrom"
                 @change="onOpacityFieldChange('opacity.from', opacityFrom)"
-                min="0"
-                max="1"
-                step="0.1"
+                placeholder="支持 ±*/ 操作"
               />
               <input
                 type="range"
@@ -213,15 +211,13 @@
                 class="slider"
               />
             </div>
-            <div class="form-group">
+            <div class="form-group" style="width: 145px;">
               <label>结束 (To)</label>
               <input
-                type="number"
-                v-model.lazy="opacityTo"
+                type="text"
+                v-model="opacityTo"
                 @change="onOpacityFieldChange('opacity.to', opacityTo)"
-                min="0"
-                max="1"
-                step="0.1"
+                placeholder="支持 ±*/ 操作"
               />
               <input
                 type="range"
@@ -513,6 +509,73 @@ const easing = computed<string>({
 
 let skipNextTextChange = false
 
+function isOpacityPath(path: string): boolean {
+  return path === 'opacity.from' || path === 'opacity.to'
+}
+
+function getValidationFieldName(path: string): string {
+  if (isOpacityPath(path)) {
+    return 'opacity'
+  }
+
+  return path.split('.').pop() || ''
+}
+
+function roundIntegerValue(value: number): number {
+  return Math.round(value)
+}
+
+function roundOpacityValue(value: number): number {
+  return Number(value.toFixed(2))
+}
+
+function parseOpacityInput(input: string): { mode: 'set' | 'add' | 'mul' | 'div'; value: number } | { error: string } {
+  const trimmed = input.trim()
+  if (!trimmed) {
+    return { error: '输入不能为空' }
+  }
+
+  if (/^[+\-*/]/.test(trimmed)) {
+    const operator = trimmed[0]
+    const rawValue = operator === '-' ? trimmed : trimmed.slice(1)
+    const parsedValue = Number(rawValue)
+    if (!Number.isFinite(parsedValue)) {
+      return { error: '无效的透明度数值' }
+    }
+
+    if (operator === '+') return { mode: 'add', value: parsedValue }
+    if (operator === '-') return { mode: 'add', value: parsedValue }
+    if (operator === '*') {
+      if (parsedValue <= 0) return { error: '倍率必须是正数' }
+      return { mode: 'mul', value: parsedValue }
+    }
+    if (operator === '/') {
+      if (parsedValue <= 0) return { error: '除数必须是正数' }
+      return { mode: 'div', value: parsedValue }
+    }
+  }
+
+  const parsedValue = Number(trimmed)
+  if (!Number.isFinite(parsedValue)) {
+    return { error: '无效的透明度数值' }
+  }
+
+  return { mode: 'set', value: parsedValue }
+}
+
+function applyOpacityOperation(originalValue: number, operation: { mode: 'set' | 'add' | 'mul' | 'div'; value: number }): number {
+  switch (operation.mode) {
+    case 'set':
+      return operation.value
+    case 'add':
+      return originalValue + operation.value
+    case 'mul':
+      return originalValue * operation.value
+    case 'div':
+      return originalValue / operation.value
+  }
+}
+
 function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
   // 优先处理颜色字段（拦截常规输入和 Alpha 混合）
   if (path === 'content.color') {
@@ -544,12 +607,40 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
     return
   }
 
+  if (isOpacityPath(path)) {
+    const operation = parseOpacityInput(String(inputValue))
+    if ('error' in operation) {
+      console.warn(`字段 ${path} 验证失败: ${operation.error}`)
+      return
+    }
+
+    const fieldValues = getNumericFieldValues(path)
+    if (fieldValues.length === 0) return
+
+    if (operation.mode !== 'set' && selectedDanmakus.value.length > 1) {
+      selectedDanmakus.value.forEach((d, idx) => {
+        const originalValue = fieldValues[idx]
+        if (typeof originalValue !== 'number') return
+
+        const updatedValue = applyOpacityOperation(originalValue, operation)
+        const normalizedValue = roundOpacityValue(validateRange(updatedValue, 0, 1))
+        store.updateDanmaku(d.id, { [path]: normalizedValue })
+      })
+    } else {
+      const baseValue = operation.mode === 'set' ? 0 : fieldValues[0]
+      const updatedValue = applyOpacityOperation(baseValue, operation)
+      const normalizedValue = roundOpacityValue(validateRange(updatedValue, 0, 1))
+      store.updateSelectedDanmakus({ [path]: normalizedValue })
+    }
+
+    delete editCache.value[path]
+    return
+  }
+
   const bypassValidationFields = [
     'content.text',
     'content.font',
     'animation.easing',
-    'opacity.from',
-    'opacity.to',
     'content.stroke'
   ]
   const shouldBypass = bypassValidationFields.includes(path)
@@ -607,12 +698,14 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
     newValue = applyOperation(fieldValues[0], parseResult)
   }
 
-  const validation = validateField(path.split('.').pop() || '', newValue)
+  newValue = roundIntegerValue(newValue)
+
+  const validation = validateField(getValidationFieldName(path), newValue)
   if (!validation.valid) {
     console.warn(validation.message)
-    const rule = M7_RULES[path.split('.').pop() as keyof typeof M7_RULES]
+    const rule = M7_RULES[getValidationFieldName(path) as keyof typeof M7_RULES]
     if (rule) {
-      newValue = validateRange(newValue, rule.min, rule.max)
+      newValue = roundIntegerValue(validateRange(newValue, rule.min, rule.max))
     }
   }
 
@@ -620,9 +713,9 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
     selectedDanmakus.value.forEach((d, idx) => {
       const originalValue = fieldValues[idx]
       if (typeof originalValue !== 'number') return
-      const updatedValue = applyOperation(originalValue, parseResult)
-      const rule = M7_RULES[path.split('.').pop() as keyof typeof M7_RULES]
-      const validated = validateRange(updatedValue, rule?.min || 0, rule?.max || Infinity)
+      const updatedValue = roundIntegerValue(applyOperation(originalValue, parseResult))
+      const rule = M7_RULES[getValidationFieldName(path) as keyof typeof M7_RULES]
+      const validated = roundIntegerValue(validateRange(updatedValue, rule?.min || 0, rule?.max || Infinity))
       store.updateDanmaku(d.id, { [path]: validated })
     })
   } else {
@@ -670,13 +763,12 @@ function onTextInputKeydown(e: KeyboardEvent) {
 }
 
 function onOpacityFieldChange(path: 'opacity.from' | 'opacity.to', value: string | number) {
-  const numericValue = Number(value)
-  if (!Number.isFinite(numericValue)) {
+  const textValue = String(value).trim()
+  if (!textValue) {
     return
   }
 
-  const normalizedValue = validateRange(numericValue, 0, 1)
-  updateField(path, normalizedValue)
+  updateField(path, textValue)
 }
 
 // 解析时间值（支持±*/ 操作）
@@ -798,7 +890,6 @@ onBeforeUnmount(() => {
 
 .subsection {
   margin-bottom: 12px;
-  padding-left: 12px;
 }
 
 .subsection h4 {

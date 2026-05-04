@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import type { DanmakuItem } from '@/core/danmaku.ts'
-import { saveProject, loadProject } from '../localstorage/projectStorage'
+import { saveProject, loadProject } from '../localStorage/projectStorage'
 import { historyManager } from '@/core/history'
 import { watch } from 'vue'
 import { parseXML, toXML } from '@/core/converter.ts'
@@ -1008,8 +1008,7 @@ export const useEditorStore = defineStore('editor', {
         danmaku.layer += appliedDelta
       })
 
-      historyManager.recordSnapshot(this.danmakus, `调整${selectedDanmakus.length}条弹幕层级`)
-      clearPendingChangeTracking()
+      this._checkAndRecordSnapshot()
     }
   }
 })

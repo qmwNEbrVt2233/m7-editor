@@ -36,7 +36,7 @@ export function validateArithmeticExpression(input: string): { valid: boolean; e
   // 检查操作符的合法性
   const operatorPattern = /^[+\-*/]?\d+(?:[+\-*/]\d+)*$/
   if (!operatorPattern.test(trimmed.replace(/\s+/g, ''))) {
-    return { valid: false, error: '四则运算格式不正确' }
+    return { valid: false, error: '格式不正确' }
   }
 
   return { valid: true }
