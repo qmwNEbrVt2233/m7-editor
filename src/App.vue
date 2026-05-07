@@ -4,6 +4,9 @@
       <div class="player-section">
         <Player />
       </div>
+      <div class="toolbar-section">
+        <ToolBar/>
+      </div>
       <div class="editor-section">
         <EditorPanel />
       </div>
@@ -25,6 +28,7 @@ import Player from './components/player/Player.vue'
 import EditorPanel from './components/editor/editorPanel.vue'
 import Timeline from './components/timeline/timeline.vue'
 import { useEditorStore } from './store/editor'
+import ToolBar from './components/editor/ToolBar.vue'
 
 const store = useEditorStore()
 const timelineHeight = ref(window.innerHeight - 530)
@@ -110,6 +114,18 @@ function onTimelineDragStart(e: MouseEvent) {
   flex: 1;
   overflow: hidden;
   background: #222;
+}
+
+.toolbar-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px;
+  background-color: #1e1e1e; 
+  border-left: 1px solid #333; 
+  width: max-content;
+  box-sizing: border-box;
+  z-index: 1;
 }
 
 .editor-section {

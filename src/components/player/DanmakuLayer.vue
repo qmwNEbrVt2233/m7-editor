@@ -12,6 +12,11 @@
       ></div>
     </div>
   </div>
+  <div class="ghostLayer">
+    <div>
+      // 此处使用相同的渲染逻辑，获取弹幕真实渲染盒尺寸，返回ToolBar用于计算居中功能
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -192,6 +197,17 @@ function formatText(text: string) {
 
   /* 关键：开启3D透视 */
   perspective: 500px;
+}
+
+.ghostLayer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  perspective: 500px;
+  visibility: hidden;
 }
 
 .danmaku {

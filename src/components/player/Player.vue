@@ -36,7 +36,6 @@
             class="dark-input"
             title="输入毫秒数(如33)或帧率(如/60表示60fps)"
           />
-          <span class="status-text">当前: {{ store.playheadStepMs.toFixed(6) }}ms</span>
         </div>
         
         <div class="divider"></div>
@@ -65,7 +64,6 @@
             min="1"
             class="dark-input"
           />
-          <span class="status-text">当前: {{ store.maxLayers }}</span>
         </div>
       </div>
 
@@ -158,7 +156,7 @@
       <DanmakuLayer />
     </div>
 
-    <div v-if="store.videoUrl" class="video-info">
+    <div v-if="store.videoUrl" class="video-info" :style="videoInfoStyle">
       视频时长: {{ formatTime(store.videoDuration) }}
     </div>
   </div>
@@ -198,6 +196,10 @@ const exportXmlDurationOffsetEnabled = ref(store.exportXmlDurationOffsetEnabled)
 const screenStyle = computed(() => ({
   width: `${store.screenWidth}px`,
   height: `${store.screenHeight}px`
+}))
+
+const videoInfoStyle = computed(() => ({
+  top: `${store.screenHeight + 60}px`
 }))
 
 // 处理播放头步长输入变化
@@ -627,5 +629,6 @@ function formatTime(ms: number) {
 .video-info {
   color: #aaa;
   font-size: 12px;
+  position: fixed;
 }
 </style>
