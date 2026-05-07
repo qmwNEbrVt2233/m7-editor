@@ -47,7 +47,12 @@ type ToolbarMeasureRequest = {
   danmaku: DanmakuItem
 }
 
-type ToolbarMeasureResponse = Record<string, { width: number; height: number }>
+type ToolbarMeasureResponse = Record<string, {
+  width: number
+  height: number
+  rawWidth: number
+  rawHeight: number
+}>
 
 type ToolbarMeasureEventDetail = {
   requests: ToolbarMeasureRequest[]
@@ -216,8 +221,6 @@ function getStyle(d: DanmakuItem, index: number) {
 function getGhostStyle(d: DanmakuItem, index: number) {
   const transform = `
     translate3d(0px, 0px, 0)
-    rotateZ(${d.transform.zRotate}deg)
-    rotateY(${360 - d.transform.yRotate}deg)
   `
 
   return {
@@ -264,15 +267,28 @@ async function handleToolbarMeasure(event: Event) {
     const result: ToolbarMeasureResponse = {}
 
     detail.requests.forEach((request) => {
-      const element = ghostElements.get(request.requestId)
+      const element = ghostElements.get(request.requestId) as HTMLElement
       if (!element) {
         return
       }
 
-      const rect = element.getBoundingClientRect()
+      // 1. 获取元素原始的排版宽高
+      const originW = element.offsetWidth || 0
+      const originH = element.offsetHeight || 0
+
+      // 2. 获取 Z 轴旋转角度，并转换为弧度
+      const zRotate = request.danmaku.transform?.zRotate || 0
+      const radians = zRotate * (Math.PI / 180)
+
+      // 3. 通过纯数学三角函数计算旋转后的视觉包围盒宽高
+      const boundingWidth = Math.abs(originW * Math.cos(radians)) + Math.abs(originH * Math.sin(radians))
+      const boundingHeight = Math.abs(originW * Math.sin(radians)) + Math.abs(originH * Math.cos(radians))
+
       result[request.danmaku.id] = {
-        width: rect.width,
-        height: rect.height
+        width: boundingWidth,
+        height: boundingHeight,
+        rawWidth: originW,
+        rawHeight: originH
       }
     })
 

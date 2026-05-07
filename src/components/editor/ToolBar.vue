@@ -97,6 +97,12 @@ import type { DanmakuItem } from '@/core/danmaku'
 import { historyManager } from '@/core/history'
 import { useEditorStore } from '@/store/editor'
 
+/**
+ * 工具栏作用范围模式：
+ * S - 仅作用于起始坐标
+ * E - 仅作用于结束坐标
+ * B - 同时作用于起始和结束坐标
+ */
 type ScopeMode = 'S' | 'E' | 'B'
 type TransformTarget = 'start' | 'end'
 type Axis = 'x' | 'y'
@@ -104,7 +110,12 @@ type ToolbarMeasureRequest = {
   requestId: string
   danmaku: DanmakuItem
 }
-type ToolbarMeasureResponse = Record<string, { width: number; height: number }>
+type ToolbarMeasureResponse = Record<string, {
+  width: number
+  height: number
+  rawWidth: number
+  rawHeight: number
+}>
 type ToolbarMeasureEventDetail = {
   requests: ToolbarMeasureRequest[]
   resolve: (result: ToolbarMeasureResponse) => void
@@ -123,6 +134,10 @@ const hasSelection = computed(() => selectedDanmakus.value.length > 0)
 
 let pickAbortController: AbortController | null = null
 
+/**
+ * 根据当前 scopeMode 返回需要修改的坐标目标列表
+ * 'S' -> ['start'], 'E' -> ['end'], 'B' -> ['start', 'end']
+ */
 function getScopeTargets(): TransformTarget[] {
   if (scopeMode.value === 'S') return ['start']
   if (scopeMode.value === 'E') return ['end']
@@ -151,6 +166,7 @@ function createIdAllocator() {
   return () => String(nextId++)
 }
 
+// 将坐标值四舍五入并钳制到 0 以上，同时返回是否发生了钳制
 function clampCoordinate(value: number) {
   const roundedValue = roundToInteger(value)
   return {
@@ -159,6 +175,37 @@ function clampCoordinate(value: number) {
   }
 }
 
+// 计算四个角旋转后的包围盒，用于居中计算时考虑旋转对宽高的影响
+function getRotatedBoundingBox(rawWidth: number, rawHeight: number, zRotate: number) {
+  const radian = zRotate * (Math.PI / 180)
+  const corners = [
+    { x: 0, y: 0 },
+    { x: rawWidth * Math.cos(radian), y: rawWidth * Math.sin(radian) },
+    { x: -rawHeight * Math.sin(radian), y: rawHeight * Math.cos(radian) },
+    {
+      x: rawWidth * Math.cos(radian) - rawHeight * Math.sin(radian),
+      y: rawWidth * Math.sin(radian) + rawHeight * Math.cos(radian)
+    }
+  ]
+
+  const xs = corners.map((point) => point.x)
+  const ys = corners.map((point) => point.y)
+  const minX = Math.min(...xs)
+  const maxX = Math.max(...xs)
+  const minY = Math.min(...ys)
+  const maxY = Math.max(...ys)
+
+  return {
+    minX,
+    maxX,
+    minY,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY
+  }
+}
+
+// 根据当前 S/E/B 模式，将指定的 x, y 写入弹幕的对应坐标（起始/结束/两者）
 function applyScopedPosition(danmaku: DanmakuItem, x: number, y: number) {
   const roundedX = roundToInteger(x)
   const roundedY = roundToInteger(y)
@@ -177,6 +224,12 @@ function applyScopedAxis(danmaku: DanmakuItem, axis: Axis, value: number) {
   })
 }
 
+/**
+ * 统一完成工具栏操作后的收尾工作：
+ * 1. 如有必要，更新选中 ID 列表
+ * 2. 记录历史快照
+ * 3. 清理变更追踪状态
+ */
 function finishToolbarOperation(description: string, nextSelectedIds?: string[]) {
   if (nextSelectedIds) {
     store.selectedIds = Array.from(new Set(nextSelectedIds))
@@ -186,6 +239,7 @@ function finishToolbarOperation(description: string, nextSelectedIds?: string[])
   store._clearPendingChangeTracking()
 }
 
+// 取消拾取定位模式，移除事件监听器并重置状态
 function cancelPickMode() {
   if (pickAbortController) {
     pickAbortController.abort()
@@ -195,11 +249,13 @@ function cancelPickMode() {
   isPicking.value = false
 }
 
+// 拾取定位工具
 function handlePickTool() {
   if (!hasSelection.value) {
     return
   }
 
+  // 如果已经在拾取状态，再次点击则取消拾取
   if (isPicking.value) {
     cancelPickMode()
     return
@@ -218,10 +274,12 @@ function handlePickTool() {
 
         cancelPickMode()
 
+        // 若点击位置不在 .screen 内，则视为放弃
         if (!screenElement || !target || !screenElement.contains(target)) {
           return
         }
 
+        // 计算相对于 .screen 左上角的坐标
         const rect = screenElement.getBoundingClientRect()
         const x = roundToInteger(event.clientX - rect.left)
         const y = roundToInteger(event.clientY - rect.top)
@@ -241,6 +299,10 @@ function handlePickTool() {
   }, 0)
 }
 
+/**
+ * 请求 DanmakuLayer 测量弹幕的实际渲染宽高。
+ * 通过自定义事件 TOOLBAR_MEASURE_EVENT 发送请求，DanmakuLayer 负责创建幽灵元素并测量。
+ */
 function measureDanmakus(danmakus: DanmakuItem[]): Promise<ToolbarMeasureResponse> {
   if (danmakus.length === 0) {
     return Promise.resolve({})
@@ -272,31 +334,44 @@ function measureDanmakus(danmakus: DanmakuItem[]): Promise<ToolbarMeasureRespons
   })
 }
 
+// 水平/垂直居中通用实现
 async function handleCenterByAxis(axis: Axis) {
   if (!hasSelection.value) {
     return
   }
 
   try {
+    // 1. 请求测量弹幕实际宽高
     const measurements = await measureDanmakus(selectedDanmakus.value)
+    // 2. 获取对应方向上的屏幕尺寸
     const screenSize = axis === 'x' ? store.screenWidth : store.screenHeight
     let hasClampWarning = false
     let hasChange = false
 
+    // 3. 逐个计算居中偏移并应用
     selectedDanmakus.value.forEach((danmaku) => {
       const measurement = measurements[danmaku.id]
       if (!measurement) {
         return
       }
 
-      const danmakuSize = axis === 'x' ? measurement.width : measurement.height
-      const centeredCoordinate = (screenSize - danmakuSize) / 2
+      // 写回的是左上角锚点坐标，所以需要先算出旋转后包围盒，再反推出锚点位置。
+      const rotatedBox = getRotatedBoundingBox(
+        measurement.rawWidth,
+        measurement.rawHeight,
+        danmaku.transform.zRotate
+      )
+
+      const centeredCoordinate = axis === 'x'
+        ? ((screenSize - rotatedBox.width) / 2) - rotatedBox.minX
+        : ((screenSize - rotatedBox.height) / 2) - rotatedBox.minY
       const { value, clamped } = clampCoordinate(centeredCoordinate)
 
       if (clamped) {
         hasClampWarning = true
       }
 
+      // 根据 S/E/B 模式写入对应的坐标轴
       applyScopedAxis(danmaku, axis, value)
       hasChange = true
     })
@@ -315,14 +390,17 @@ async function handleCenterByAxis(axis: Axis) {
   }
 }
 
+// 水平居中工具
 function handleHorizontalCenter() {
   void handleCenterByAxis('x')
 }
 
+// 垂直居中工具
 function handleVerticalCenter() {
   void handleCenterByAxis('y')
 }
 
+// 将起始坐标复制到结束坐标
 function handleCopyStartToEnd() {
   if (!hasSelection.value) {
     return
@@ -336,6 +414,7 @@ function handleCopyStartToEnd() {
   finishToolbarOperation('工具栏：起始坐标应用至结束坐标')
 }
 
+// 将结束坐标复制到起始坐标
 function handleCopyEndToStart() {
   if (!hasSelection.value) {
     return
@@ -349,6 +428,11 @@ function handleCopyEndToStart() {
   finishToolbarOperation('工具栏：结束坐标应用至起始坐标')
 }
 
+/**
+ * 行分隔工具
+ * 对于每个含有换行符 \n 的选中弹幕，将其拆分为多个弹幕。
+ * 考虑弹幕的 Z 轴旋转，新行沿旋转方向偏移 (size) 像素。
+ */
 function handleLineSplit() {
   if (!hasSelection.value) {
     return
@@ -362,18 +446,22 @@ function handleLineSplit() {
 
   selectedDanmakus.value.forEach((danmaku) => {
     const lines = danmaku.content.text.split('\n')
+
+    // 如果只有一行，无需拆分
     if (lines.length <= 1) {
       return
     }
 
     hasChange = true
 
+    // 复制一份作为模板，后续行将基于此生成
     const sourceDanmaku = cloneDanmaku(danmaku)
     const radian = (sourceDanmaku.transform.zRotate * Math.PI) / 180
     const lineStep = sourceDanmaku.content.size
 
     danmaku.content.text = lines[0]
 
+    // 从第二行开始创建新弹幕，并根据 Z 轴旋转计算偏移量
     lines.slice(1).forEach((line, index) => {
       const offsetIndex = index + 1
       const offsetX = -Math.sin(radian) * lineStep * offsetIndex
@@ -388,6 +476,7 @@ function handleLineSplit() {
         hasClampWarning = true
       }
 
+      // 分配新 ID，继承原 layer
       splitDanmaku.id = allocateId()
       splitDanmaku.layer = sourceDanmaku.layer
       splitDanmaku.content.text = line
@@ -418,6 +507,10 @@ function handleLineSplit() {
   }
 }
 
+/**
+ * 判断弹幕是否应被当前播放头 (currentTime) 分割
+ * 只有弹幕时间范围包含 currentTime 且两侧时长均 > 10ms 时才进行分割
+ */
 function shouldSplitByCurrentTime(danmaku: DanmakuItem, currentTime: number) {
   const endTime = danmaku.startTime + danmaku.animation.duration
   if (currentTime < danmaku.startTime || currentTime > endTime) {
@@ -430,6 +523,7 @@ function shouldSplitByCurrentTime(danmaku: DanmakuItem, currentTime: number) {
   return beforeDuration > 10 && afterDuration > 10
 }
 
+// 时间分割工具
 function handleTimeSplit() {
   if (!hasSelection.value) {
     return
@@ -477,6 +571,7 @@ function handleTimeSplit() {
   finishToolbarOperation('工具栏：时间分割', nextSelectedIds)
 }
 
+// 组件卸载时，移除可能残留的拾取定位监听器
 onBeforeUnmount(() => {
   cancelPickMode()
 })
