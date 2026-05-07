@@ -550,7 +550,14 @@ function onMouseDown(e: MouseEvent) {
   // 检测是否在空白处点击（用于框选和取消选择）
   const isOnBlock = (e.target as HTMLElement).closest('.block')
   const isOnHandle = (e.target as HTMLElement).closest('.handle')
+  const isOnRuler = (e.target as HTMLElement).closest('.ruler')
   const isCtrlPressed = e.ctrlKey || e.metaKey
+  
+  if (isOnRuler) {
+    dragging.value = true
+    updateTime(e)
+    return
+  }
   
   // 点击空白处取消所有选择
   if (!isOnBlock && !isOnHandle && !isCtrlPressed) {

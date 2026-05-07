@@ -38,7 +38,7 @@ import { useEditorStore } from '../../store/editor'
 const store = useEditorStore()
 
 const BUFFER_WINDOW = 10000 // 缓存窗口：10秒
-const PRELOAD_THRESHOLD = 2000 // 预加载阈值：2秒
+const PRELOAD_THRESHOLD = 1000 // 预加载阈值：1秒
 const JITTER_TOLERANCE = 500 // 抖动容差：500ms（解决视频时间微小倒退导致的频繁重算）
 const TOOLBAR_MEASURE_EVENT = 'toolbar-measure-danmakus'
 
@@ -77,7 +77,7 @@ const danmakuBufferSignature = computed(() => {
 // 低频刷新核心
 function updateBuffer(time: number) {
   console.log(`[Buffer] 正在重构缓冲池，当前时间: ${time}`)
-  currentBufferStart = time
+  currentBufferStart = time - PRELOAD_THRESHOLD
   currentBufferEnd = time + BUFFER_WINDOW
 
   activeBuffer.value = store.danmakus.filter((d: DanmakuItem) => {
