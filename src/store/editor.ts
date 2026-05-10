@@ -216,11 +216,11 @@ export const useEditorStore = defineStore('editor', {
           },
           transform: {
             start: { x: 130, y: 180 },
-            end: { x: 900, y: 180 },
+            end: { x: 800, y: 180 },
             zRotate: 0,
             yRotate: 0
           },
-          opacity: { from: 1, to: 1 },
+          opacity: { from: 1, to: 0 },
           animation: {
             duration: 500,
             moveDuration: 500,
@@ -230,7 +230,10 @@ export const useEditorStore = defineStore('editor', {
         }
       ],
       selectedIds: [] as string[],
-      currentTime: 0,
+      currentTime: saved?.timeline?.currentTime || 0,
+      timelineScale: saved?.timeline?.scale || 0.1,
+      timelineOffset: saved?.timeline?.offset || 0,
+      timelineScrollTop: saved?.timeline?.scrollTop || 0,
       playing: false,
       // 快捷键配置：播放头移动的步长（毫秒）
       playheadStepMs: 16.666667,  // 默认60fps对应的毫秒值
@@ -310,25 +313,7 @@ export const useEditorStore = defineStore('editor', {
         return
       }
 
-      this.danmakus = project.danmakus || []
-      
-      // 加载视频信息
-      if (project.video?.url) {
-        this.videoUrl = project.video.url
-      }
-      if (project.video?.duration) {
-        this.videoDuration = project.video.duration
-      }
-
-      if (project.player?.screenWidth) {
-        this.screenWidth = project.player.screenWidth
-      }
-      if (project.player?.screenHeight) {
-        this.screenHeight = project.player.screenHeight
-      }
-      if (typeof project.player?.maxLayers === 'number') {
-        this.setMaxLayers(project.player.maxLayers)
-      }
+      this.applyProject(project)
 
       console.log('加载完成')
     },
@@ -373,26 +358,7 @@ export const useEditorStore = defineStore('editor', {
       reader.onload = () => {
         try {
           const project = JSON.parse(reader.result as string)
-
-          this.danmakus = project.danmakus || []
-          
-          // 加载视频信息
-          if (project.video?.url) {
-            this.videoUrl = project.video.url
-          }
-          if (project.video?.duration) {
-            this.videoDuration = project.video.duration
-          }
-
-          if (project.player?.screenWidth) {
-            this.screenWidth = project.player.screenWidth
-          }
-          if (project.player?.screenHeight) {
-            this.screenHeight = project.player.screenHeight
-          }
-          if (typeof project.player?.maxLayers === 'number') {
-            this.setMaxLayers(project.player.maxLayers)
-          }
+          this.applyProject(project)
 
           console.log('文件加载成功')
         } catch (e) {
@@ -660,6 +626,54 @@ export const useEditorStore = defineStore('editor', {
         this.videoElement.currentTime = this.currentTime / 1000 // 将ms转换为秒
       }
     },
+    
+    // 时间轴视图相关操作
+    setTimelineView(scale: number, offset: number, scrollTop?: number) {
+      if (Number.isFinite(scale)) {
+        this.timelineScale = Math.max(0.01, Math.min(1, scale))
+      }
+
+      if (Number.isFinite(offset)) {
+        this.timelineOffset = Math.max(0, offset)
+      }
+
+      if (Number.isFinite(scrollTop)) {
+        this.timelineScrollTop = Math.max(0, scrollTop as number)
+      }
+    },
+
+    // 工程参数加载
+    applyProject(project: any) {
+      this.danmakus = project.danmakus || []
+      this.selectedIds = []
+
+      if (project.video?.url) {
+        this.videoUrl = project.video.url
+      }
+      if (typeof project.video?.duration === 'number') {
+        this.videoDuration = project.video.duration
+      }
+
+      if (typeof project.player?.screenWidth === 'number') {
+        this.screenWidth = project.player.screenWidth
+      }
+      if (typeof project.player?.screenHeight === 'number') {
+        this.screenHeight = project.player.screenHeight
+      }
+      if (typeof project.player?.maxLayers === 'number') {
+        this.setMaxLayers(project.player.maxLayers)
+      }
+
+      this.currentTime = typeof project.timeline?.currentTime === 'number'
+        ? Math.max(0, Math.round(project.timeline.currentTime))
+        : 0
+
+      this.setTimelineView(
+        typeof project.timeline?.scale === 'number' ? project.timeline.scale : 0.1,
+        typeof project.timeline?.offset === 'number' ? project.timeline.offset : 0,
+        typeof project.timeline?.scrollTop === 'number' ? project.timeline.scrollTop : 0
+      )
+    },
 
     // 导出时包含视频信息
     exportProject() {
@@ -669,8 +683,10 @@ export const useEditorStore = defineStore('editor', {
           createdAt: Date.now()
         },
         timeline: {
-          scale: 0.1,
-          offset: 0
+          currentTime: this.currentTime,
+          scale: this.timelineScale,
+          offset: this.timelineOffset,
+          scrollTop: this.timelineScrollTop
         },
         video: {
           url: this.videoFilePath || this.videoUrl, // 优先使用文件路径

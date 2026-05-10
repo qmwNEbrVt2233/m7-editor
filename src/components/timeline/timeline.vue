@@ -47,7 +47,13 @@
           @mouseleave="onBlockMouseLeave"
         >
           <!-- 宽度过小时隐藏文字 -->
-          <span v-if="d.animation.duration * scale >= 10">{{ d.content.text }}</span>
+          <span
+            v-if="d.animation.duration * scale >= 10"
+            class="block-text"
+            :style="getBlockTextStyle(d)"
+          >
+            {{ d.content.text }}
+          </span>
 
           <!-- 手柄只在悬停时渲染 -->
           <template v-if="hoveredBlockId === d.id">
@@ -79,9 +85,9 @@ const store = useEditorStore()
 const timelineRef = ref<HTMLElement | null>(null)
 const tracksRef = ref<HTMLElement | null>(null)
 
-// ⭐ 时间轴核心参数
-const scale = ref(0.1) // 1ms = 0.1px
-const offset = ref(0)
+// 时间轴核心参数
+const scale = ref(store.timelineScale) // 1ms = 0.1px
+const offset = ref(store.timelineOffset)
 
 // 可视宽度（从容器动态获取）
 const containerWidth = ref(800)
@@ -138,6 +144,25 @@ function initContainerWidth() {
   if (timelineEl) {
     containerWidth.value = timelineEl.clientWidth
   }
+}
+
+function syncTracksScrollTop(nextTop: number) {
+  if (!tracksRef.value) {
+    return
+  }
+
+  const maxScrollTop = Math.max(0, tracksRef.value.scrollHeight - tracksRef.value.clientHeight)
+  const clampedTop = Math.max(0, Math.min(maxScrollTop, nextTop))
+  tracksRef.value.scrollTop = clampedTop
+  tracksScrollTop.value = clampedTop
+}
+
+function nudgeTracksScroll(delta: number) {
+  if (!tracksRef.value || delta === 0) {
+    return
+  }
+
+  syncTracksScrollTop(tracksRef.value.scrollTop + delta)
 }
 
 function ensurePlayheadVisible() {
@@ -299,11 +324,12 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
     if (store.selectedIds.length > 0) {
       e.preventDefault()
       store.moveSelectedLayers(e.key === 'ArrowUp' ? -1 : 1)
+      nudgeTracksScroll(e.key === 'ArrowUp' ? -rowHeight : rowHeight)
     }
     return
   }
   
-  // ====== 需求#1：弹幕创建/删除/复制/粘贴 ======
+  // ====== 弹幕创建/删除/复制/粘贴 ======
   
   // `;` 创建单条弹幕
   if (e.key === ';' && !isCtrl && !isAlt && !isShift) {
@@ -341,7 +367,7 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
     return
   }
   
-  // ====== 需求#2：回滚/重做 ======
+  // ====== 回滚/重做 ======
   
   // `ctrl+z` 撤销
   if (e.key === 'z' && isCtrl && !isAlt && !isShift) {
@@ -359,7 +385,7 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
     return
   }
   
-  // ====== 需求#3：定位播放头到弹幕位置 ======
+  // ====== 定位播放头到弹幕位置 ======
   
   // `[` 移动播放头到当前操作弹幕的起始位置
   if (e.key === '[' && !isCtrl && !isAlt && !isShift) {
@@ -434,7 +460,10 @@ onMounted(() => {
   })
   // 初始化时确保第一次垂直范围正确
   if (tracksRef.value) {
-    tracksScrollTop.value = tracksRef.value.scrollTop
+    syncTracksScrollTop(store.timelineScrollTop)
+    requestAnimationFrame(() => {
+      syncTracksScrollTop(store.timelineScrollTop)
+    })
   }
   if (tracksRef.value) {
     tracksResizeObserver = new ResizeObserver(() => {
@@ -460,6 +489,37 @@ watch(
   () => store.currentTime,
   () => {
     ensurePlayheadVisible()
+  }
+)
+
+watch(
+  [scale, offset, tracksScrollTop],
+  ([nextScale, nextOffset, nextScrollTop]) => {
+    if (
+      store.timelineScale !== nextScale ||
+      store.timelineOffset !== nextOffset ||
+      store.timelineScrollTop !== nextScrollTop
+    ) {
+      store.setTimelineView(nextScale, nextOffset, nextScrollTop)
+    }
+  }
+)
+
+watch(
+  () => [store.timelineScale, store.timelineOffset, store.timelineScrollTop] as const,
+  ([nextScale, nextOffset, nextScrollTop]) => {
+    if (scale.value !== nextScale) {
+      scale.value = nextScale
+    }
+    if (offset.value !== nextOffset) {
+      offset.value = nextOffset
+    }
+    if (tracksScrollTop.value !== nextScrollTop) {
+      syncTracksScrollTop(nextScrollTop)
+      requestAnimationFrame(() => {
+        syncTracksScrollTop(nextScrollTop)
+      })
+    }
   }
 )
 
@@ -520,6 +580,14 @@ function getBlockStyle(d: any) {
     left: (d.startTime - offset.value) * scale.value + 'px',
     width: d.animation.duration * scale.value + 'px',
     top: d.layer * rowHeight + 'px'
+  }
+}
+
+function getBlockTextStyle(d: any) {
+  const blockLeft = (d.startTime - offset.value) * scale.value
+
+  return {
+    left: Math.max(0, -blockLeft) + 'px'
   }
 }
 
@@ -1271,13 +1339,21 @@ function onMouseUp() {
   color: white;
   font-size: 12px;
   overflow: hidden;
-  white-space: nowrap;
   border-radius: 2px;
-  line-height: 28px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
   clip-path: inset(0);
   outline: 2px solid #d8d8d8;
   outline-offset: -2px;
+}
+
+.block-text {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  line-height: 28px;
+  white-space: nowrap;
+  padding: 0 6px;
+  pointer-events: none;
 }
 
 .block:hover {

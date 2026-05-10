@@ -5,8 +5,10 @@ export interface Project {
   }
 
   timeline: {
+    currentTime: number
     scale: number
     offset: number
+    scrollTop: number
   }
 
   player?: {

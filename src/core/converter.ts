@@ -189,7 +189,7 @@ function escapeXmlText(value: string): string {
 
 /**
  * 判断某个坐标值是否应视为比例值
- * 需求要求对 0~0.999 之间的坐标做特殊处理
+ * 对 0~0.999 之间的坐标做特殊处理
  */
 function isRatioCoordinate(value: number): boolean {
   return value >= 0 && value < 1
