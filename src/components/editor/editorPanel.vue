@@ -1,13 +1,13 @@
 <template>
   <div class="editor-panel">
     <!-- 无选中状态 -->
-    <div v-if="!hasSelection" class="empty-state">
+    <div v-show="!hasSelection === true" class="empty-state">
       <p>未选择弹幕</p>
       <p class="hint">请在时间轴中选择一个或多个弹幕进行编辑</p>
     </div>
 
     <!-- 有选中状态 -->
-    <template v-else>
+    <template v-show="!hasSelection === false" style="display: contents;">
       <div class="panel-header">
         <h2>已选择：{{ store.selectedCount }} 条弹幕</h2>
       </div>
@@ -876,7 +876,7 @@ onBeforeUnmount(() => {
 }
 
 .editor-section {
-  margin-bottom: 20px;
+  margin-bottom: 25px;
   padding-bottom: 16px;
   border-bottom: 1px solid #333;
 }
@@ -1049,7 +1049,6 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 8px;
   padding-top: 12px;
-  border-top: 1px solid #333;
 }
 
 .btn-secondary {
