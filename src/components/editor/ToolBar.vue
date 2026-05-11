@@ -1,7 +1,85 @@
 <template>
-  <div class="advanced-tools">
-    <!-- 高级工具内容 -->
+  <div v-show="showAdvancedTools" class="advanced-tools">
+    <div class="advanced-header">高级工具</div>
+
+    <div class="advanced-tabs">
+      <button
+        class="advanced-tab"
+        :class="{ active: activeAdvancedPanel === 'stroke' }"
+        @click="activeAdvancedPanel = 'stroke'"
+      >
+        描边
+      </button>
+      <button
+        class="advanced-tab"
+        :class="{ active: activeAdvancedPanel === 'command' }"
+        @click="activeAdvancedPanel = 'command'"
+      >
+        命令
+      </button>
+    </div>
+
+    <div v-if="activeAdvancedPanel === 'stroke'" class="advanced-panel">
+      <div class="advanced-field">
+        <label>描边宽度</label>
+        <input
+          v-model="strokeWidthInput"
+          type="number"
+          min="1"
+          step="1"
+          class="advanced-input"
+        />
+      </div>
+
+      <div class="advanced-field">
+        <label>描边颜色</label>
+        <div class="color-row">
+          <input
+            v-model="strokeColorPicker"
+            type="color"
+            class="color-picker"
+            @input="handleStrokeColorPickerInput"
+          />
+          <input
+            v-model="strokeColorText"
+            type="text"
+            class="advanced-input color-text"
+            placeholder="#000001"
+            @change="handleStrokeColorTextChange"
+          />
+        </div>
+      </div>
+
+      <button
+        class="apply-btn"
+        :disabled="!hasSelection"
+        @click="handleApplyStroke"
+      >
+        应用
+      </button>
+    </div>
+
+    <div v-else class="advanced-panel command-panel">
+      <div class="command-log">
+        <div
+          v-for="(log, index) in commandLogs"
+          :key="`${index}-${log}`"
+          class="command-log-item"
+        >
+          {{ log }}
+        </div>
+      </div>
+
+      <textarea
+        v-model="commandInput"
+        type="text"
+        class="advanced-text-input"
+        placeholder="输入命令后按 Enter"
+        @keydown.enter.prevent="handleCommandSubmit"
+      />
+    </div>
   </div>
+
   <div class="toolbar">
     <div class="tool-group framed-group">
       <div class="mode-selector">
@@ -76,7 +154,7 @@
       class="tool-btn"
       :disabled="!hasSelection"
       title="互换结束与起始坐标"
-      @click=""
+      @click="handleSwapStartAndEnd"
     >
       <img src="/src/icon/S_E_exchange.svg" alt="互换结束与起始坐标" />
     </button>
@@ -104,8 +182,9 @@
 
     <button
       class="tool-btn"
+      :class="{ active: showAdvancedTools }"
       title="高级工具"
-      @click=""
+      @click="toggleAdvancedTools"
     >
       <img src="/src/icon/advanced_tools.svg" alt="高级工具" />
     </button>
@@ -117,6 +196,7 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import type { DanmakuItem } from '@/core/danmaku'
 import { historyManager } from '@/core/history'
 import { useEditorStore } from '@/store/editor'
+import { normalizeColor } from '@/utils/validation'
 
 /**
  * 工具栏作用范围模式：
@@ -127,6 +207,7 @@ import { useEditorStore } from '@/store/editor'
 type ScopeMode = 'S' | 'E' | 'B'
 type TransformTarget = 'start' | 'end'
 type Axis = 'x' | 'y'
+type AdvancedPanel = 'stroke' | 'command'
 type ToolbarMeasureRequest = {
   requestId: string
   danmaku: DanmakuItem
@@ -144,12 +225,31 @@ type ToolbarMeasureEventDetail = {
 }
 
 const TOOLBAR_MEASURE_EVENT = 'toolbar-measure-danmakus'
+const STROKE_OFFSETS = [
+  { x: -1, y: -1 },
+  { x: 0, y: -1 },
+  { x: 1, y: -1 },
+  { x: -1, y: 0 },
+  { x: 1, y: 0 },
+  { x: -1, y: 1 },
+  { x: 0, y: 1 },
+  { x: 1, y: 1 }
+]
 
 const store = useEditorStore()
 
-// 记录组合工具的作用范围，默认为 B。
 const scopeMode = ref<ScopeMode>('B')
 const isPicking = ref(false)
+const showAdvancedTools = ref(false)
+const activeAdvancedPanel = ref<AdvancedPanel>('stroke')
+const strokeWidthInput = ref('2')
+const strokeColorText = ref('#000001')
+const strokeColorPicker = ref('#000001')
+const commandInput = ref('')
+const commandLogs = ref<string[]>([
+  '命令模块暂未开发'
+])
+
 const selectedDanmakus = computed(() => store.getSelectedDanmakus)
 const hasSelection = computed(() => selectedDanmakus.value.length > 0)
 
@@ -175,7 +275,7 @@ function cloneDanmaku(danmaku: DanmakuItem): DanmakuItem {
 
 function createIdAllocator() {
   const generatedId = Number(store.generateNewId())
-  const maxExistingId = store.danmakus.reduce((max: any, danmaku: any) => {
+  const maxExistingId = store.danmakus.reduce((max: number, danmaku: DanmakuItem) => {
     const numericId = Number(danmaku.id)
     return Number.isFinite(numericId) ? Math.max(max, numericId) : max
   }, 0)
@@ -268,6 +368,172 @@ function cancelPickMode() {
   }
 
   isPicking.value = false
+}
+
+// 切换高级工具面板显示状态
+function toggleAdvancedTools() {
+  showAdvancedTools.value = !showAdvancedTools.value
+}
+
+// 在命令日志顶部添加一条新日志，并限制日志总数不超过 30 条
+function appendCommandLog(message: string) {
+  const timestamp = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+  commandLogs.value.unshift(`[${timestamp}] ${message}`)
+  commandLogs.value = commandLogs.value.slice(0, 30)
+}
+
+// 处理描边颜色选择器输入事件，将颜色值同步到文本输入框
+function handleStrokeColorPickerInput() {
+  strokeColorText.value = strokeColorPicker.value.toUpperCase()
+}
+
+// 处理描边颜色文本输入框的 change 事件，验证并规范化颜色值后同步到颜色选择器
+function handleStrokeColorTextChange() {
+  const normalizedColor = normalizeColor(strokeColorText.value)
+  if (!normalizedColor) {
+    window.alert('描边颜色格式无效，请输入 #RRGGBB 或 rgb(...)。')
+    strokeColorText.value = strokeColorPicker.value
+    return
+  }
+
+  strokeColorText.value = normalizedColor
+  strokeColorPicker.value = normalizedColor
+}
+
+// 验证并规范化描边宽度输入，确保其为大于 0 的整数
+function normalizeStrokeWidth(): number | null {
+  const parsedWidth = Number(strokeWidthInput.value)
+  if (!Number.isFinite(parsedWidth) || parsedWidth <= 0) {
+    window.alert('描边宽度必须是大于 0 的数字。')
+    return null
+  }
+
+  const width = Math.max(1, roundToInteger(parsedWidth))
+  strokeWidthInput.value = String(width)
+  return width
+}
+
+// 检查候选弹幕在指定层级与已占用层级的弹幕是否存在时间重叠冲突
+function hasLayerConflict(candidate: DanmakuItem, layer: number, occupiedDanmakus: DanmakuItem[]) {
+  return occupiedDanmakus.some((existingDanmaku) => {
+    if (existingDanmaku.layer !== layer) {
+      return false
+    }
+
+    return (
+      candidate.startTime < existingDanmaku.startTime + existingDanmaku.animation.duration &&
+      existingDanmaku.startTime < candidate.startTime + candidate.animation.duration
+    )
+  })
+}
+
+// 为一组弹幕分配连续的层级，确保它们在时间上不与已占用层级的弹幕冲突
+function assignSequentialLayersForGroup(group: DanmakuItem[], occupiedDanmakus: DanmakuItem[]) {
+  const maxLayer = Math.max(0, store.maxLayers - 1)
+
+  group.forEach((candidate) => {
+    let layer = Math.max(0, roundToInteger(candidate.layer))
+
+    while (layer < store.maxLayers && hasLayerConflict(candidate, layer, occupiedDanmakus)) {
+      layer++
+    }
+
+    candidate.layer = Math.min(layer, maxLayer)
+    occupiedDanmakus.push(cloneDanmaku(candidate))
+  })
+}
+
+// 为选中弹幕添加描边，为每条选中弹幕生成 8 条偏移的描边副本，将原弹幕放在最上层，最后统一分配层级以避免冲突
+function handleApplyStroke() {
+  if (!hasSelection.value) {
+    return
+  }
+
+  const strokeWidth = normalizeStrokeWidth()
+  if (strokeWidth === null) {
+    return
+  }
+
+  const normalizedColor = normalizeColor(strokeColorText.value)
+  if (!normalizedColor) {
+    window.alert('描边颜色格式无效，请输入 #RRGGBB 或 rgb(...)。')
+    return
+  }
+
+  strokeColorText.value = normalizedColor
+  strokeColorPicker.value = normalizedColor
+
+  const allocateId = createIdAllocator()
+  const occupiedDanmakus = store.danmakus
+    .filter((danmaku: any) => !store.selectedIds.includes(danmaku.id))
+    .map((danmaku: any) => cloneDanmaku(danmaku))
+
+  const newDanmakus: DanmakuItem[] = []
+  const nextSelectedIds = [...store.selectedIds]
+  let hasClampWarning = false
+  let hasChange = false
+
+  selectedDanmakus.value.forEach((originalDanmaku) => {
+    const sourceDanmaku = cloneDanmaku(originalDanmaku)
+    const outlineDanmakus = STROKE_OFFSETS.map((offset, index) => {
+      const outlineDanmaku = cloneDanmaku(sourceDanmaku)
+      const startX = clampCoordinate(sourceDanmaku.transform.start.x + (offset.x * strokeWidth))
+      const startY = clampCoordinate(sourceDanmaku.transform.start.y + (offset.y * strokeWidth))
+      const endX = clampCoordinate(sourceDanmaku.transform.end.x + (offset.x * strokeWidth))
+      const endY = clampCoordinate(sourceDanmaku.transform.end.y + (offset.y * strokeWidth))
+
+      if (startX.clamped || startY.clamped || endX.clamped || endY.clamped) {
+        hasClampWarning = true
+      }
+
+      outlineDanmaku.id = allocateId()
+      outlineDanmaku.layer = sourceDanmaku.layer + index
+      outlineDanmaku.content.color = normalizedColor
+      outlineDanmaku.transform.start.x = startX.value
+      outlineDanmaku.transform.start.y = startY.value
+      outlineDanmaku.transform.end.x = endX.value
+      outlineDanmaku.transform.end.y = endY.value
+
+      return outlineDanmaku
+    })
+
+    const originalShadow = cloneDanmaku(sourceDanmaku)
+    originalShadow.layer = sourceDanmaku.layer + STROKE_OFFSETS.length
+
+    const orderedGroup = [...outlineDanmakus, originalShadow]
+    assignSequentialLayersForGroup(orderedGroup, occupiedDanmakus)
+
+    outlineDanmakus.forEach((outlineDanmaku) => {
+      newDanmakus.push(outlineDanmaku)
+      nextSelectedIds.push(outlineDanmaku.id)
+    })
+
+    originalDanmaku.layer = originalShadow.layer
+    hasChange = true
+  })
+
+  if (!hasChange) {
+    return
+  }
+
+  store.danmakus.push(...newDanmakus)
+  finishToolbarOperation('工具栏：高级工具描边', nextSelectedIds)
+
+  if (hasClampWarning) {
+    window.alert('部分描边弹幕坐标小于 0，已自动修正为 0。')
+  }
+}
+
+function handleCommandSubmit() {
+  const command = commandInput.value.trim()
+  if (!command) {
+    appendCommandLog('命令为空，未执行。')
+    return
+  }
+
+  appendCommandLog(`收到命令：${command}`)
+  appendCommandLog('命令功能暂未开发')
+  commandInput.value = ''
 }
 
 // 拾取定位工具
@@ -449,6 +715,27 @@ function handleCopyEndToStart() {
   finishToolbarOperation('工具栏：结束坐标应用至起始坐标')
 }
 
+// 互换起始坐标与结束坐标
+function handleSwapStartAndEnd() {
+  if (!hasSelection.value) {
+    return
+  }
+
+  selectedDanmakus.value.forEach((danmaku) => {
+    const startX = roundToInteger(danmaku.transform.start.x)
+    const startY = roundToInteger(danmaku.transform.start.y)
+    const endX = roundToInteger(danmaku.transform.end.x)
+    const endY = roundToInteger(danmaku.transform.end.y)
+
+    danmaku.transform.start.x = endX
+    danmaku.transform.start.y = endY
+    danmaku.transform.end.x = startX
+    danmaku.transform.end.y = startY
+  })
+
+  finishToolbarOperation('工具栏：互换结束与起始坐标')
+}
+
 /**
  * 行分隔工具
  * 对于每个含有换行符 \n 的选中弹幕，将其拆分为多个弹幕。
@@ -465,9 +752,10 @@ function handleLineSplit() {
   let hasClampWarning = false
   let hasChange = false
 
+
   selectedDanmakus.value.forEach((danmaku) => {
     const lines = danmaku.content.text.split('\n')
-
+    
     // 如果只有一行，无需拆分
     if (lines.length <= 1) {
       return
@@ -599,6 +887,183 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.advanced-tools {
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background-color: #1b1b1b;
+  border: 1px solid #333;
+  border-radius: 10px;
+  box-sizing: border-box;
+  margin-right: 7px;
+}
+
+.advanced-header {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e0e0e0;
+}
+
+.advanced-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.advanced-tab {
+  height: 32px;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  background: #252525;
+  color: #bfbfbf;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.advanced-tab:hover {
+  border-color: #555;
+  color: #fff;
+}
+
+.advanced-tab.active {
+  background: #27683b;
+  border-color: #4caf50;
+  color: #fff;
+}
+
+.advanced-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.advanced-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.advanced-field label {
+  font-size: 12px;
+  color: #c9c9c9;
+}
+
+.advanced-input {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  background-color: #3c3c3c;
+  color: #e0e0e0;
+  box-sizing: border-box;
+}
+
+.advanced-input:focus {
+  outline: none;
+  border-color: #4caf50;
+}
+
+.advanced-text-input {
+  padding: 8px 10px;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  background-color: #3c3c3c;
+  color: #e0e0e0;
+  font-size: 13px;
+  transition: border-color 0.2s;
+  resize: vertical;
+  height: 100px;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  resize: none;
+}
+
+.advanced-text-input:focus {
+  outline: none;
+  border-color: #4caf50;
+  background-color: #444;
+}
+.color-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.color-picker {
+  background-color: #3c3c3c;
+  padding: 8px 10px;
+  width: 50px;
+  height: 34px;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.color-text {
+  width: 130px;
+  flex: 1;
+}
+
+.apply-btn {
+  height: 36px;
+  border: 1px solid #4caf50;
+  border-radius: 3px;
+  background: #27683b;
+  color: #fff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.apply-btn:hover:not(:disabled) {
+  background: #2d9647;
+}
+
+.apply-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.command-panel {
+  gap: 10px;
+}
+
+.command-log {
+  height: 250px;
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid #333;
+  border-radius: 3px;
+  background: #131313;
+  font-size: 12px;
+  color: #9ad29f;
+}
+
+.advanced-text-input::-webkit-scrollbar,
+.command-log::-webkit-scrollbar {
+  width: 8px;
+}
+
+.advanced-text-input::-webkit-scrollbar-track,
+.command-log::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+.advanced-text-input::-webkit-scrollbar-thumb,
+.command-log::-webkit-scrollbar-thumb {
+  background: #464647;
+  border-radius: 4px;
+}
+
+.advanced-text-input::-webkit-scrollbar-thumb:hover,
+.command-log::-webkit-scrollbar-thumb:hover {
+  background: #5a5a5a;
+}
+
+.command-log-item + .command-log-item {
+  margin-top: 6px;
+}
+
 .toolbar {
   width: 48px;
   display: flex;
@@ -610,16 +1075,6 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
 }
 
-.advanced-tools {
-  width: 200px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 16px;
-  background-color: #1e1e1e;
-  box-sizing: border-box;
-}
-
 .tool-btn {
   display: flex;
   justify-content: center;
@@ -628,7 +1083,7 @@ onBeforeUnmount(() => {
   height: 36px;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 3px;
   cursor: pointer;
   transition: all 0.2s ease;
 }
