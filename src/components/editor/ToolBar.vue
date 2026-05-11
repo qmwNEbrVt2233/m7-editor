@@ -1,4 +1,7 @@
 <template>
+  <div class="advanced-tools">
+    <!-- 高级工具内容 -->
+  </div>
   <div class="toolbar">
     <div class="tool-group framed-group">
       <div class="mode-selector">
@@ -69,6 +72,14 @@
     >
       <img src="/src/icon/E_to_S.svg" alt="结束坐标应用至起始坐标" />
     </button>
+    <button
+      class="tool-btn"
+      :disabled="!hasSelection"
+      title="互换结束与起始坐标"
+      @click=""
+    >
+      <img src="/src/icon/S_E_exchange.svg" alt="互换结束与起始坐标" />
+    </button>
 
     <div class="divider"></div>
 
@@ -87,6 +98,16 @@
       @click="handleTimeSplit"
     >
       <img src="/src/icon/cut.svg" alt="时间分割" />
+    </button>
+
+    <div class="divider"></div>
+
+    <button
+      class="tool-btn"
+      title="高级工具"
+      @click=""
+    >
+      <img src="/src/icon/advanced_tools.svg" alt="高级工具" />
     </button>
   </div>
 </template>
@@ -583,9 +604,19 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 16px;
+  gap: 10px;
   background-color: #1e1e1e;
   width: max-content;
+  box-sizing: border-box;
+}
+
+.advanced-tools {
+  width: 200px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  background-color: #1e1e1e;
   box-sizing: border-box;
 }
 

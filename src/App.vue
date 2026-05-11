@@ -118,8 +118,7 @@ function onTimelineDragStart(e: MouseEvent) {
 
 .toolbar-section {
   display: flex;
-  flex-direction: column;
-  align-items: center;
+  flex-direction: row;
   padding: 8px;
   background-color: #1e1e1e; 
   border-left: 1px solid #333; 
