@@ -367,6 +367,17 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
     return
   }
   
+  // ====== 全选弹幕 ======
+  
+  // `ctrl+a` 全选弹幕
+  if (e.key === 'a' && isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    const allIds = store.danmakus.map((d: any) => d.id)
+    store.selectedIds = allIds
+    console.log('[快捷键] 全选弹幕')
+    return
+  }
+  
   // ====== 回滚/重做 ======
   
   // `ctrl+z` 撤销

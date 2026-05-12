@@ -160,6 +160,9 @@ npm run preview
 - 将结束坐标应用至起始坐标工具
   - 将结束坐标应用至起始坐标
 
+- 互换结束与起始坐标工具
+  - 将结束与起始坐标互换
+
 - 行分隔工具
   - 将有换行的弹幕拆分为多条弹幕
   - 有layer避让
@@ -177,6 +180,15 @@ npm run preview
   - S（Start），意为作用于起始坐标
   - E（End），意为作用于结束坐标
   - B（Both），意为作用于起始与结束坐标
+
+### 高级工具列表：
+- 描边工具
+  - 支持选择描边宽度
+  - 支持输入描边颜色
+  - 有layer避让
+  - 若新建弹幕坐标有小于0的则弹窗提醒，并钳至0
+
+- 命令工具（暂未开发）
 
 ## 4. 时间轴区域
 
@@ -211,6 +223,7 @@ npm run preview
 | `Delete` | 删除当前选中的弹幕 |
 | `Ctrl + C` | 复制选中的弹幕 |
 | `Ctrl + V` | 粘贴弹幕 |
+| `Ctrl + A` | 全选弹幕 |
 | `Ctrl + Z` | 撤销 |
 | `Ctrl + Y` | 重做 |
 | `[` | 将播放头移动到当前操作弹幕或首个选中弹幕的开始位置 |
@@ -224,8 +237,8 @@ npm run preview
 | --- | --- |
 | `ArrowLeft` | 按当前播放头步长向左移动播放头 |
 | `ArrowRight` | 按当前播放头步长向右移动播放头 |
-| `ArrowUp` | 将选中弹幕layer-1（向上移动）|
-| `ArrowDown` | 将选中弹幕layer+1（向下移动） |
+| `ArrowUp` | 向上移动视图一个layer宽度，若有选中的弹幕则将其layer-1（向上移动）|
+| `ArrowDown` | 向下移动视图一个layer宽度，若有选中的弹幕则将其layer+1（向下移动） |
 | `Ctrl + ArrowLeft` | 向左平移时间轴一半视图，并同步移动播放头 |
 | `Ctrl + ArrowRight` | 向右平移时间轴一半视图，并同步移动播放头 |
 | `Ctrl + Alt + ArrowLeft` | 向左平移时间轴 30 秒，并同步移动播放头 |
@@ -350,11 +363,13 @@ npm run preview
     │       project.ts               #工程文件结构
     │
     ├───icon                         #工具栏图标
+    │       advanced_tools.svg
     │       cut.svg
     │       E_to_S.svg
     │       horizontal_centering.svg
     │       Pick_and_locate.svg
     │       Split_by_line.svg
+    │       S_E_exchange.svg
     │       S_to_E.svg
     │       vertical_centering.svg
     │
