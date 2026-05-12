@@ -184,7 +184,7 @@ function buildBaseStyle(d: DanmakuItem, index: number) {
     zIndex: index,
     color: d.content.color,
     fontSize: `${d.content.size}px`,
-    fontFamily: d.content.font,
+    fontFamily: `${d.content.font}, Arial, Helvetica, sans-serif`,
     fontWeight: 'bold' as const,
     lineHeight: 1,
     textShadow: d.content.stroke ? `
