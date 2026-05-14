@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="_图层_1" data-name="图层 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 246.08 337.66">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: #fff;
+        font-family: AdobeSongStd-Light-GBpc-EUC-H, 'Adobe Song Std';
+        font-size: 130px;
+        font-weight: 300;
+      }
+
+      .cls-2 {
+        fill: none;
+        stroke: #fff;
+        stroke-miterlimit: 10;
+        stroke-width: 20px;
+      }
+    </style>
+  </defs>
+  <text class="cls-1" transform="translate(0 114.4)"><tspan x="0" y="0">S</tspan></text>
+  <text class="cls-1" transform="translate(172.9 114.4)"><tspan x="0" y="0">E</tspan></text>
+  <polyline class="cls-2" points="50.8 126.38 121.72 161.92 190.61 126.38"/>
+  <line class="cls-2" x1="120.71" y1="165.87" x2="120.71" y2="196.13"/>
+  <text class="cls-1" transform="translate(81.25 304.64)"><tspan x="0" y="0">Z</tspan></text>
+</svg>

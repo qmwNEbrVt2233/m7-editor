@@ -12,6 +12,13 @@
       </button>
       <button
         class="advanced-tab"
+        :class="{ active: activeAdvancedPanel === `calculator` }"
+        @click="activeAdvancedPanel = `calculator`"
+      >
+        计算
+      </button>
+      <button
+        class="advanced-tab"
         :class="{ active: activeAdvancedPanel === 'command' }"
         @click="activeAdvancedPanel = 'command'"
       >
@@ -59,7 +66,46 @@
       </button>
     </div>
 
-    <div v-else class="advanced-panel command-panel">
+    <div v-if="activeAdvancedPanel === `calculator`" class="advanced-panel">
+      <div class="advanced-field">
+        <label>角度</label>
+        <input
+          v-model="calculatorAngleInput"
+          type="text"
+          class="advanced-input"
+          placeholder="留空使用自身角度，支持+/-相对调整"
+        />
+      </div>
+
+      <div class="advanced-field">
+        <label>长度</label>
+        <input
+          v-model="calculatorLengthInput"
+          type="number"
+          class="advanced-input"
+          step="1"
+          placeholder="输入长度"
+        />
+      </div>
+
+      <div class="advanced-field checkbox">
+        <label>
+          <input
+            v-model="lockAngleEnabled"
+            type="checkbox"
+          />开启锁定角度
+        </label>
+      </div>
+      
+      <button
+        class="apply-btn"
+        :disabled="!hasSelection"
+        @click="handleApplyLength"
+      >
+        应用
+      </button>
+    </div>
+    <div v-if="activeAdvancedPanel === `command`" class="advanced-panel command-panel">
       <div class="command-log">
         <div
           v-for="(log, index) in commandLogs"
@@ -159,6 +205,15 @@
       <img src="/src/icon/S_E_exchange.svg" alt="互换结束与起始坐标" />
     </button>
 
+    <button
+      class="tool-btn"
+      :disabled="!hasSelection"
+      title="根据坐标计算z轴旋转角度"
+      @click="handleCalculateZRotation"
+      >
+      <img src="/src/icon/zRotate_calculate.svg" alt="计算Z轴旋转" />
+    </button>
+
     <div class="divider"></div>
 
     <button
@@ -192,7 +247,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { DanmakuItem } from '@/core/danmaku'
 import { historyManager } from '@/core/history'
 import { useEditorStore } from '@/store/editor'
@@ -207,7 +262,7 @@ import { normalizeColor } from '@/utils/validation'
 type ScopeMode = 'S' | 'E' | 'B'
 type TransformTarget = 'start' | 'end'
 type Axis = 'x' | 'y'
-type AdvancedPanel = 'stroke' | 'command'
+type AdvancedPanel = 'stroke' | 'calculator' | 'command'
 type ToolbarMeasureRequest = {
   requestId: string
   danmaku: DanmakuItem
@@ -245,6 +300,9 @@ const activeAdvancedPanel = ref<AdvancedPanel>('stroke')
 const strokeWidthInput = ref('2')
 const strokeColorText = ref('#000001')
 const strokeColorPicker = ref('#000001')
+const calculatorAngleInput = ref('')
+const calculatorLengthInput = ref('200')
+const lockAngleEnabled = ref(false)
 const commandInput = ref('')
 const commandLogs = ref<string[]>([
   '命令模块暂未开发'
@@ -252,8 +310,20 @@ const commandLogs = ref<string[]>([
 
 const selectedDanmakus = computed(() => store.getSelectedDanmakus)
 const hasSelection = computed(() => selectedDanmakus.value.length > 0)
+const selectedCoordinateSnapshot = computed(() => {
+  return selectedDanmakus.value.map((danmaku) => ({
+    id: danmaku.id,
+    startX: danmaku.transform.start.x,
+    startY: danmaku.transform.start.y,
+    endX: danmaku.transform.end.x,
+    endY: danmaku.transform.end.y,
+    zRotate: danmaku.transform.zRotate
+  }))
+})
 
 let pickAbortController: AbortController | null = null
+let isApplyingLockAngle = false
+let suppressLockAngleWatchCount = 0
 
 /**
  * 根据当前 scopeMode 返回需要修改的坐标目标列表
@@ -267,6 +337,11 @@ function getScopeTargets(): TransformTarget[] {
 
 function roundToInteger(value: number): number {
   return Math.round(value)
+}
+
+function normalizeAngle(value: number): number {
+  const normalized = value % 360
+  return normalized < 0 ? normalized + 360 : normalized
 }
 
 function cloneDanmaku(danmaku: DanmakuItem): DanmakuItem {
@@ -296,6 +371,18 @@ function clampCoordinate(value: number) {
   }
 }
 
+function clampToCoordinateRange(value: number): number {
+  if (Number.isNaN(value)) {
+    return 0
+  }
+
+  if (!Number.isFinite(value)) {
+    return value > 0 ? 10000 : 0
+  }
+
+  return Math.max(0, Math.min(10000, value))
+}
+
 // 计算四个角旋转后的包围盒，用于居中计算时考虑旋转对宽高的影响
 function getRotatedBoundingBox(rawWidth: number, rawHeight: number, zRotate: number) {
   const radian = zRotate * (Math.PI / 180)
@@ -323,6 +410,127 @@ function getRotatedBoundingBox(rawWidth: number, rawHeight: number, zRotate: num
     maxY,
     width: maxX - minX,
     height: maxY - minY
+  }
+}
+
+function parseAngleMode(input: string) {
+  const trimmed = input.trim()
+
+  if (!trimmed) {
+    return { mode: 'self' as const }
+  }
+
+  if (/^[+-]\d+(\.\d+)?$/.test(trimmed)) {
+    return {
+      mode: 'relative' as const,
+      value: Number(trimmed)
+    }
+  }
+
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    return {
+      mode: 'absolute' as const,
+      value: Number(trimmed)
+    }
+  }
+
+  return {
+    mode: 'invalid' as const,
+    message: '角度输入格式无效，请留空，或输入数字，或输入 +数字 / -数字。'
+  }
+}
+
+// 根据用户输入的角度模式解析出最终的角度值，支持留空使用自身角度、相对调整和绝对角度
+function resolveAngleForDanmaku(danmaku: DanmakuItem): number | null {
+  const parsed = parseAngleMode(calculatorAngleInput.value)
+
+  if (parsed.mode === 'invalid') {
+    window.alert(parsed.message)
+    return null
+  }
+
+  if (parsed.mode === 'self') {
+    return normalizeAngle(danmaku.transform.zRotate)
+  }
+
+  if (parsed.mode === 'relative') {
+    return normalizeAngle(danmaku.transform.zRotate + parsed.value)
+  }
+
+  return normalizeAngle(parsed.value)
+}
+
+// 解析长度输入，确保其为大于等于 0 的数字，否则提示错误
+function parseLengthInput(): number | null {
+  const rawValue = String(calculatorLengthInput.value ?? '').trim()
+  if (!rawValue) {
+    window.alert('请输入长度')
+    return null
+  }
+
+  const parsedLength = Number(rawValue)
+  if (!Number.isFinite(parsedLength) || parsedLength < 0) {
+    window.alert('长度必须是大于等于 0 的数字')
+    return null
+  }
+
+  calculatorLengthInput.value = rawValue
+  return parsedLength
+}
+
+// 在锁定角度模式下，根据已知的起始坐标、已知轴上的坐标值和角度，计算出另一个轴上的坐标值，并钳制在合法范围内
+function projectEndPointWithLockedAngle(
+  startX: number,
+  startY: number,
+  knownAxis: Axis,
+  knownValue: number,
+  angle: number
+) {
+  const radian = angle * Math.PI / 180
+  const dx = Math.cos(radian)
+  const dy = Math.sin(radian)
+  const epsilon = 1e-6
+
+  let nextX = knownAxis === 'x' ? knownValue : startX
+  let nextY = knownAxis === 'y' ? knownValue : startY
+
+  if (knownAxis === 'x') {
+    if (Math.abs(dx) > epsilon) {
+      const t = (nextX - startX) / dx
+      nextY = startY + t * dy
+    } else {
+      nextY = dy >= 0 ? Infinity : -Infinity
+    }
+  } else {
+    if (Math.abs(dy) > epsilon) {
+      const t = (nextY - startY) / dy
+      nextX = startX + t * dx
+    } else {
+      nextX = dx >= 0 ? Infinity : -Infinity
+    }
+  }
+
+  let clampedX = clampToCoordinateRange(nextX)
+  let clampedY = clampToCoordinateRange(nextY)
+
+  if (clampedX !== nextX && Math.abs(dx) > epsilon) {
+    const t = (clampedX - startX) / dx
+    clampedY = clampToCoordinateRange(startY + t * dy)
+  }
+
+  if (clampedY !== nextY && Math.abs(dy) > epsilon) {
+    const t = (clampedY - startY) / dy
+    clampedX = clampToCoordinateRange(startX + t * dx)
+  }
+
+  return {
+    x: roundToInteger(clampedX),
+    y: roundToInteger(clampedY),
+    clamped:
+      clampedX !== nextX ||
+      clampedY !== nextY ||
+      !Number.isFinite(nextX) ||
+      !Number.isFinite(nextY)
   }
 }
 
@@ -534,6 +742,140 @@ function handleCommandSubmit() {
   appendCommandLog(`收到命令：${command}`)
   appendCommandLog('命令功能暂未开发')
   commandInput.value = ''
+}
+
+// 根据坐标计算 Z 轴旋转角度，使用 atan2(dy, dx) 计算角度并转换为度数，最后规范化为 0-360 范围内的整数
+function handleCalculateZRotation() {
+  if (!hasSelection.value) {
+    return
+  }
+
+  let hasChange = false
+
+  selectedDanmakus.value.forEach((danmaku) => {
+    const dx = danmaku.transform.end.x - danmaku.transform.start.x
+    const dy = danmaku.transform.end.y - danmaku.transform.start.y
+    const angle = normalizeAngle(Math.atan2(dy, dx) * (180 / Math.PI))
+    const roundedAngle = roundToInteger(angle)
+
+    if (danmaku.transform.zRotate !== roundedAngle) {
+      danmaku.transform.zRotate = roundedAngle
+      hasChange = true
+    }
+  })
+
+  if (!hasChange) {
+    return
+  }
+
+  finishToolbarOperation('工具栏：根据坐标计算Z轴旋转')
+}
+
+function handleApplyLength() {
+  if (!hasSelection.value) {
+    return
+  }
+
+  const length = parseLengthInput()
+  if (length === null) {
+    return
+  }
+
+  let hasClampWarning = false
+  let hasChange = false
+
+  for (const danmaku of selectedDanmakus.value) {
+    const angle = resolveAngleForDanmaku(danmaku)
+    if (angle === null) {
+      return
+    }
+
+    const radian = angle * Math.PI / 180
+    const nextEndX = danmaku.transform.start.x + length * Math.cos(radian)
+    const nextEndY = danmaku.transform.start.y + length * Math.sin(radian)
+    const clampedEndX = clampToCoordinateRange(nextEndX)
+    const clampedEndY = clampToCoordinateRange(nextEndY)
+    const roundedEndX = roundToInteger(clampedEndX)
+    const roundedEndY = roundToInteger(clampedEndY)
+
+    if (clampedEndX !== nextEndX || clampedEndY !== nextEndY) {
+      hasClampWarning = true
+    }
+
+    if (
+      danmaku.transform.end.x !== roundedEndX ||
+      danmaku.transform.end.y !== roundedEndY
+    ) {
+      danmaku.transform.end.x = roundedEndX
+      danmaku.transform.end.y = roundedEndY
+      hasChange = true
+    }
+  }
+
+  if (!hasChange) {
+    return
+  }
+
+  finishToolbarOperation('工具栏：长度输入')
+
+  if (hasClampWarning) {
+    window.alert('部分长度计算结果超出坐标范围，已自动限制在 0 到 10000 之间。')
+  }
+}
+
+// 在锁定角度模式下，当用户修改了某个坐标轴的值时，自动计算另一个坐标轴的值以保持原有角度不变，并钳制在合法范围内
+function handleLockedAngleUpdate(changedAxis: Axis) {
+  if (!lockAngleEnabled.value || !hasSelection.value || isApplyingLockAngle) {
+    return
+  }
+
+  isApplyingLockAngle = true
+
+  let hasChange = false
+  let hasClampWarning = false
+
+  try {
+    for (const danmaku of selectedDanmakus.value) {
+      const angle = resolveAngleForDanmaku(danmaku)
+      if (angle === null) {
+        return
+      }
+
+      const projected = projectEndPointWithLockedAngle(
+        danmaku.transform.start.x,
+        danmaku.transform.start.y,
+        changedAxis,
+        changedAxis === 'x' ? danmaku.transform.end.x : danmaku.transform.end.y,
+        angle
+      )
+
+      if (
+        danmaku.transform.end.x !== projected.x ||
+        danmaku.transform.end.y !== projected.y
+      ) {
+        danmaku.transform.end.x = projected.x
+        danmaku.transform.end.y = projected.y
+        hasChange = true
+      }
+
+      if (projected.clamped) {
+        hasClampWarning = true
+      }
+    }
+  } finally {
+    isApplyingLockAngle = false
+  }
+
+  if (!hasChange) {
+    return
+  }
+
+  suppressLockAngleWatchCount = 1
+  finishToolbarOperation('工具栏：锁定角度')
+
+  if (hasClampWarning) {
+    window.alert('部分锁定角度结果超出坐标范围，已自动限制在 0 到 10000 之间。')
+  }
 }
 
 // 拾取定位工具
@@ -880,6 +1222,54 @@ function handleTimeSplit() {
   finishToolbarOperation('工具栏：时间分割', nextSelectedIds)
 }
 
+// 锁定角度工具
+watch(selectedCoordinateSnapshot, (nextSnapshot, previousSnapshot) => {
+  if (!lockAngleEnabled.value || isApplyingLockAngle) {
+    return
+  }
+
+  if (suppressLockAngleWatchCount > 0) {
+    suppressLockAngleWatchCount--
+    return
+  }
+
+  if (!previousSnapshot || nextSnapshot.length !== previousSnapshot.length) {
+    return
+  }
+
+  const sameSelection = nextSnapshot.every((item, index) => {
+    return item.id === previousSnapshot[index]?.id
+  })
+
+  if (!sameSelection) {
+    return
+  }
+
+  let xChanged = false
+  let yChanged = false
+
+  nextSnapshot.forEach((item, index) => {
+    const previousItem = previousSnapshot[index]
+    if (!previousItem) {
+      return
+    }
+
+    if (item.endX !== previousItem.endX) {
+      xChanged = true
+    }
+
+    if (item.endY !== previousItem.endY) {
+      yChanged = true
+    }
+  })
+
+  if (xChanged === yChanged) {
+    return
+  }
+
+  handleLockedAngleUpdate(xChanged ? 'x' : 'y')
+}, { deep: true })
+
 // 组件卸载时，移除可能残留的拾取定位监听器
 onBeforeUnmount(() => {
   cancelPickMode()
@@ -908,7 +1298,7 @@ onBeforeUnmount(() => {
 
 .advanced-tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-auto-flow: column;
   gap: 8px;
 }
 
@@ -943,6 +1333,13 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.advanced-field.checkbox input[type='checkbox'] {
+  margin-right: 8px;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
 }
 
 .advanced-field label {
