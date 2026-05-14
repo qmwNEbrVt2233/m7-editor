@@ -29,7 +29,7 @@
       </select>
 
       <div v-if="activeMenu === 'file'" class="menu-panel">
-        <button @click="importVideo" class="btn">导入视频</button>
+        <button @click="importVideo" class="btn">导入媒体</button>
         <button @click="saveProject" class="btn">保存工程</button>
         <button @click="importProject" class="btn">导入工程</button>
         <button @click="exportXml" class="btn">导出XML</button>
@@ -141,7 +141,7 @@
         ref="videoInput"
         @change="onVideoFileChange"
         style="display: none"
-        accept="video/*"
+        accept="video/*,audio/*"
       />
       <input
         type="file"
@@ -171,7 +171,7 @@
     </div>
 
     <div v-if="store.videoUrl" class="video-info" :style="videoInfoStyle">
-      视频时长: {{ formatTime(store.videoDuration) }}
+      媒体时长: {{ formatTime(store.videoDuration) }}
     </div>
   </div>
 </template>
@@ -397,7 +397,7 @@ watch(
       
       nextTick(() => {
         videoRef.value?.play().catch(() => {
-          console.warn('视频播放失败')
+          console.warn('播放失败')
         })
       })
     } else {
@@ -436,7 +436,7 @@ function onVideoFileChange(e: Event) {
     // 设置视频文件的磁盘路径（用于导出）
     // 在浏览器中，我们无法直接获取完整路径，但可以保存文件名和大小作为标识
     store.setVideoFilePath(`file:///${file.name}`)
-    console.log('视频文件路径已设置:', file.name)
+    console.log('媒体文件路径已设置:', file.name)
   }
 }
 

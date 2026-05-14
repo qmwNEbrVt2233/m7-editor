@@ -79,13 +79,12 @@ function ensureSelectionSnapshotWatcher(store: {
   }
 
   watch(
-    () => store.selectedIds.length,
-    (newLen, oldLen) => {
-      if (hasPendingChange && oldLen > 0 && newLen === 0) {
-        historyManager.recordSnapshot(store.danmakus, '数据修改')
-        hasPendingChange = false
-      }
-    }
+    () => store.selectedIds,
+    () => {
+      historyManager.recordSnapshot(store.danmakus, '数据修改')
+      hasPendingChange = false
+    },
+    { deep: true }
   )
 
   hasSelectionSnapshotWatcher = true
@@ -314,6 +313,7 @@ export const useEditorStore = defineStore('editor', {
       }
 
       this.applyProject(project)
+      historyManager.recordSnapshot(this.danmakus, `加载工程(${this.danmakus.length}条弹幕)`)
 
       console.log('加载完成')
     },
@@ -359,6 +359,7 @@ export const useEditorStore = defineStore('editor', {
         try {
           const project = JSON.parse(reader.result as string)
           this.applyProject(project)
+          historyManager.recordSnapshot(this.danmakus, `导入工程(${this.danmakus.length}条弹幕)`)
 
           console.log('文件加载成功')
         } catch (e) {
@@ -458,7 +459,7 @@ export const useEditorStore = defineStore('editor', {
         // 检查是否写入了transform.end
         this._checkAndMovePlayhead(patch, id)
 
-        // ✅ 情况1：路径写法（优先级最高）
+        // 情况1：路径写法（优先级最高）
         if (key.includes('.')) {
           const keys = key.split('.')
           let current = obj
@@ -475,7 +476,7 @@ export const useEditorStore = defineStore('editor', {
           continue
         }
 
-        // ✅ 情况2：value 是对象 → 递归 merge
+        // 情况2：value 是对象 → 递归 merge
         if (
           value &&
           typeof value === 'object' &&
@@ -489,7 +490,7 @@ export const useEditorStore = defineStore('editor', {
           continue
         }
 
-        // ✅ 情况3：普通值
+        // 情况3：普通值
         obj[key] = value
       }
     },
@@ -820,15 +821,15 @@ export const useEditorStore = defineStore('editor', {
         layer: 0,
         startTime: Math.round(this.currentTime),
         content: {
-          text: '请输入弹幕内容',
-          font: 'Microsoft YaHei',
+          text: '',
+          font: 'SimHei',
           size: 60,
           color: '#ffffff',
           stroke: false
         },
         transform: {
-          start: { x: 130, y: 180 },
-          end: { x: 130, y: 180 },
+          start: { x: 0, y: 0 },
+          end: { x: 0, y: 0 },
           zRotate: 0,
           yRotate: 0
         },

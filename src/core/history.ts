@@ -36,7 +36,7 @@ export class HistoryManager {
     navigationHistory: []
   }
 
-  private maxSnapshots = 10
+  private maxSnapshots = 100
   private lastSnapshotTime = 0
   private debounceTime = 100 // 防抖延迟，避免频繁快速操作创建过多记录点
 

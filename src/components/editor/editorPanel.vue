@@ -62,12 +62,30 @@
 
           <div class="form-group">
             <label>字体 (Font)</label>
-            <select v-model="font" @change="updateField('content.font', font)">
-              <option value="Microsoft YaHei">微软雅黑</option>
-              <option value="SimHei">黑体</option>
-              <option value="SimSun">宋体</option>
-              <option value="NSimSun">新宋体</option>
-              <option value="FangSong">仿宋</option>
+            <select
+              v-model="font"
+              @change="updateField('content.font', font)"
+              @pointerdown="loadLocalFonts"
+              class="font-select"
+            >
+              <optgroup label="常用字体">
+                <option
+                  v-for="option in builtInFontOptions"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </option>
+              </optgroup>
+              <optgroup v-if="localFontOptions.length > 0" label="本地字体">
+                <option
+                  v-for="option in localFontOptions"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </option>
+              </optgroup>
             </select>
           </div>
 
@@ -293,11 +311,35 @@ import { parseInput, applyOperation, formatInputDisplay, parseColorWithAlpha, bl
 import { validateField, normalizeColor, validateRange, M7_RULES } from '@/utils/validation'
 import { formatTime } from '@/utils/time'
 
+type FontOption = {
+  value: string
+  label: string
+}
+
+type LocalFontData = {
+  family: string
+}
+
+type QueryLocalFontsFn = () => Promise<LocalFontData[]>
+
 const store = useEditorStore()
+
+const builtInFontOptions: FontOption[] = [
+  { value: 'SimHei', label: '黑体' },
+  { value: 'Microsoft YaHei', label: '微软雅黑' },
+  { value: 'SimSun', label: '宋体' },
+  { value: 'NSimSun', label: '新宋体' },
+  { value: 'FangSong', label: '仿宋' }
+]
 
 // 本地编辑缓存，避免频繁触发响应式更新
 const editCache = ref<Record<string, any>>({})
 const updateDebounceTimer = ref<ReturnType<typeof setTimeout> | null>(null)
+const localFontFamilies = ref<string[]>([])
+const localFontsLoaded = ref(false)
+const localFontsSupported = ref(true)
+const localFontsPermissionDenied = ref(false)
+const isLoadingLocalFonts = ref(false)
 
 // 计算属性：是否有选中的弹幕
 const hasSelection = computed(() => store.selectedIds.length > 0)
@@ -507,7 +549,79 @@ const easing = computed<string>({
   }
 })
 
+const builtInFontKeys = new Set(builtInFontOptions.map(option => normalizeFontKey(option.value)))
+const localFontOptions = computed<FontOption[]>(() => {
+  return localFontFamilies.value
+    .filter(family => {
+      const familyKey = normalizeFontKey(family)
+      return !builtInFontKeys.has(familyKey)
+    })
+    .map(family => ({
+      value: family,
+      label: family
+    }))
+})
+
 let skipNextTextChange = false
+
+function normalizeFontKey(value: string): string {
+  return value.trim().toLocaleLowerCase()
+}
+
+function getQueryLocalFonts(): QueryLocalFontsFn | null {
+  const globalScope = globalThis as typeof globalThis & { queryLocalFonts?: QueryLocalFontsFn }
+  return typeof globalScope.queryLocalFonts === 'function'
+    ? globalScope.queryLocalFonts.bind(globalScope)
+    : null
+}
+
+async function loadLocalFonts() {
+  if (
+    localFontsLoaded.value ||
+    !localFontsSupported.value ||
+    localFontsPermissionDenied.value ||
+    isLoadingLocalFonts.value
+  ) {
+    return
+  }
+
+  const queryLocalFonts = getQueryLocalFonts()
+
+  if (!queryLocalFonts) {
+    localFontsSupported.value = false
+    return
+  }
+
+  isLoadingLocalFonts.value = true
+
+  try {
+    const fonts = await queryLocalFonts()
+    localFontFamilies.value = Array.from(
+      new Set(
+        fonts
+          .map(fontData => fontData.family?.trim())
+          .filter((family): family is string => Boolean(family))
+      )
+    ).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'))
+    localFontsLoaded.value = true
+  } catch (error) {
+    if (error instanceof DOMException) {
+      if (error.name === 'NotAllowedError') {
+        localFontsPermissionDenied.value = true
+        return
+      }
+
+      if (error.name === 'SecurityError') {
+        localFontsSupported.value = false
+        return
+      }
+    }
+
+    console.warn('读取本地字体失败:', error)
+  } finally {
+    isLoadingLocalFonts.value = false
+  }
+}
 
 function isOpacityPath(path: string): boolean {
   return path === 'opacity.from' || path === 'opacity.to'
@@ -598,7 +712,7 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
     // 否则按普通颜色处理并规范化（补全 # 号等）
     const normalized = normalizeColor(inputStr)
     if (!normalized) {
-      console.warn('颜色格式无效（支持 #RRGGBB 或 RRGGBB@Alpha 格式）')
+      window.alert('颜色格式无效（支持 #RRGGBB 或 RRGGBB@Alpha 格式）')
       return
     }
     
@@ -649,7 +763,7 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
     if (path === 'content.text') {
       const textValue = String(inputValue)
       if (!isTextLengthValid(textValue)) {
-        console.warn('文本超出字符限制（最多255个字符，换行符占用2个）')
+        window.alert('文本数据未写入，超出字符限制（最多255个字符，换行符占用2个）')
         return
       }
     }
@@ -1071,19 +1185,23 @@ onBeforeUnmount(() => {
 }
 
 /* 滚动条美化 */
+.font-select::-webkit-scrollbar,
 .panel-content::-webkit-scrollbar {
   width: 8px;
 }
 
+.font-select::-webkit-scrollbar-track,
 .panel-content::-webkit-scrollbar-track {
   background: #1e1e1e;
 }
 
+.font-select::-webkit-scrollbar-thumb,
 .panel-content::-webkit-scrollbar-thumb {
   background: #464647;
   border-radius: 4px;
 }
 
+.font-select::-webkit-scrollbar-thumb:hover,
 .panel-content::-webkit-scrollbar-thumb:hover {
   background: #5a5a5a;
 }
