@@ -4,7 +4,21 @@
       <a href="https://github.com/qmwNEbrVt2233/m7-editor"><img src="/favicon.svg" width="35" height="35" alt="logo"></a>
 
       <button @click="toggle" class="btn">
-        <img :src="store.playing ? './pause.svg' : './play.svg'" alt="toggle" width="13" height="13"/>
+        <svg  v-if="store.playing" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="100" height="100" viewBox="0 0 100 100" xml:space="preserve" style="width: 13px; height: 13px;">
+          <g transform="matrix(0.11 0 0 0.77 29.84 50)" id="obj-6"  >
+            <rect style="stroke: rgb(255,255,255); stroke-opacity: 0; stroke-width: 0; stroke-dasharray: none; stroke-linecap: butt; stroke-dashoffset: 0; stroke-linejoin: miter; stroke-miterlimit: 4; fill: rgb(255,255,255); fill-rule: nonzero; opacity: 1;" vector-effect="non-scaling-stroke"  x="-99" y="-59" rx="0" ry="0" width="198" height="118" />
+          </g>
+          <g transform="matrix(0.11 0 0 0.77 70.09 49.79)" id="obj-8"  >
+            <rect style="stroke: rgb(255,255,255); stroke-opacity: 0; stroke-width: 0; stroke-dasharray: none; stroke-linecap: butt; stroke-dashoffset: 0; stroke-linejoin: miter; stroke-miterlimit: 4; fill: rgb(255,255,255); fill-rule: nonzero; opacity: 1;" vector-effect="non-scaling-stroke"  x="-99" y="-59" rx="0" ry="0" width="198" height="118" />
+          </g>
+        </svg>
+
+        <svg v-if="!store.playing" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="100" height="100" viewBox="0 0 100 100" xml:space="preserve" style="width: 13px; height: 13px;">
+          <g transform="matrix(0 0.58 -0.62 0 50.58 49.91)" id="obj-5"  >
+            <path style="stroke: rgb(255,255,255); stroke-opacity: 0; stroke-width: 0; stroke-dasharray: none; stroke-linecap: butt; stroke-dashoffset: 0; stroke-linejoin: round; stroke-miterlimit: 4; fill: rgb(255,255,255); fill-rule: nonzero; opacity: 1;" vector-effect="non-scaling-stroke"  transform=" translate(-100, -90)" d="M 100 10 L 185 170 L 15 170 L 100 10 Z" stroke-linecap="round" />
+          </g>
+        </svg>
+
       </button>
 
       <select v-model="activeMenu" class="menu-select">
