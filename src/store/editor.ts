@@ -247,7 +247,9 @@ export const useEditorStore = defineStore('editor', {
       maxLayers: saved?.player?.maxLayers || 100,
       exportXmlAsRatio: false,
       importXmlDurationOffsetEnabled: true,
-      exportXmlDurationOffsetEnabled: true
+      exportXmlDurationOffsetEnabled: true,
+      // 导入完成时间戳：用于触发缓冲池重构
+      importTimestamp: 0
     }
   },
 
@@ -360,6 +362,8 @@ export const useEditorStore = defineStore('editor', {
           const project = JSON.parse(reader.result as string)
           this.applyProject(project)
           historyManager.recordSnapshot(this.danmakus, `导入工程(${this.danmakus.length}条弹幕)`)
+          // 标记导入完成，触发缓冲池重构
+          this.importTimestamp = Date.now()
 
           console.log('文件加载成功')
         } catch (e) {
@@ -398,6 +402,9 @@ export const useEditorStore = defineStore('editor', {
           if (errors.length > 0) {
             console.warn(`[XML 导入] 共跳过 ${errors.length} 条异常弹幕`)
           }
+          
+          // 标记导入完成，触发缓冲池重构
+          this.importTimestamp = Date.now()
 
           console.log('XML 导入成功:', danmakus.length, '条弹幕')
         } catch (error) {
@@ -680,7 +687,7 @@ export const useEditorStore = defineStore('editor', {
     exportProject() {
       return {
         meta: {
-          version: '0.5.1',
+          version: '0.6.0',
           createdAt: Date.now()
         },
         timeline: {

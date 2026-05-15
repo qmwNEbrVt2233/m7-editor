@@ -460,7 +460,7 @@ function resolveAngleForDanmaku(danmaku: DanmakuItem): number | null {
   return normalizeAngle(parsed.value)
 }
 
-// 解析长度输入，确保其为大于等于 0 的数字，否则提示错误
+// 解析长度输入
 function parseLengthInput(): number | null {
   const rawValue = String(calculatorLengthInput.value ?? '').trim()
   if (!rawValue) {
@@ -469,10 +469,6 @@ function parseLengthInput(): number | null {
   }
 
   const parsedLength = Number(rawValue)
-  if (!Number.isFinite(parsedLength) || parsedLength < 0) {
-    window.alert('长度必须是大于等于 0 的数字')
-    return null
-  }
 
   calculatorLengthInput.value = rawValue
   return parsedLength

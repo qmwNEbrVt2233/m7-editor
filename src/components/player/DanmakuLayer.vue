@@ -108,6 +108,13 @@ watch(danmakuBufferSignature, () => {
   }, 200) // 延迟 200ms 重建
 })
 
+// 监听 XML/JSON 导入完成标志，立即重构缓冲池
+watch(() => store.importTimestamp, (newTimestamp) => {
+  if (newTimestamp > 0) {
+    updateBuffer(store.currentTime)
+  }
+})
+
 // --- 高频刷新：实时可见弹幕 ---
 const visibleDanmakus = computed(() => {
   const time = store.currentTime
@@ -301,8 +308,17 @@ async function handleToolbarMeasure(event: Event) {
   }
 }
 
+function handleTabKeyPress(event: KeyboardEvent) {
+  if (event.key === 'Tab') {
+    event.preventDefault()
+    updateBuffer(store.currentTime)
+    console.log('[DanmakuLayer] TAB 快捷键：手动触发缓冲池重构')
+  }
+}
+
 onMounted(() => {
   window.addEventListener(TOOLBAR_MEASURE_EVENT, handleToolbarMeasure as EventListener)
+  window.addEventListener('keydown', handleTabKeyPress)
 })
 
 onBeforeUnmount(() => {
@@ -311,6 +327,7 @@ onBeforeUnmount(() => {
   }
 
   window.removeEventListener(TOOLBAR_MEASURE_EVENT, handleToolbarMeasure as EventListener)
+  window.removeEventListener('keydown', handleTabKeyPress)
 })
 </script>
 
