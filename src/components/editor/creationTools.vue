@@ -8,7 +8,7 @@
       <header class="modal-header">
         <div>
           <h2>高级创建工具</h2>
-          <p>Ctrl + ; 开关。工具面板当前仅完成 UI 与交互骨架，预览框创建功能已可用。</p>
+          <p>Ctrl + ; 开关面板</p>
         </div>
         <button class="icon-btn" type="button" @click="closePanel">关闭</button>
       </header>
@@ -52,8 +52,9 @@
           <div class="block-header tool-header">
             <div>
               <h3>工具面板</h3>
+              <span class="status-text info">{{ toolStatus }}</span>
             </div>
-
+            
             <div class="tool-header-actions">
               <label class="inline-field">
                 <span>数量</span>
@@ -89,10 +90,6 @@
                 写入
               </button>
             </div>
-          </div>
-
-          <div class="tool-status-row">
-            <span class="status-text info">{{ toolStatus }}</span>
           </div>
 
           <div class="tool-grid">
@@ -200,12 +197,12 @@
                     </label>
                   </div>
 
-                  <label class="stack-field">
-                    <span>{{ colorRule.mode === 'range' ? 'Alpha 均分说明' : 'Alpha 混合相对值' }}</span>
+                  <label class="stack-field" v-if="colorRule.mode !== 'range'">
+                    <span>Alpha混合每次偏移值（加法）</span>
                     <input
                       v-model="colorRule.alpha"
                       type="text"
-                      :placeholder="colorRule.mode === 'range' ? '例如 0 到 1 之间均分过渡' : '例如 0.35'"
+                      :placeholder="'例如 0.1'"
                     />
                   </label>
                 </div>
@@ -262,27 +259,24 @@ import { computed, ref, watch } from 'vue'
 import type { DanmakuItem } from '@/core/danmaku'
 import { historyManager } from '@/core/history'
 import { useEditorStore } from '@/store/editor'
-import { M7_RULES, normalizeColor, validateRange } from '@/utils/validation'
+import type {
+  ColorFieldPath,
+  ColorRuleState,
+  DanmakuDraft,
+  DirectFieldPath,
+  NumericFieldPath,
+  NumericRuleState,
+  RuleMode,
+  ToolWriteRequest,
+  WriteMode
+} from '@/utils/danmakuGenerator'
+import {
+  normalizeGeneratedDraft,
+  parsePreviewDanmakus,
+  writeGeneratedDanmakusToPreview
+} from '@/utils/danmakuGenerator'
+import { normalizeColor } from '@/utils/validation'
 
-type RuleMode = 'range' | 'relative'
-type WriteMode = 'append' | 'replace'
-type NumericFieldPath =
-  | 'layer'
-  | 'startTime'
-  | 'content.size'
-  | 'transform.start.x'
-  | 'transform.start.y'
-  | 'transform.end.x'
-  | 'transform.end.y'
-  | 'transform.zRotate'
-  | 'transform.yRotate'
-  | 'opacity.from'
-  | 'opacity.to'
-  | 'animation.duration'
-  | 'animation.moveDuration'
-  | 'animation.delay'
-type ColorFieldPath = 'content.color'
-type DirectFieldPath = 'content.text' | 'content.font' | 'content.stroke' | 'animation.easing'
 type FieldPath = NumericFieldPath | ColorFieldPath | DirectFieldPath
 type ColorInputTarget = 'start' | 'target'
 
@@ -314,40 +308,6 @@ type ToolSection = {
   fields: ToolFieldConfig[]
 }
 
-type NumericRuleState = {
-  mode: RuleMode
-  start: string
-  end: string
-  step: string
-}
-
-type ColorRuleState = {
-  mode: RuleMode
-  start: string
-  startText: string
-  target: string
-  targetText: string
-  alpha: string
-}
-
-type ToolWriteRequest = {
-  quantity: number
-  writeMode: WriteMode
-  previewText: string
-  numericRules: Record<NumericFieldPath, NumericRuleState>
-  colorRule: ColorRuleState
-  directRules: {
-    text: string
-    font: string
-    stroke: boolean
-    easing: DanmakuItem['animation']['easing']
-  }
-}
-
-type DanmakuDraft = Omit<DanmakuItem, 'id'> & {
-  id?: string
-}
-
 const props = defineProps<{
   visible: boolean
 }>()
@@ -363,25 +323,25 @@ const store = useEditorStore()
 const previewText = ref('')
 const previewStatus = ref('预览框中的 JSON 可以直接编辑并创建。')
 const previewStatusTone = ref<'info' | 'success' | 'error'>('info')
-const toolStatus = ref('工具面板生成逻辑尚未接入，点击“写入”会触发预留接口。')
+const toolStatus = ref('')
 const quantityInput = ref('10')
 const writeMode = ref<WriteMode>('replace')
 
 const numericRules = ref<Record<NumericFieldPath, NumericRuleState>>({
   layer: createNumericRule('0', '9', '+1'),
   startTime: createNumericRule(String(Math.round(store.currentTime)), String(Math.round(store.currentTime + 900)), '+100'),
-  'content.size': createNumericRule('60', '80', '+2'),
-  'transform.start.x': createNumericRule('120', '680', '+20'),
-  'transform.start.y': createNumericRule('120', '320', '+10'),
-  'transform.end.x': createNumericRule('120', '680', '+20'),
-  'transform.end.y': createNumericRule('120', '320', '+10'),
-  'transform.zRotate': createNumericRule('0', '180', '+15'),
-  'transform.yRotate': createNumericRule('0', '180', '+15'),
-  'opacity.from': createNumericRule('1', '0.2', '-0.05'),
-  'opacity.to': createNumericRule('1', '0.2', '-0.05'),
-  'animation.duration': createNumericRule('1200', '2400', '+100'),
-  'animation.moveDuration': createNumericRule('600', '1800', '+100'),
-  'animation.delay': createNumericRule('0', '900', '+100')
+  'content.size': createNumericRule('60', '60', '+2'),
+  'transform.start.x': createNumericRule('0', '0', '+20'),
+  'transform.start.y': createNumericRule('0', '0', '+10'),
+  'transform.end.x': createNumericRule('0', '0', '+20'),
+  'transform.end.y': createNumericRule('0', '0', '+10'),
+  'transform.zRotate': createNumericRule('0', '0', '+15'),
+  'transform.yRotate': createNumericRule('0', '0', '+15'),
+  'opacity.from': createNumericRule('1', '1', '-0.05'),
+  'opacity.to': createNumericRule('1', '1', '-0.05'),
+  'animation.duration': createNumericRule('1000', '1000', '+100'),
+  'animation.moveDuration': createNumericRule('500', '500', '+100'),
+  'animation.delay': createNumericRule('0', '0', '+100')
 })
 
 const colorRule = ref<ColorRuleState>({
@@ -390,7 +350,7 @@ const colorRule = ref<ColorRuleState>({
   startText: '#FFFFFF',
   target: '#FFAA00',
   targetText: '#FFAA00',
-  alpha: '0.35'
+  alpha: '0.1'
 })
 
 const directRules = ref({
@@ -405,21 +365,21 @@ const toolSections: ToolSection[] = [
     title: '基础信息',
     fields: [
       createNumericField('layer', '所属层', '0', '10', '+1'),
-      createNumericField('startTime', '开始时间', '0', '1000', '+100')
+      createNumericField('startTime', '开始时间', '0', '0', '+100')
     ]
   },
   {
     title: '起点坐标',
     fields: [
-      createNumericField('transform.start.x', '起点 X', '0', '800', '+10'),
-      createNumericField('transform.start.y', '起点 Y', '0', '450', '+10')
+      createNumericField('transform.start.x', '起点 X', '0', '0', '+10'),
+      createNumericField('transform.start.y', '起点 Y', '0', '0', '+10')
     ]
   },
   {
     title: '终点坐标',
     fields: [
-      createNumericField('transform.end.x', '终点 X', '0', '800', '+10'),
-      createNumericField('transform.end.y', '终点 Y', '0', '450', '+10')
+      createNumericField('transform.end.x', '终点 X', '0', '0', '+10'),
+      createNumericField('transform.end.y', '终点 Y', '0', '0', '+10')
     ]
   },
   {
@@ -427,7 +387,7 @@ const toolSections: ToolSection[] = [
     fields: [
       { path: 'content.text', label: '文本', kind: 'text' },
       { path: 'content.font', label: '字体', kind: 'font' },
-      createNumericField('content.size', '字号', '60', '100', '+2'),
+      createNumericField('content.size', '字号', '60', '60', '+2'),
       { path: 'content.color', label: '颜色', kind: 'color' },
       { path: 'content.stroke', label: '描边', kind: 'stroke' }
     ]
@@ -437,16 +397,16 @@ const toolSections: ToolSection[] = [
     fields: [
       createNumericField('transform.zRotate', 'Z 轴旋转', '0', '360', '+15'),
       createNumericField('transform.yRotate', 'Y 轴旋转', '0', '360', '+15'),
-      createNumericField('opacity.from', '起始透明度', '1', '0', '-0.1'),
-      createNumericField('opacity.to', '结束透明度', '1', '0', '-0.1')
+      createNumericField('opacity.from', '起始透明度', '1', '1', '-0.1'),
+      createNumericField('opacity.to', '结束透明度', '1', '1', '-0.1')
     ]
   },
   {
     title: '动画',
     fields: [
-      createNumericField('animation.duration', '生存时间', '1000', '3000', '+100'),
-      createNumericField('animation.moveDuration', '运动时间', '500', '1500', '+100'),
-      createNumericField('animation.delay', '延迟', '0', '500', '+50'),
+      createNumericField('animation.duration', '生存时间', '1000', '1000', '+100'),
+      createNumericField('animation.moveDuration', '运动时间', '500', '500', '+100'),
+      createNumericField('animation.delay', '延迟', '0', '0', '+50'),
       { path: 'animation.easing', label: '缓动', kind: 'easing' }
     ]
   }
@@ -520,8 +480,8 @@ function buildTemplateDraft(): DanmakuDraft[] {
         stroke: false
       },
       transform: {
-        start: { x: 120, y: 180 },
-        end: { x: 680, y: 180 },
+        start: { x: 130, y: 180 },
+        end: { x: 800, y: 180 },
         zRotate: 0,
         yRotate: 0
       },
@@ -616,8 +576,21 @@ function buildToolWriteRequest(): ToolWriteRequest {
 }
 
 function handleToolWrite() {
-  emit('tool-write', buildToolWriteRequest())
-  toolStatus.value = '已触发工具面板预留接口，当前版本不会把规则自动写入预览框。'
+  try {
+    const request = buildToolWriteRequest()
+    const result = writeGeneratedDanmakusToPreview(request)
+
+    previewText.value = result.previewText
+    toolStatus.value = `已生成 ${result.generatedDanmakus.length} 条弹幕，并${request.writeMode === 'append' ? '追加到' : '写入'}预览框。`
+    previewStatus.value = `预览框已更新，共 ${result.nextDanmakus.length} 条弹幕。`
+    previewStatusTone.value = 'success'
+    emit('tool-write', request)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '工具面板写入失败'
+    toolStatus.value = message
+    previewStatus.value = message
+    previewStatusTone.value = 'error'
+  }
 }
 
 function handleCreate() {
@@ -629,7 +602,7 @@ function handleCreate() {
 
     const nextId = createIdAllocator()
     const createdDanmakus = drafts.map((draft) => {
-      const normalized = normalizeDanmakuDraft(draft)
+      const normalized = normalizeGeneratedDraft(draft)
       return {
         ...normalized,
         id: nextId()
@@ -662,7 +635,7 @@ function normalizeQuantity(): number {
 
 function createIdAllocator() {
   const generatedId = Number(store.generateNewId())
-  const maxExistingId = store.danmakus.reduce((max, danmaku) => {
+  const maxExistingId = store.danmakus.reduce((max: number, danmaku: DanmakuItem) => {
     const numericId = Number(danmaku.id)
     return Number.isFinite(numericId) ? Math.max(max, numericId) : max
   }, 0)
@@ -672,130 +645,6 @@ function createIdAllocator() {
     : maxExistingId + 1
 
   return () => String(nextId++)
-}
-
-function parsePreviewDanmakus(text: string): DanmakuDraft[] {
-  const trimmed = text.trim()
-  if (!trimmed) {
-    throw new Error('预览框为空，请先输入弹幕 JSON')
-  }
-
-  let parsed: unknown
-
-  try {
-    parsed = JSON.parse(trimmed)
-  } catch (error) {
-    throw new Error(`JSON 解析失败: ${error instanceof Error ? error.message : '未知错误'}`)
-  }
-
-  const drafts = extractDanmakuDrafts(parsed)
-  if (drafts.length === 0) {
-    throw new Error('未识别到可创建的弹幕数据')
-  }
-
-  return drafts
-}
-
-function extractDanmakuDrafts(input: unknown): DanmakuDraft[] {
-  if (Array.isArray(input)) {
-    return input.filter(isDanmakuDraftLike) as DanmakuDraft[]
-  }
-
-  if (!isRecord(input)) {
-    return []
-  }
-
-  if (Array.isArray(input.danmakus)) {
-    return input.danmakus.filter(isDanmakuDraftLike) as DanmakuDraft[]
-  }
-
-  return isDanmakuDraftLike(input) ? [input as DanmakuDraft] : []
-}
-
-function isDanmakuDraftLike(value: unknown): value is DanmakuDraft {
-  if (!isRecord(value)) {
-    return false
-  }
-
-  return (
-    value.startTime !== undefined &&
-    isRecord(value.content) &&
-    isRecord(value.transform) &&
-    isRecord(value.transform.start) &&
-    isRecord(value.transform.end) &&
-    isRecord(value.opacity) &&
-    isRecord(value.animation)
-  )
-}
-
-function isRecord(value: unknown): value is Record<string, any> {
-  return Boolean(value) && typeof value === 'object'
-}
-
-function normalizeDanmakuDraft(draft: DanmakuDraft): Omit<DanmakuItem, 'id'> {
-  const normalizedColorValue = normalizeColor(String(draft.content?.color ?? '#FFFFFF')) || '#FFFFFF'
-  const easingValue = draft.animation?.easing === 'speeddown' ? 'speeddown' : 'speedup'
-
-  return {
-    layer: clampIntegerByRule(draft.layer, M7_RULES.layer),
-    startTime: clampNonNegativeInteger(draft.startTime),
-    content: {
-      text: String(draft.content?.text ?? ''),
-      font: String(draft.content?.font ?? 'Microsoft YaHei'),
-      size: clampIntegerByRule(draft.content?.size, M7_RULES.size),
-      color: normalizedColorValue,
-      stroke: Boolean(draft.content?.stroke)
-    },
-    transform: {
-      start: {
-        x: roundInteger(draft.transform?.start?.x),
-        y: roundInteger(draft.transform?.start?.y)
-      },
-      end: {
-        x: roundInteger(draft.transform?.end?.x),
-        y: roundInteger(draft.transform?.end?.y)
-      },
-      zRotate: clampIntegerByRule(draft.transform?.zRotate, M7_RULES.rotate),
-      yRotate: clampIntegerByRule(draft.transform?.yRotate, M7_RULES.rotate)
-    },
-    opacity: {
-      from: clampOpacity(draft.opacity?.from),
-      to: clampOpacity(draft.opacity?.to)
-    },
-    animation: {
-      duration: clampIntegerByRule(draft.animation?.duration, M7_RULES.duration),
-      moveDuration: clampNonNegativeInteger(draft.animation?.moveDuration),
-      delay: clampNonNegativeInteger(draft.animation?.delay),
-      easing: easingValue
-    }
-  }
-}
-
-function roundInteger(value: unknown): number {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? Math.round(parsed) : 0
-}
-
-function clampNonNegativeInteger(value: unknown): number {
-  return Math.max(0, roundInteger(value))
-}
-
-function clampIntegerByRule(
-  value: unknown,
-  rule: {
-    min: number
-    max: number
-  }
-): number {
-  const parsed = Number(value)
-  const rounded = Number.isFinite(parsed) ? Math.round(parsed) : rule.min
-  return Math.round(validateRange(rounded, rule.min, rule.max))
-}
-
-function clampOpacity(value: unknown): number {
-  const parsed = Number(value)
-  const normalized = Number.isFinite(parsed) ? validateRange(parsed, 0, 1) : 1
-  return Number(normalized.toFixed(2))
 }
 
 function cloneValue<T>(value: T): T {
