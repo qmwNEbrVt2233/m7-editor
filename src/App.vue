@@ -19,6 +19,11 @@
       <Timeline />
       <div class="timeline-resize-handle" @mousedown.stop="onResizeStart" />
     </div>
+
+    <CreationTools
+      :visible="showCreationTools"
+      @update:visible="showCreationTools = $event"
+    />
   </div>
 </template>
 
@@ -29,18 +34,50 @@ import EditorPanel from './components/editor/editorPanel.vue'
 import Timeline from './components/timeline/timeline.vue'
 import { useEditorStore } from './store/editor'
 import ToolBar from './components/editor/ToolBar.vue'
+import CreationTools from './components/editor/creationTools.vue'
 
 const store = useEditorStore()
 const timelineHeight = ref(window.innerHeight - 530)
+const showCreationTools = ref(false)
+
+function isTextEditingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false
+  }
+
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    target.isContentEditable
+  )
+}
 
 // 全局快捷键
 function handleKeyDown(e: KeyboardEvent) {
-  
-  // 避免在输入框中触发快捷键
-  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+  if ((e.ctrlKey || e.metaKey) && e.code === 'Semicolon') {
+    e.preventDefault()
+    showCreationTools.value = !showCreationTools.value
     return
   }
-  
+
+  if (showCreationTools.value && e.code === 'Escape') {
+    e.preventDefault()
+    showCreationTools.value = false
+    return
+  }
+
+  const target = e.target instanceof HTMLElement ? e.target : null
+
+  if (showCreationTools.value && target?.closest('.creation-tools-overlay')) {
+    return
+  }
+
+  // 避免在输入框中触发快捷键
+  if (isTextEditingTarget(e.target)) {
+    return
+  }
+
   // 空格播放/暂停
   if (e.code === 'Space') {
     e.preventDefault()
