@@ -63,7 +63,7 @@ async function saveBlobWithFallback(
   }
 }
 
-let hasPendingChange = false
+let hasPendingChange = true
 let hasSelectionSnapshotWatcher = false
 
 function clearPendingChangeTracking() {
@@ -881,6 +881,111 @@ export const useEditorStore = defineStore('editor', {
     },
 
     /**
+     * 复制当前帧弹幕
+     */
+    copyCurrentFrameDanmakus(): void {
+      const time = this.currentTime
+
+      // 获取当前可见的弹幕（在当前时间区间内）
+      let visibleDanmakus = this.danmakus.filter((d: DanmakuItem) => {
+        return time >= d.startTime && time <= d.startTime + d.animation.duration
+      })
+
+      // 如果有选中的弹幕，进一步过滤
+      if (this.selectedIds.length > 0) {
+        visibleDanmakus = visibleDanmakus.filter((d: DanmakuItem) =>
+          this.selectedIds.includes(d.id)
+        )
+      }
+
+      if (visibleDanmakus.length === 0) {
+        console.warn('[操作] 当前帧没有可复制的弹幕')
+        return
+      }
+
+      // 计算渲染状态并创建新的弹幕对象
+      const copiedDanmakus: DanmakuItem[] = visibleDanmakus.map((d: DanmakuItem) => {
+        // 计算渲染进度
+        const t = time - d.startTime
+        const { delay, moveDuration, easing } = d.animation
+
+        let progress = 0
+        if (moveDuration <= 0) {
+          progress = 1
+        } else if (t <= delay) {
+          progress = 0
+        } else {
+          progress = (t - delay) / moveDuration
+        }
+
+        progress = Math.max(0, Math.min(1, progress))
+
+        // 应用 easing 函数
+        if (easing === 'speedup') {
+          progress = progress * progress
+        } else {
+          progress = 1 - (1 - progress) * (1 - progress)
+        }
+
+        // 计算当前位置
+        const x =
+          Math.round(d.transform.start.x +
+          (d.transform.end.x - d.transform.start.x) * progress)
+        const y =
+          Math.round(d.transform.start.y +
+          (d.transform.end.y - d.transform.start.y) * progress)
+
+        // 计算当前透明度
+        const lifeProgress = Math.max(
+          0,
+          Math.min(1, (time - d.startTime) / d.animation.duration)
+        )
+        const opacity =
+          (d.opacity.from + (d.opacity.to - d.opacity.from) * lifeProgress).toFixed(2)
+        const opacityValue = parseFloat(opacity)
+
+        // 计算 duration（使用用户设置）
+        let duration = 1000
+        if (this.danmakuDuration.mode === 'ms') {
+          duration = Math.max(100, this.danmakuDuration.value)
+        } else if (this.danmakuDuration.mode === 'multiplier') {
+          const playheadStepMs = this.playheadStepMs || 16.666667
+          duration = Math.round(
+            Math.max(100, playheadStepMs * this.danmakuDuration.value)
+          )
+        }
+
+        // 创建新的弹幕对象（没有变换，起始与结束相同）
+        return {
+          id: d.id,
+          layer: d.layer,
+          startTime: 0,
+          content: d.content,
+          transform: {
+            start: { x, y },
+            end: { x, y },
+            zRotate: d.transform.zRotate,
+            yRotate: d.transform.yRotate
+          },
+          opacity: { from: opacityValue, to: opacityValue },
+          animation: {
+            duration,
+            moveDuration: 500,
+            delay: 0,
+            easing: 'speedup'
+          }
+        }
+      })
+
+      const data = JSON.stringify(copiedDanmakus)
+      navigator.clipboard.writeText(data).catch(() => {
+        console.error('[操作] 复制到剪贴板失败')
+      })
+
+      console.log('[操作] 复制当前帧弹幕:', copiedDanmakus.length, '条')
+    },
+
+    /**
      * 复制选中的弹幕数据到剪贴板
      */
     copySelectedDanmakus(): void {
@@ -927,7 +1032,6 @@ export const useEditorStore = defineStore('editor', {
         danmakusToAdd.forEach((d) => {
           currentMaxId++
           d.id = String(currentMaxId)
-          console.log('为粘贴的弹幕分配ID:', d.id)
         })
 
         // 调整startTime：以最小的startTime作为基准，调整到播放头位置

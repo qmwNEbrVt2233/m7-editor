@@ -349,6 +349,14 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
     return
   }
   
+  // `ctrl+alt+c` 复制当前帧弹幕
+  if (e.key === 'c' && isCtrl && !isShift && isAlt) {
+    e.preventDefault()
+    store.copyCurrentFrameDanmakus()
+    console.log('[快捷键] 复制当前帧弹幕')
+    return
+  }
+  
   // `ctrl+c` 复制
   if (e.key === 'c' && isCtrl && !isAlt && !isShift) {
     e.preventDefault()
