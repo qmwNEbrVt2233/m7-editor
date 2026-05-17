@@ -82,7 +82,9 @@ const NUMERIC_FIELD_PATHS: NumericFieldPath[] = [
 ]
 
 export function writeGeneratedDanmakusToPreview(request: ToolWriteRequest): GeneratedPreviewResult {
-  const generatedDanmakus = generateDanmakuDraftsFromRules(request)
+  const generatedDanmakus = generateDanmakuDraftsFromRules(request).map((draft) => {
+    return normalizeGeneratedDraft(draft)
+  })
   const nextDanmakus = request.writeMode === 'append'
     ? [...parsePreviewDanmakus(request.previewText), ...generatedDanmakus]
     : generatedDanmakus
@@ -102,7 +104,7 @@ export function generateDanmakuDraftsFromRules(request: ToolWriteRequest): Danma
   const drafts: DanmakuDraft[] = []
 
   for (let index = 0; index < quantity; index++) {
-    drafts.push(normalizeGeneratedDraft({
+    drafts.push({
       layer: numericSeries.layer[index],
       startTime: numericSeries.startTime[index],
       content: {
@@ -134,7 +136,7 @@ export function generateDanmakuDraftsFromRules(request: ToolWriteRequest): Danma
         delay: numericSeries['animation.delay'][index],
         easing: request.directRules.easing
       }
-    }))
+    })
   }
 
   return drafts
@@ -228,19 +230,16 @@ function buildNumericSeries(
   if (rule.mode === 'range') {
     const endValue = parseRequiredNumber(rule.end, `${path} 结束值`)
     const step = (endValue - startValue) / (quantity - 1)
-    return Array.from({ length: quantity }, (_, index) => {
-      const value = startValue + (step * index)
-      return isOpacityPath(path) ? roundOpacity(value) : value
-    })
+    return Array.from({ length: quantity }, (_, index) => startValue + (step * index))
   }
 
   if (isOpacityPath(path)) {
     const operation = parseOpacityOperation(rule.step, path)
-    const values = [roundOpacity(startValue)]
+    const values = [startValue]
 
     while (values.length < quantity) {
       const nextValue = applyOpacityOperation(values[values.length - 1], operation)
-      values.push(roundOpacity(nextValue))
+      values.push(nextValue)
     }
 
     return values
@@ -430,10 +429,6 @@ function applyOpacityOperation(
     case 'div':
       return originalValue / operation.value
   }
-}
-
-function roundOpacity(value: number): number {
-  return Number(value.toFixed(2))
 }
 
 function roundInteger(value: unknown): number {

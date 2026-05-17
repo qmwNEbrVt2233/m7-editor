@@ -16,6 +16,7 @@ m7-editor是一个面向 M7 / B 站特效弹幕场景的可视化编辑器。
 - 支持导出 XML 弹幕文件
 - 支持导入 XML 弹幕文件，并在导入时自动重建 layer、避让时间冲突
 - 支持按 screen 宽高进行 XML 坐标比例导入与可选比例导出
+- 支持通过高级创建工具批量生成弹幕 JSON
 - 支持撤销 / 重做、复制 / 粘贴、播放头快速定位等编辑快捷键
 
 # 技术栈
@@ -220,6 +221,31 @@ npm run preview
 - 支持顶部拖拽调整时间轴区域高度
 - 支持在拖动弹幕时快捷移动视图
 
+## 5. 高级创建工具模块
+
+通过 `Ctrl + ;` 可唤出高级创建工具。这个模块采用“工具面板生成规则 -> 写入预览 JSON -> 用户确认后点击创建”的流程，和主编辑器数据解耦，适合批量造大量弹幕。
+
+### 预备弹幕数据区
+
+- 提供可直接编辑的 JSON 预览框
+- 支持格式化 JSON
+- 支持重置为单条弹幕模板
+- 点击 `创建` 后才会真正写入弹幕列表
+- 写入时会自动完成字段规范化、新 ID 分配，并记录历史快照
+
+### 工具面板
+
+- 支持设置生成数量
+- 支持 `替换` 和 `添加` 两种写入预览框的方式
+- 所有数值字段都支持两种生成模式：
+  - `范围`：指定第一条和最后一条弹幕的值，中间值线性均分
+  - `相对`：指定起始值和每次偏移值，后续弹幕递推生成
+- 颜色字段支持两种模式：
+  - `范围`：起始颜色到目标颜色按 `alpha 0 -> 1` 均匀混合
+  - `相对`：以起始颜色和叠加颜色做混合，`alpha` 从 `0` 开始按输入值递增，直到上限 `1`
+- `text`、`font`、`stroke`、`easing` 可直接设置固定值
+- 点击 `写入` 后先生成 JSON 到预览框，确认无误后再点击 `创建`
+
 # 已实现的快捷键
 
 以下快捷键基于当前代码实现整理，`Ctrl` 在 macOS 上可对应 `Command`。
@@ -239,6 +265,7 @@ npm run preview
 | 快捷键 | 作用 |
 | --- | --- |
 | `;` | 在当前播放头创建一条新弹幕 |
+| `Ctrl + ;` | 唤出高级创建工具 |
 | `Delete` | 删除当前选中的弹幕 |
 | `Ctrl + C` | 复制选中的弹幕 |
 | `Ctrl + V` | 粘贴弹幕 |
@@ -353,8 +380,6 @@ npm run preview
 │
 ├───public
 │       favicon.svg
-│       pause.svg
-│       play.svg
 │
 └───src
     │   App.vue
@@ -362,6 +387,7 @@ npm run preview
     │
     ├───components
     │   ├───editor
+    │   │       creationTools.vue    #高级创建工具
     │   │       editorPanel.vue      #编辑面板
     │   │       ToolBar.vue          #工具栏
     │   │
@@ -389,6 +415,7 @@ npm run preview
     │       S_E_exchange.svg
     │       S_to_E.svg
     │       vertical_centering.svg
+    │       zRotate_calculate.svg
     │
     ├───localStorage
     │       projectStorage.ts        #工程文件保存/加载
@@ -397,7 +424,8 @@ npm run preview
     │       editor.ts                #Pinia 状态管理
     │
     └───utils
-            parser.ts                #校验工具
+            danmakuGenerator.ts      #高级创建工具生成算法
+            parser.ts                #解析工具
             time.ts                  #时间格式化工具
             validation.ts            #验证工具
 ```

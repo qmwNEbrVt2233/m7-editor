@@ -86,6 +86,10 @@
                 </button>
               </div>
 
+              <button class="btn-secondary" type="button" @click="handleToolReset">
+                重置
+              </button>
+
               <button class="btn-primary" type="button" @click="handleToolWrite">
                 写入
               </button>
@@ -327,38 +331,48 @@ const toolStatus = ref('')
 const quantityInput = ref('10')
 const writeMode = ref<WriteMode>('replace')
 
-const numericRules = ref<Record<NumericFieldPath, NumericRuleState>>({
-  layer: createNumericRule('0', '9', '+1'),
-  startTime: createNumericRule(String(Math.round(store.currentTime)), String(Math.round(store.currentTime + 900)), '+100'),
-  'content.size': createNumericRule('60', '60', '+2'),
-  'transform.start.x': createNumericRule('0', '0', '+20'),
-  'transform.start.y': createNumericRule('0', '0', '+10'),
-  'transform.end.x': createNumericRule('0', '0', '+20'),
-  'transform.end.y': createNumericRule('0', '0', '+10'),
-  'transform.zRotate': createNumericRule('0', '0', '+15'),
-  'transform.yRotate': createNumericRule('0', '0', '+15'),
-  'opacity.from': createNumericRule('1', '1', '-0.05'),
-  'opacity.to': createNumericRule('1', '1', '-0.05'),
-  'animation.duration': createNumericRule('1000', '1000', '+100'),
-  'animation.moveDuration': createNumericRule('500', '500', '+100'),
-  'animation.delay': createNumericRule('0', '0', '+100')
-})
+function createDefaultNumericRules(): Record<NumericFieldPath, NumericRuleState> {
+  return {
+    layer: createNumericRule('0', '9', '+1'),
+    startTime: createNumericRule(String(Math.round(store.currentTime)), String(Math.round(store.currentTime + 900)), '+100'),
+    'content.size': createNumericRule('60', '60', '+2'),
+    'transform.start.x': createNumericRule('0', '0', '+20'),
+    'transform.start.y': createNumericRule('0', '0', '+10'),
+    'transform.end.x': createNumericRule('0', '0', '+20'),
+    'transform.end.y': createNumericRule('0', '0', '+10'),
+    'transform.zRotate': createNumericRule('0', '0', '+15'),
+    'transform.yRotate': createNumericRule('0', '0', '+15'),
+    'opacity.from': createNumericRule('1', '1', '-0.05'),
+    'opacity.to': createNumericRule('1', '1', '-0.05'),
+    'animation.duration': createNumericRule('1000', '1000', '+100'),
+    'animation.moveDuration': createNumericRule('500', '500', '+100'),
+    'animation.delay': createNumericRule('0', '0', '+100')
+  }
+}
 
-const colorRule = ref<ColorRuleState>({
-  mode: 'range',
-  start: '#FFFFFF',
-  startText: '#FFFFFF',
-  target: '#FFAA00',
-  targetText: '#FFAA00',
-  alpha: '0.1'
-})
+function createDefaultColorRule(): ColorRuleState {
+  return {
+    mode: 'range',
+    start: '#FFFFFF',
+    startText: '#FFFFFF',
+    target: '#FFAA00',
+    targetText: '#FFAA00',
+    alpha: '0.1'
+  }
+}
 
-const directRules = ref({
-  text: '欢迎使用高级创建工具',
-  font: 'Microsoft YaHei',
-  stroke: false,
-  easing: 'speedup' as DanmakuItem['animation']['easing']
-})
+function createDefaultDirectRules() {
+  return {
+    text: '欢迎使用高级创建工具',
+    font: 'Microsoft YaHei',
+    stroke: false,
+    easing: 'speedup' as DanmakuItem['animation']['easing']
+  }
+}
+
+const numericRules = ref(createDefaultNumericRules())
+const colorRule = ref(createDefaultColorRule())
+const directRules = ref(createDefaultDirectRules())
 
 const toolSections: ToolSection[] = [
   {
@@ -591,6 +605,13 @@ function handleToolWrite() {
     previewStatus.value = message
     previewStatusTone.value = 'error'
   }
+}
+
+function handleToolReset() {
+  numericRules.value = createDefaultNumericRules()
+  colorRule.value = createDefaultColorRule()
+  directRules.value = createDefaultDirectRules()
+  toolStatus.value = '工具栏已重置至默认值。'
 }
 
 function handleCreate() {
