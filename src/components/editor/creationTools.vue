@@ -670,9 +670,9 @@ defineExpose({
 }
 
 .creation-tools-modal {
-  width: 1200px;
+  width: 85%;
   max-width: calc(100vw - 40px);
-  height: 800px;
+  height: 98%;
   max-height: calc(100vh - 40px);
   display: flex;
   flex-direction: column;

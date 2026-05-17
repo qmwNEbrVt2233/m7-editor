@@ -228,7 +228,22 @@ function buildNumericSeries(
   if (rule.mode === 'range') {
     const endValue = parseRequiredNumber(rule.end, `${path} 结束值`)
     const step = (endValue - startValue) / (quantity - 1)
-    return Array.from({ length: quantity }, (_, index) => startValue + (step * index))
+    return Array.from({ length: quantity }, (_, index) => {
+      const value = startValue + (step * index)
+      return isOpacityPath(path) ? roundOpacity(value) : value
+    })
+  }
+
+  if (isOpacityPath(path)) {
+    const operation = parseOpacityOperation(rule.step, path)
+    const values = [roundOpacity(startValue)]
+
+    while (values.length < quantity) {
+      const nextValue = applyOpacityOperation(values[values.length - 1], operation)
+      values.push(roundOpacity(nextValue))
+    }
+
+    return values
   }
 
   const operation = parseInput(rule.step, false)
@@ -353,6 +368,72 @@ function normalizeQuantity(quantity: number): number {
   }
 
   return Math.max(1, Math.round(quantity))
+}
+
+function isOpacityPath(path: NumericFieldPath): path is 'opacity.from' | 'opacity.to' {
+  return path === 'opacity.from' || path === 'opacity.to'
+}
+
+function parseOpacityOperation(input: string, path: NumericFieldPath) {
+  const trimmed = input.trim()
+  if (!trimmed) {
+    throw new Error(`${path} 相对值不能为空`)
+  }
+
+  if (/^[+\-*/]/.test(trimmed)) {
+    const operator = trimmed[0]
+    const rawValue = operator === '-' ? trimmed : trimmed.slice(1)
+    const parsedValue = Number(rawValue)
+
+    if (!Number.isFinite(parsedValue)) {
+      throw new Error(`${path} 相对值无效: 无效的透明度数值`)
+    }
+
+    if (operator === '+') return { mode: 'add' as const, value: parsedValue }
+    if (operator === '-') return { mode: 'add' as const, value: parsedValue }
+    if (operator === '*') {
+      if (parsedValue <= 0) {
+        throw new Error(`${path} 相对值无效: 倍率必须是正数`)
+      }
+      return { mode: 'mul' as const, value: parsedValue }
+    }
+    if (operator === '/') {
+      if (parsedValue <= 0) {
+        throw new Error(`${path} 相对值无效: 除数必须是正数`)
+      }
+      return { mode: 'div' as const, value: parsedValue }
+    }
+  }
+
+  const parsedValue = Number(trimmed)
+  if (!Number.isFinite(parsedValue)) {
+    throw new Error(`${path} 相对值无效: 无效的透明度数值`)
+  }
+
+  return { mode: 'set' as const, value: parsedValue }
+}
+
+function applyOpacityOperation(
+  originalValue: number,
+  operation: {
+    mode: 'set' | 'add' | 'mul' | 'div'
+    value: number
+  }
+): number {
+  switch (operation.mode) {
+    case 'set':
+      return operation.value
+    case 'add':
+      return originalValue + operation.value
+    case 'mul':
+      return originalValue * operation.value
+    case 'div':
+      return originalValue / operation.value
+  }
+}
+
+function roundOpacity(value: number): number {
+  return Number(value.toFixed(2))
 }
 
 function roundInteger(value: unknown): number {

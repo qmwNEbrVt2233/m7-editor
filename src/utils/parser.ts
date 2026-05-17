@@ -17,8 +17,7 @@ export interface ParseResult {
 
 /**
  * 验证是否为有效的四则运算表达式
- * 仅支持：数字、+、-、*、/ 和空格
- * 示例："+10", "-5", "*2", "/2", "100"
+ * 示例："+10", "-5", "*2", "/2", "100", "+1.5", "*0.5", "/2.5"
  */
 export function validateArithmeticExpression(input: string): { valid: boolean; error?: string } {
   const trimmed = input.trim()
@@ -34,7 +33,7 @@ export function validateArithmeticExpression(input: string): { valid: boolean; e
   }
 
   // 检查操作符的合法性
-  const operatorPattern = /^[+\-*/]?\d+(?:[+\-*/]\d+)*$/
+  const operatorPattern = /^[+\-*/]?\d+(?:\.\d+)?(?:[+\-*/]\d+(?:\.\d+)?)*$/
   if (!operatorPattern.test(trimmed.replace(/\s+/g, ''))) {
     return { valid: false, error: '格式不正确' }
   }
