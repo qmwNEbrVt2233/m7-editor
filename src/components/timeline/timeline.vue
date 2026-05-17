@@ -190,7 +190,7 @@ function ensurePlayheadVisible() {
 // ===== 缩放功能 =====
 function handleZoom(e: KeyboardEvent) {
   const minScale = 0.01 // 最小缩放 1ms = 0.01px
-  const maxScale = 1 // 最大缩放 1ms = 1px
+  const maxScale = 3 // 最大缩放 1ms = 3px
   const zoomStep = 1.2
   
   let newScale = scale.value
@@ -261,7 +261,7 @@ function handlePan(e: KeyboardEvent) {
         base -= stepMs
       }
       
-      newTime = Math.max(0, base)
+      newTime = Math.round(Math.max(0, base))
     } else {
       // 向右
       let base = Math.ceil(ratio) * stepMs
@@ -271,7 +271,7 @@ function handlePan(e: KeyboardEvent) {
         base += stepMs
       }
       
-      newTime = base
+      newTime = Math.round(base)
     }
 
     newTime = quantizeTime(newTime, stepMs)

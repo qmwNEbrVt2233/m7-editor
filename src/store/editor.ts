@@ -638,7 +638,7 @@ export const useEditorStore = defineStore('editor', {
     // 时间轴视图相关操作
     setTimelineView(scale: number, offset: number, scrollTop?: number) {
       if (Number.isFinite(scale)) {
-        this.timelineScale = Math.max(0.01, Math.min(1, scale))
+        this.timelineScale = Math.max(0.01, Math.min(3, scale))
       }
 
       if (Number.isFinite(offset)) {
