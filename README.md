@@ -16,15 +16,18 @@ m7-editor是一个面向 M7 / B 站特效弹幕场景的可视化编辑器。
 - 支持导出 XML 弹幕文件
 - 支持导入 XML 弹幕文件，并在导入时自动重建 layer、避让时间冲突
 - 支持按 screen 宽高进行 XML 坐标比例导入与可选比例导出
+- 支持通过高级创建工具批量生成弹幕 JSON
 - 支持撤销 / 重做、复制 / 粘贴、播放头快速定位等编辑快捷键
 
 # 技术栈
 
-- Vue 3
-- Vite
-- Pinia
-- TypeScript
-- 原生 DOM / FileReader / Blob API
+
+[![Vue](https://img.shields.io/badge/-Vue-4FC08D?style=flat-square&logo=vue.js&logoColor=white)](https://vuejs.org/)
+[![Vite](https://img.shields.io/badge/-Vite-646CFF?style=flat-square&logo=vite&logoColor=white)](https://vitejs.dev/)
+[![Pinia](https://img.shields.io/badge/-Pinia-FFDD5F?style=flat-square&logo=vitest&logoColor=black)](https://pinia.vuejs.org/)
+[![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+<a href="https://mathjs.org/"><img src="https://mathjs.org/css/img/mathjs.svg" style="width: 66px; height: 20px"></a>
+原生 DOM / FileReader / Blob API
 
 # 安装依赖
 
@@ -40,6 +43,7 @@ npm install
 - `pinia`
 - `vue-router`
 - `vite`
+- `mathjs`
 - `@vitejs/plugin-vue`
 
 建议使用较新的 Node.js 版本运行，以保证与当前 Vite 版本兼容。
@@ -220,6 +224,73 @@ npm run preview
 - 支持顶部拖拽调整时间轴区域高度
 - 支持在拖动弹幕时快捷移动视图
 
+## 5. 高级创建工具模块
+<img src="public/2397-21y3n92-183-y89yh80321ihjn.png">
+
+通过 `Ctrl + ;` 可唤出高级创建工具。这个模块采用“工具面板生成规则 -> 写入预览 JSON -> 用户确认后点击创建”的流程，和主编辑器数据解耦，适合批量造大量弹幕。
+
+### 预备弹幕数据区
+
+- 提供可直接编辑的 JSON 预览框
+- 支持格式化 JSON
+- 支持重置为单条弹幕模板
+- 点击 `创建` 后才会真正写入弹幕列表
+- 写入时会自动完成字段规范化、新 ID 分配，并记录历史快照
+
+### 工具面板
+
+- 支持设置生成数量
+- 数量输入框前提供 `表达式` 复选框，默认关闭
+- 支持 `替换` 和 `添加` 两种写入预览框的方式
+- 所有数值字段都支持两种生成模式：
+  - `范围`：指定第一条和最后一条弹幕的值，中间值线性均分
+  - `相对`：指定起始值和每次偏移值，后续弹幕递推生成
+- 当开启 `表达式` 且数值字段处于 `范围` 模式时，会额外显示该字段专属的表达式输入区
+- 每个数值字段都可以单独选择表达式预设或填写自定义表达式
+- 颜色字段支持两种模式：
+  - `范围`：起始颜色到目标颜色按 `alpha 0 -> 1` 均匀混合
+  - `相对`：以起始颜色和叠加颜色做混合，`alpha` 从 `0` 开始按输入值递增，直到上限 `1`
+- `text`、`font`、`stroke`、`easing` 可直接设置固定值
+- 点击 `写入` 后先生成 JSON 到预览框，确认无误后再点击 `创建`
+
+### 表达式规范
+
+表达式功能仅作用于高级创建工具中处于 `范围` 模式的数值字段。  
+字段会先按表达式计算出原始结果序列，再在写入预览框前统一做字段规范化，因此不会因为逐条钳制或取整导致递推失真。
+
+#### 可用变量
+
+- `S`：起始值
+- `E`：结束值
+- `t`：归一化进度，范围 `0 ~ 1`
+- `i`：当前索引，从 `0` 开始
+- `n`：生成数量
+- `pi`：圆周率
+- `e`：自然常数
+
+#### 可用运算与函数
+
+- 基础运算：`+` `-` `*` `/` `^` `()`
+- 常用函数：`sin` `cos` `tan` `abs` `sqrt` `min` `max` `floor` `ceil` `round` `log` `exp`
+- 特殊函数：`bezier(x1, y1, x2, y2, t)`
+  - 用于按三阶贝塞尔曲线计算缓动进度
+  - 例如标准 ease-in-out：`bezier(0.42, 0, 0.58, 1, t)`
+
+#### 内置表达式预设
+
+- 线性均分：`S + (E - S) * t`
+- 标准 Ease In Out：`S + (E - S) * bezier(0.42, 0, 0.58, 1, t)`
+- Ease In：`S + (E - S) * bezier(0.42, 0, 1, 1, t)`
+- Ease Out：`S + (E - S) * bezier(0, 0, 0.58, 1, t)`
+- 轻微回弹：`S + (E - S) * (t + 0.18 * sin(pi * t) * (1 - t))`
+
+#### 示例
+
+- 线性过渡：`S + (E - S) * t`
+- 标准缓入缓出：`S + (E - S) * bezier(0.42, 0, 0.58, 1, t)`
+- 前半段快速变化：`S + (E - S) * sqrt(t)`
+- 带轻微波动的路径：`S + (E - S) * t + 20 * sin(pi * t)`
+
 # 已实现的快捷键
 
 以下快捷键基于当前代码实现整理，`Ctrl` 在 macOS 上可对应 `Command`。
@@ -239,8 +310,10 @@ npm run preview
 | 快捷键 | 作用 |
 | --- | --- |
 | `;` | 在当前播放头创建一条新弹幕 |
+| `Ctrl + ;` | 唤出高级创建工具 |
 | `Delete` | 删除当前选中的弹幕 |
 | `Ctrl + C` | 复制选中的弹幕 |
+| `Ctrl + alt + C` | 复制当前帧的弹幕，保留当前状态（通过选择弹幕定义复制范围，若没有则复制所有可见弹幕） |
 | `Ctrl + V` | 粘贴弹幕 |
 | `Ctrl + A` | 全选弹幕 |
 | `Ctrl + Z` | 撤销 |
@@ -353,8 +426,6 @@ npm run preview
 │
 ├───public
 │       favicon.svg
-│       pause.svg
-│       play.svg
 │
 └───src
     │   App.vue
@@ -362,6 +433,7 @@ npm run preview
     │
     ├───components
     │   ├───editor
+    │   │       creationTools.vue    #高级创建工具
     │   │       editorPanel.vue      #编辑面板
     │   │       ToolBar.vue          #工具栏
     │   │
@@ -389,6 +461,7 @@ npm run preview
     │       S_E_exchange.svg
     │       S_to_E.svg
     │       vertical_centering.svg
+    │       zRotate_calculate.svg
     │
     ├───localStorage
     │       projectStorage.ts        #工程文件保存/加载
@@ -397,7 +470,8 @@ npm run preview
     │       editor.ts                #Pinia 状态管理
     │
     └───utils
-            parser.ts                #校验工具
+            danmakuGenerator.ts      #高级创建工具生成算法
+            parser.ts                #解析工具
             time.ts                  #时间格式化工具
             validation.ts            #验证工具
 ```
