@@ -63,7 +63,7 @@ async function saveBlobWithFallback(
   }
 }
 
-let hasPendingChange = true
+let hasPendingChange = false
 let hasSelectionSnapshotWatcher = false
 
 function clearPendingChangeTracking() {
@@ -687,7 +687,7 @@ export const useEditorStore = defineStore('editor', {
     exportProject() {
       return {
         meta: {
-          version: '0.6.0',
+          version: '1.0.0',
           createdAt: Date.now()
         },
         timeline: {

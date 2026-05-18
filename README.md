@@ -21,11 +21,13 @@ m7-editor是一个面向 M7 / B 站特效弹幕场景的可视化编辑器。
 
 # 技术栈
 
-- Vue 3
-- Vite
-- Pinia
-- TypeScript
-- 原生 DOM / FileReader / Blob API
+
+[![Vue](https://img.shields.io/badge/-Vue-4FC08D?style=flat-square&logo=vue.js&logoColor=white)](https://vuejs.org/)
+[![Vite](https://img.shields.io/badge/-Vite-646CFF?style=flat-square&logo=vite&logoColor=white)](https://vitejs.dev/)
+[![Pinia](https://img.shields.io/badge/-Pinia-FFDD5F?style=flat-square&logo=vitest&logoColor=black)](https://pinia.vuejs.org/)
+[![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+<a href="https://mathjs.org/"><img src="https://mathjs.org/css/img/mathjs.svg" style="width: 66px; height: 20px"></a>
+原生 DOM / FileReader / Blob API
 
 # 安装依赖
 
@@ -37,11 +39,11 @@ npm install
 
 当前主要依赖如下：
 
-- `mathjs`
 - `vue`
 - `pinia`
 - `vue-router`
 - `vite`
+- `mathjs`
 - `@vitejs/plugin-vue`
 
 建议使用较新的 Node.js 版本运行，以保证与当前 Vite 版本兼容。
@@ -284,8 +286,6 @@ npm run preview
 
 #### 示例
 
-- 线性过渡：`S + (E - S) * t`
-- 标准缓入缓出：`S + (E - S) * bezier(0.42, 0, 0.58, 1, t)`
 - 前半段快速变化：`S + (E - S) * sqrt(t)`
 - 带轻微波动的路径：`S + (E - S) * t + 20 * sin(pi * t)`
 
@@ -311,7 +311,7 @@ npm run preview
 | `Ctrl + ;` | 唤出高级创建工具 |
 | `Delete` | 删除当前选中的弹幕 |
 | `Ctrl + C` | 复制选中的弹幕 |
-| `Ctrl + alt + C` | 复制当前帧的弹幕，保留当前状态（可通过选择弹幕过滤复制范围，若没有则复制所有可见弹幕） |
+| `Ctrl + alt + C` | 复制当前帧的弹幕，保留当前状态（通过选择弹幕定义复制范围，若没有则复制所有可见弹幕） |
 | `Ctrl + V` | 粘贴弹幕 |
 | `Ctrl + A` | 全选弹幕 |
 | `Ctrl + Z` | 撤销 |

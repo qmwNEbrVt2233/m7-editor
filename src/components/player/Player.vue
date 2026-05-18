@@ -1,7 +1,66 @@
 <template>
   <div class="player">
     <div class="controls">
-      <a href="https://github.com/qmwNEbrVt2233/m7-editor"><img src="/favicon.svg" width="35" height="35" alt="logo"></a>
+      <div class="logo-container" @mouseenter="showShortcutsNow" @mouseleave="hideShortcutsWithDelay">
+        <a href="https://github.com/qmwNEbrVt2233/m7-editor"><img src="/favicon.svg" width="35" height="35" alt="logo"></a>
+      </div>
+      <div v-if="showShortcuts" class="shortcuts-tooltip" @mouseenter="showShortcutsNow" @mouseleave="hideShortcutsWithDelay">
+        <div class="shortcuts-content">
+            <h3>快捷键</h3>
+            
+            <div class="shortcuts-section">
+              <h4>播放与工程</h4>
+              <table class="shortcuts-table">
+                <tbody>
+                  <tr><td>Space</td><td>播放 / 暂停</td></tr>
+                  <tr><td>Ctrl + S</td><td>导出工程 JSON</td></tr>
+                  <tr><td>Ctrl + D</td><td>保存工程到本地缓存</td></tr>
+                  <tr><td>Ctrl + Delete</td><td>清空本地缓存工程</td></tr>
+                  <tr><td>Tab</td><td>手动重构缓存池</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="shortcuts-section">
+              <h4>弹幕编辑</h4>
+              <table class="shortcuts-table">
+                <tbody>
+                  <tr><td>;</td><td>在当前播放头创建一条新弹幕</td></tr>
+                  <tr><td>Ctrl + ;</td><td>唤出高级创建工具</td></tr>
+                  <tr><td>Delete</td><td>删除当前选中的弹幕</td></tr>
+                  <tr><td>Ctrl + C</td><td>复制选中的弹幕</td></tr>
+                  <tr><td>Ctrl + Alt + C</td><td>复制当前帧的弹幕，保留当前状态</td></tr>
+                  <tr><td>Ctrl + V</td><td>粘贴弹幕</td></tr>
+                  <tr><td>Ctrl + A</td><td>全选弹幕</td></tr>
+                  <tr><td>Ctrl + Z</td><td>撤销</td></tr>
+                  <tr><td>Ctrl + Y</td><td>重做</td></tr>
+                  <tr><td>[</td><td>将播放头移动到弹幕的开始位置</td></tr>
+                  <tr><td>]</td><td>将播放头移动到弹幕的结束位置</td></tr>
+                  <tr><td>Shift + Enter</td><td>编辑文本字段时换行</td></tr>
+                  <tr><td>Enter</td><td>将弹幕数据写入</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="shortcuts-section">
+              <h4>时间轴与播放头</h4>
+              <table class="shortcuts-table">
+                <tbody>
+                  <tr><td>ArrowLeft</td><td>按步长向左移动播放头</td></tr>
+                  <tr><td>ArrowRight</td><td>按步长向右移动播放头</td></tr>
+                  <tr><td>ArrowUp</td><td>向上移动视图，若有选中的弹幕则将其layer-1（向上移动）</td></tr>
+                  <tr><td>ArrowDown</td><td>向下移动视图，若有选中的弹幕则将其layer+1（向下移动）</td></tr>
+                  <tr><td>Ctrl + ArrowLeft</td><td>向左平移时间轴一半视图</td></tr>
+                  <tr><td>Ctrl + ArrowRight</td><td>向右平移时间轴一半视图</td></tr>
+                  <tr><td>Ctrl + Alt + ArrowLeft</td><td>向左平移时间轴 30 秒</td></tr>
+                  <tr><td>Ctrl + Alt + ArrowRight</td><td>向右平移时间轴 30 秒</td></tr>
+                  <tr><td>Ctrl + -</td><td>缩小时间轴视图</td></tr>
+                  <tr><td>Ctrl + =</td><td>放大时间轴视图</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
 
       <button @click="toggle" class="btn">
         <svg  v-if="store.playing" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="100" height="100" viewBox="0 0 100 100" xml:space="preserve" style="width: 13px; height: 13px;">
@@ -30,7 +89,7 @@
 
       <div v-if="activeMenu === 'file'" class="menu-panel">
         <button @click="importVideo" class="btn">导入媒体</button>
-        <button @click="saveProject" class="btn">保存工程</button>
+        <button @click="saveProject" class="btn">导出工程</button>
         <button @click="importProject" class="btn">导入工程</button>
         <button @click="exportXml" class="btn">导出XML</button>
         <button @click="importXml" class="btn">导入XML</button>
@@ -189,6 +248,8 @@ const xmlInput = ref<HTMLInputElement | null>(null)
 const previousCurrentTime = ref(0) // 上一帧的currentTime
 const isSyncing = ref(false) // 标志位：是否正在同步
 const activeMenu = ref<'file' | 'config' | 'player' | 'preprocess'>('file')
+const showShortcuts = ref(false) // 快捷键提示框显示状态
+let shortcutsHideTimer: ReturnType<typeof setTimeout> | null = null
 
 // 快捷键配置相关
 const playheadStepInput = ref(`${store.playheadStepMs.toFixed(6)}`)
@@ -299,6 +360,20 @@ function onMaxLayersChange() {
     store.setMaxLayers(maxLayers)
   }
   maxLayersInput.value = String(store.maxLayers)
+}
+
+// 隐藏快捷键提示框，带有延迟以允许鼠标移入快捷键列表
+function hideShortcutsWithDelay() {
+  if (shortcutsHideTimer) clearTimeout(shortcutsHideTimer)
+  shortcutsHideTimer = setTimeout(() => {
+    showShortcuts.value = false
+  }, 100)
+}
+
+// 显示快捷键并取消隐藏定时器
+function showShortcutsNow() {
+  if (shortcutsHideTimer) clearTimeout(shortcutsHideTimer)
+  showShortcuts.value = true
 }
 
 // 初始化视频元素引用
@@ -513,6 +588,115 @@ function formatTime(ms: number) {
   border-radius: 6px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
   position: fixed;
+}
+
+.logo-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.logo-container a {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.logo-container a img {
+  transition: opacity 0.2s ease;
+}
+
+.logo-container a:hover img {
+  opacity: 0.8;
+}
+
+/* 快捷键提示框样式 */
+.shortcuts-tooltip {
+  position: fixed;
+  top: 60px;
+  left: 16px;
+  background-color: #252525;
+  border: 1px solid #404040;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  z-index: 1000;
+  max-height: 80vh;
+  overflow-y: auto;
+  font-size: 12px;
+}
+
+.shortcuts-content {
+  padding: 16px;
+  min-width: 300px;
+}
+
+.shortcuts-content h3 {
+  margin: 0 0 16px 0;
+  color: #e0e0e0;
+  font-size: 14px;
+  text-align: center;
+  border-bottom: 1px solid #404040;
+  padding-bottom: 12px;
+}
+
+.shortcuts-section {
+  margin-bottom: 16px;
+}
+
+.shortcuts-section h4 {
+  margin: 0 0 8px 0;
+  color: #b0b0b0;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.shortcuts-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.shortcuts-table tr {
+  border-bottom: 1px solid #323232;
+}
+
+.shortcuts-table tr:last-child {
+  border-bottom: none;
+}
+
+.shortcuts-table td {
+  padding: 8px 12px;
+  color: #d0d0d0;
+  text-align: left;
+}
+
+.shortcuts-table td:first-child {
+  color: #64b5f6;
+  font-weight: 500;
+  font-family: 'Courier New', monospace;
+  width: 180px;
+}
+
+.shortcuts-table tr:hover {
+  background-color: #2d2d2d;
+}
+
+/* 滚动条美化 */
+.shortcuts-tooltip::-webkit-scrollbar {
+  width: 8px;
+}
+
+.shortcuts-tooltip::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+.shortcuts-tooltip::-webkit-scrollbar-thumb {
+  background: #464647;
+  border-radius: 4px;
+}
+
+.shortcuts-tooltip::-webkit-scrollbar-thumb:hover {
+  background: #5a5a5a;
 }
 
 /* 下拉菜单样式 */
