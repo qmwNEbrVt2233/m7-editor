@@ -1,6 +1,36 @@
 import type { DanmakuItem } from '@/core/danmaku'
 import { applyOperation, blendColor, parseColorWithAlpha, parseInput } from '@/utils/parser'
 import { M7_RULES, normalizeColor, validateRange } from '@/utils/validation'
+import { compileDependencies, create } from 'mathjs/number'
+
+const math = create(compileDependencies)
+
+math.import({
+  add: (a: number, b: number) => a + b,
+  subtract: (a: number, b: number) => a - b,
+  multiply: (a: number, b: number) => a * b,
+  divide: (a: number, b: number) => a / b,
+  pow: (a: number, b: number) => a ** b,
+  unaryMinus: (value: number) => -value,
+  unaryPlus: (value: number) => +value,
+  sin: Math.sin,
+  cos: Math.cos,
+  tan: Math.tan,
+  abs: Math.abs,
+  sqrt: Math.sqrt,
+  min: Math.min,
+  max: Math.max,
+  floor: Math.floor,
+  ceil: Math.ceil,
+  round: Math.round,
+  log: Math.log,
+  exp: Math.exp,
+  pi: Math.PI,
+  e: Math.E
+}, {
+  override: true,
+  silent: true
+})
 
 export type RuleMode = 'range' | 'relative'
 export type WriteMode = 'append' | 'replace'
@@ -29,6 +59,8 @@ export type NumericRuleState = {
   start: string
   end: string
   step: string
+  expression: string
+  expressionPreset: string
 }
 
 export type ColorRuleState = {
@@ -42,6 +74,7 @@ export type ColorRuleState = {
 
 export type ToolWriteRequest = {
   quantity: number
+  expressionEnabled: boolean
   writeMode: WriteMode
   previewText: string
   numericRules: Record<NumericFieldPath, NumericRuleState>
@@ -63,6 +96,47 @@ export type GeneratedPreviewResult = {
   nextDanmakus: DanmakuDraft[]
   previewText: string
 }
+
+interface RangeEvaluationParams {
+  expression: string; // 用户输入的表达式，例如 "S + (E - S) * bezier(0.25, 0.1, 0.25, 1, t)"
+  startVal: number;   // UI传入的起点数值
+  endVal: number;     // UI传入的终点数值
+  quantity: number;   // 生成数量
+}
+
+export type ExpressionPreset = {
+  key: string
+  label: string
+  expression: string
+}
+
+export const RANGE_EXPRESSION_PRESETS: ExpressionPreset[] = [
+  {
+    key: 'linear',
+    label: '线性均分',
+    expression: 'S + (E - S) * t'
+  },
+  {
+    key: 'easeInOut',
+    label: '标准 Ease In Out',
+    expression: 'S + (E - S) * bezier(0.42, 0, 0.58, 1, t)'
+  },
+  {
+    key: 'easeIn',
+    label: 'Ease In',
+    expression: 'S + (E - S) * bezier(0.42, 0, 1, 1, t)'
+  },
+  {
+    key: 'easeOut',
+    label: 'Ease Out',
+    expression: 'S + (E - S) * bezier(0, 0, 0.58, 1, t)'
+  },
+  {
+    key: 'overshoot',
+    label: '轻微回弹',
+    expression: 'S + (E - S) * (t + 0.18 * sin(pi * t) * (1 - t))'
+  }
+]
 
 const NUMERIC_FIELD_PATHS: NumericFieldPath[] = [
   'layer',
@@ -98,7 +172,11 @@ export function writeGeneratedDanmakusToPreview(request: ToolWriteRequest): Gene
 
 export function generateDanmakuDraftsFromRules(request: ToolWriteRequest): DanmakuDraft[] {
   const quantity = normalizeQuantity(request.quantity)
-  const numericSeries = buildNumericSeriesMap(request.numericRules, quantity)
+  const numericSeries = buildNumericSeriesMap(
+    request.numericRules,
+    quantity,
+    request.expressionEnabled
+  )
   const colorSeries = buildColorSeries(request.colorRule, quantity)
 
   const drafts: DanmakuDraft[] = []
@@ -205,12 +283,13 @@ export function normalizeGeneratedDraft(draft: DanmakuDraft): Omit<DanmakuItem, 
 
 function buildNumericSeriesMap(
   numericRules: Record<NumericFieldPath, NumericRuleState>,
-  quantity: number
+  quantity: number,
+  expressionEnabled: boolean
 ): Record<NumericFieldPath, number[]> {
   const result = {} as Record<NumericFieldPath, number[]>
 
   for (const path of NUMERIC_FIELD_PATHS) {
-    result[path] = buildNumericSeries(path, numericRules[path], quantity)
+    result[path] = buildNumericSeries(path, numericRules[path], quantity, expressionEnabled)
   }
 
   return result
@@ -219,7 +298,8 @@ function buildNumericSeriesMap(
 function buildNumericSeries(
   path: NumericFieldPath,
   rule: NumericRuleState,
-  quantity: number
+  quantity: number,
+  expressionEnabled: boolean
 ): number[] {
   const startValue = parseRequiredNumber(rule.start, `${path} 起始值`)
 
@@ -229,6 +309,16 @@ function buildNumericSeries(
 
   if (rule.mode === 'range') {
     const endValue = parseRequiredNumber(rule.end, `${path} 结束值`)
+    if (expressionEnabled) {
+      const expression = rule.expression?.trim() || RANGE_EXPRESSION_PRESETS[0].expression
+      return evaluateRangeExpression({
+        expression,
+        startVal: startValue,
+        endVal: endValue,
+        quantity
+      })
+    }
+
     const step = (endValue - startValue) / (quantity - 1)
     return Array.from({ length: quantity }, (_, index) => startValue + (step * index))
   }
@@ -456,4 +546,103 @@ function clampOpacity(value: unknown): number {
   const parsed = Number(value)
   const normalized = Number.isFinite(parsed) ? validateRange(parsed, 0, 1) : 1
   return Number(normalized.toFixed(2))
+}
+
+// 标准三阶贝塞尔曲线缓动求解器 (Cubic Bezier Easing Solver)
+export function createCubicBezierSolver(x1: number, y1: number, x2: number, y2: number) {
+  // 贝塞尔曲线公式系数
+  const ax = 3 * x1 - 3 * x2 + 1;
+  const bx = 3 * x2 - 6 * x1;
+  const cx = 3 * x1;
+
+  const ay = 3 * y1 - 3 * y2 + 1;
+  const by = 3 * y2 - 6 * y1;
+  const cy = 3 * y1;
+
+  function sampleCurveX(t: number) { return ((ax * t + bx) * t + cx) * t; }
+  function sampleCurveY(t: number) { return ((ay * t + by) * t + cy) * t; }
+  function sampleCurveDerivativeX(t: number) { return (3 * ax * t + 2 * bx) * t + cx; }
+
+  // 给定 x 轴进度，求解曲线内部的参数 t_param
+  return function solve(x: number): number {
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+
+    // 1. 先用牛顿迭代法快速求解（通常 4-8 次即可精准收敛）
+    let tParam = x;
+    for (let i = 0; i < 8; i++) {
+      const xSample = sampleCurveX(tParam) - x;
+      if (Math.abs(xSample) < 1e-6) return sampleCurveY(tParam);
+      const dX = sampleCurveDerivativeX(tParam);
+      if (Math.abs(dX) < 1e-6) break;
+      tParam -= xSample / dX;
+    }
+
+    // 2. 如果牛顿法失效（导数趋近于0），退化到二分法兜底
+    let lower = 0;
+    let upper = 1;
+    tParam = x;
+
+    while (lower < upper) {
+      const xSample = sampleCurveX(tParam);
+      if (Math.abs(xSample - x) < 1e-6) return sampleCurveY(tParam);
+      if (x > xSample) lower = tParam;
+      else upper = tParam;
+      tParam = (upper + lower) / 2;
+    }
+
+    return sampleCurveY(tParam);
+  };
+}
+
+/**
+ * 范围模式下，根据数学表达式批量计算数值序列
+ */
+export function evaluateRangeExpression(params: RangeEvaluationParams): number[] {
+  const { expression, startVal, endVal, quantity } = params;
+  const results: number[] = [];
+
+  if (quantity < 2) return [startVal];
+
+  try {
+    // 2. 提前编译表达式（编译一次，循环求值，大幅提升跑大批量弹幕时的性能）
+    const compiledExpr = math.compile(expression);
+
+    // 3. 构建一个自定义的数学函数：bezier
+    // math.js 允许在 scope 中直接注入普通 JS 函数
+    const bezierFunction = (x1: number, y1: number, x2: number, y2: number, t: number) => {
+      const solver = createCubicBezierSolver(x1, y1, x2, y2);
+      return solver(t);
+    };
+
+    // 4. 循环为每条弹幕求值
+    for (let i = 0; i < quantity; i++) {
+      const t = i / (quantity - 1); // 归一化进度 0.0 ~ 1.0
+
+      // 5. 组装当前索引的上下文沙盒 (Scope)
+      const scope = {
+        S: startVal,
+        E: endVal,
+        i: i,
+        n: quantity,
+        t: t,
+        pi: Math.PI, // 注入常用常量小写
+        bezier: bezierFunction // 注入贝塞尔函数
+      };
+
+      // 6. 求值
+      const evalResult = compiledExpr.evaluate(scope);
+      
+      if (typeof evalResult !== 'number' || Number.isNaN(evalResult) || !Number.isFinite(evalResult)) {
+        throw new Error(`第 ${i} 条弹幕计算结果不合法 (NaN/Infinite)`);
+      }
+
+      results.push(evalResult);
+    }
+
+    return results;
+  } catch (error: any) {
+    // 向上游抛出 math.js 的语法或解析错误，方便 UI 拦截并用红字显示
+    throw new Error(`表达式解析失败: ${error.message}`);
+  }
 }

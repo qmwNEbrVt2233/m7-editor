@@ -56,6 +56,14 @@
             </div>
             
             <div class="tool-header-actions">
+              <label class="inline-field expression-toggle">
+                <input
+                  v-model="expressionEnabled"
+                  type="checkbox"
+                />
+                <span>表达式</span>
+              </label>
+
               <label class="inline-field">
                 <span>数量</span>
                 <input
@@ -158,6 +166,37 @@
                       />
                     </label>
                   </div>
+
+                  <template v-if="expressionEnabled && numericRules[field.path].mode === 'range'">
+                    <div class="input-grid expression-grid">
+                      <label class="stack-field">
+                        <span>表达式预设</span>
+                        <select
+                          :value="numericRules[field.path].expressionPreset"
+                          @change="onExpressionPresetChange(field.path, $event)"
+                        >
+                          <option
+                            v-for="preset in rangeExpressionPresets"
+                            :key="preset.key"
+                            :value="preset.key"
+                          >
+                            {{ preset.label }}
+                          </option>
+                          <option value="custom">自定义</option>
+                        </select>
+                      </label>
+
+                      <label class="stack-field expression-field">
+                        <span>表达式</span>
+                        <input
+                          v-model="numericRules[field.path].expression"
+                          type="text"
+                          placeholder="S + (E - S) * t"
+                          @input="handleExpressionInput(field.path)"
+                        />
+                      </label>
+                    </div>
+                  </template>
                 </div>
 
                 <div v-else-if="field.kind === 'color'" class="field-card-body">
@@ -275,6 +314,7 @@ import type {
   WriteMode
 } from '@/utils/danmakuGenerator'
 import {
+  RANGE_EXPRESSION_PRESETS as RANGE_EXPRESSION_PRESETS_VALUE,
   normalizeGeneratedDraft,
   parsePreviewDanmakus,
   writeGeneratedDanmakusToPreview
@@ -329,7 +369,9 @@ const previewStatus = ref('预览框中的 JSON 可以直接编辑并创建。')
 const previewStatusTone = ref<'info' | 'success' | 'error'>('info')
 const toolStatus = ref('')
 const quantityInput = ref('10')
+const expressionEnabled = ref(false)
 const writeMode = ref<WriteMode>('replace')
+const rangeExpressionPresets = RANGE_EXPRESSION_PRESETS_VALUE
 
 function createDefaultNumericRules(): Record<NumericFieldPath, NumericRuleState> {
   return {
@@ -456,7 +498,9 @@ function createNumericRule(start = '', end = '', step = ''): NumericRuleState {
     mode: 'range',
     start,
     end,
-    step
+    step,
+    expression: RANGE_EXPRESSION_PRESETS_VALUE[0].expression,
+    expressionPreset: RANGE_EXPRESSION_PRESETS_VALUE[0].key
   }
 }
 
@@ -581,6 +625,7 @@ function normalizeColorInput(target: ColorInputTarget) {
 function buildToolWriteRequest(): ToolWriteRequest {
   return {
     quantity: normalizeQuantity(),
+    expressionEnabled: expressionEnabled.value,
     writeMode: writeMode.value,
     previewText: previewText.value,
     numericRules: cloneValue(numericRules.value),
@@ -608,10 +653,50 @@ function handleToolWrite() {
 }
 
 function handleToolReset() {
+  expressionEnabled.value = false
   numericRules.value = createDefaultNumericRules()
   colorRule.value = createDefaultColorRule()
   directRules.value = createDefaultDirectRules()
   toolStatus.value = '工具栏已重置至默认值。'
+}
+
+function setExpressionPreset(path: NumericFieldPath, presetKey: string) {
+  const rule = numericRules.value[path]
+  if (!rule) {
+    return
+  }
+
+  if (presetKey === 'custom') {
+    rule.expressionPreset = 'custom'
+    return
+  }
+
+  const preset = rangeExpressionPresets.find((item) => item.key === presetKey)
+  if (!preset) {
+    return
+  }
+
+  rule.expressionPreset = preset.key
+  rule.expression = preset.expression
+}
+
+function onExpressionPresetChange(path: NumericFieldPath, event: Event) {
+  const target = event.target as HTMLSelectElement | null
+  if (!target) {
+    return
+  }
+
+  setExpressionPreset(path, target.value)
+}
+
+function handleExpressionInput(path: NumericFieldPath) {
+  const rule = numericRules.value[path]
+  if (!rule) {
+    return
+  }
+
+  const matchedPreset = rangeExpressionPresets.find((preset) => preset.expression === rule.expression.trim())
+  rule.expressionPreset = matchedPreset?.key || 'custom'
 }
 
 function handleCreate() {
@@ -900,6 +985,11 @@ defineExpose({
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.input-grid.expression-grid {
+  grid-template-columns: 180px minmax(0, 1fr);
+  align-items: end;
+}
+
 .stack-field {
   display: flex;
   flex-direction: column;
@@ -968,6 +1058,23 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.expression-toggle {
+  padding: 0 6px;
+  height: 34px;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  background: #2a2a2d;
+}
+
+.expression-toggle input {
+  width: 16px;
+  height: 16px;
+}
+
+.expression-field input {
+  width: 100%;
 }
 
 .small-input {
@@ -1120,6 +1227,10 @@ defineExpose({
   }
 
   .input-grid.two-column {
+    grid-template-columns: 1fr;
+  }
+
+  .input-grid.expression-grid {
     grid-template-columns: 1fr;
   }
 }
