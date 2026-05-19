@@ -320,6 +320,69 @@ function createXmlDanmakuMetadata(node: Element, index: number): XmlDanmakuMetad
 }
 
 /**
+ * 修复 XML body JSON 字符串中的原始控制字符。
+ * 典型场景是文本字段里直接混入了真实换行，而不是 "\\n"。
+ */
+function sanitizeXmlBodyJson(text: string): string {
+  let result = ''
+  let inString = false
+  let escaped = false
+
+  for (const char of text) {
+    if (!inString) {
+      result += char
+      if (char === '"') {
+        inString = true
+      }
+      continue
+    }
+
+    if (escaped) {
+      result += char
+      escaped = false
+      continue
+    }
+
+    if (char === '\\') {
+      result += char
+      escaped = true
+      continue
+    }
+
+    if (char === '"') {
+      result += char
+      inString = false
+      continue
+    }
+
+    if (char === '\n') {
+      result += '\\n'
+      continue
+    }
+
+    if (char === '\r') {
+      result += '\\r'
+      continue
+    }
+
+    if (char === '\t') {
+      result += '\\t'
+      continue
+    }
+
+    const code = char.charCodeAt(0)
+    if (code <= 0x1f) {
+      result += `\\u${code.toString(16).padStart(4, '0')}`
+      continue
+    }
+
+    result += char
+  }
+
+  return result
+}
+
+/**
  * 解析 XML body，也就是 d 节点内部的 JSON 数组
  */
 function parseXmlBody(text: string, metadata: XmlDanmakuMetadata): unknown[] {
@@ -330,7 +393,7 @@ function parseXmlBody(text: string, metadata: XmlDanmakuMetadata): unknown[] {
   }
 
   try {
-    const parsed = JSON.parse(trimmed)
+    const parsed = JSON.parse(sanitizeXmlBodyJson(trimmed))
     if (!Array.isArray(parsed)) {
       throw new Error('body is not an array')
     }
