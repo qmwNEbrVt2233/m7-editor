@@ -180,22 +180,45 @@
 
     <div class="divider"></div>
 
-    <button
-      class="tool-btn"
-      :disabled="!hasSelection"
-      title="将起始坐标应用至结束坐标"
-      @click="handleCopyStartToEnd"
-    >
-      <img src="/src/icon/S_to_E.svg" alt="起始坐标应用至结束坐标" />
-    </button>
-    <button
-      class="tool-btn"
-      :disabled="!hasSelection"
-      title="将结束坐标应用至起始坐标"
-      @click="handleCopyEndToStart"
-    >
-      <img src="/src/icon/E_to_S.svg" alt="结束坐标应用至起始坐标" />
-    </button>
+    <div class="group-tools2">
+      <button
+        class="tool-btn"
+        :disabled="!hasSelection"
+        title="水平镜像"
+        @click="handleHorizontalMirror"
+      >
+        <img src="/src/icon/horizontal_mirror.svg" alt="水平镜像" />
+      </button>
+
+      <button
+        class="tool-btn"
+        :disabled="!hasSelection"
+        title="垂直镜像"
+        @click="handleVerticalMirror"
+      >
+        <img src="/src/icon/vertical_mirror.svg" alt="垂直镜像" />
+      </button>
+    </div>
+    
+    <div class="group-tools2">
+      <button
+        class="tool-btn"
+        :disabled="!hasSelection"
+        title="将起始坐标应用至结束坐标"
+        @click="handleCopyStartToEnd"
+      >
+        <img src="/src/icon/S_to_E.svg" alt="起始坐标应用至结束坐标" />
+      </button>
+      <button
+        class="tool-btn"
+        :disabled="!hasSelection"
+        title="将结束坐标应用至起始坐标"
+        @click="handleCopyEndToStart"
+      >
+        <img src="/src/icon/E_to_S.svg" alt="结束坐标应用至起始坐标" />
+      </button>
+    </div>
+
     <button
       class="tool-btn"
       :disabled="!hasSelection"
@@ -210,20 +233,32 @@
       :disabled="!hasSelection"
       title="根据坐标计算z轴旋转角度"
       @click="handleCalculateZRotation"
-      >
+    >
       <img src="/src/icon/zRotate_calculate.svg" alt="计算Z轴旋转" />
     </button>
 
     <div class="divider"></div>
 
-    <button
-      class="tool-btn"
-      :disabled="!hasSelection"
-      title="行分隔"
-      @click="handleLineSplit"
-    >
-      <img src="/src/icon/Split_by_line.svg" alt="行分隔" />
-    </button>
+    <div class="group-tools2">
+      <button
+        class="tool-btn"
+        :disabled="!hasSelection"
+        title="行分隔"
+        @click="handleLineSplit"
+      >
+        <img src="/src/icon/Split_by_line.svg" alt="行分隔" />
+      </button>
+
+      <button
+        class="tool-btn"
+        :disabled="!hasSelection"
+        title="字分隔"
+        @click="handleLetterSplit"
+      >
+        <img src="/src/icon/Split_by_letter.svg" alt="字分隔" />
+      </button>
+    </div>
+
     <button
       class="tool-btn"
       :disabled="!hasSelection"
@@ -1554,6 +1589,13 @@ onBeforeUnmount(() => {
 .group-tools {
   display: flex;
   flex-direction: column;
+  gap: 4px;
+}
+
+.group-tools2 {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
   gap: 4px;
 }
 

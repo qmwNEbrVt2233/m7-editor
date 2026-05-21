@@ -1383,7 +1383,7 @@ function onMouseUp() {
   outline: 2px solid yellow;
   outline-offset: -2px;
   background: #81c784;
-  z-index: 10;
+  z-index: 9;
 }
 
 .handle {

@@ -161,7 +161,7 @@ function onTimelineDragStart(e: MouseEvent) {
   border-left: 1px solid #333; 
   width: max-content;
   box-sizing: border-box;
-  z-index: 1;
+  z-index: 12;
 }
 
 .editor-section {
@@ -171,7 +171,7 @@ function onTimelineDragStart(e: MouseEvent) {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  z-index: 1;
+  z-index: 12;
 }
 
 .timeline-container {
