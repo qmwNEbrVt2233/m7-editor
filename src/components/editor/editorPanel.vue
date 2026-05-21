@@ -62,31 +62,68 @@
 
           <div class="form-group">
             <label>字体 (Font)</label>
-            <select
-              v-model="font"
-              @change="updateField('content.font', font)"
-              @pointerdown="loadLocalFonts"
-              class="font-select"
-            >
-              <optgroup label="常用字体">
-                <option
-                  v-for="option in builtInFontOptions"
-                  :key="option.value"
-                  :value="option.value"
-                >
-                  {{ option.label }}
-                </option>
-              </optgroup>
-              <optgroup v-if="localFontOptions.length > 0" label="本地字体">
-                <option
-                  v-for="option in localFontOptions"
-                  :key="option.value"
-                  :value="option.value"
-                >
-                  {{ option.label }}
-                </option>
-              </optgroup>
-            </select>
+            <div ref="fontPickerRef" class="font-picker">
+              <button
+                type="button"
+                class="font-trigger"
+                :class="{ 'font-trigger-open': isFontDropdownOpen }"
+                @click="toggleFontDropdown"
+              >
+                <span class="font-trigger-label">{{ selectedFontLabel }}</span>
+                <span class="font-trigger-arrow">{{ isFontDropdownOpen ? '∧' : '∨' }}</span>
+              </button>
+
+              <div v-show="isFontDropdownOpen" class="font-dropdown">
+                <div class="font-section">
+                  <div class="font-section-title">常用字体</div>
+                  <button
+                    v-for="option in builtInFontOptions"
+                    :key="option.value"
+                    type="button"
+                    class="font-option"
+                    :class="{ 'font-option-selected': isSelectedFont(option.value) }"
+                    @click="selectFontOption(option.value)"
+                  >
+                    {{ option.label }}
+                  </button>
+                </div>
+
+                <div class="font-section">
+                  <div class="font-section-title">本地字体</div>
+                  <div v-if="isLoadingLocalFonts" class="font-status">正在读取本地字体...</div>
+                  <div v-else-if="!localFontsSupported" class="font-status">当前环境不支持本地字体访问</div>
+                  <div v-else-if="localFontsPermissionDenied" class="font-status">未授予本地字体访问权限</div>
+                  <div v-else-if="localFontOptions.length === 0" class="font-status">未发现可用的本地字体</div>
+                  <div
+                    v-else
+                    ref="localFontListRef"
+                    class="font-virtual-list"
+                    @scroll="onLocalFontListScroll"
+                  >
+                    <div
+                      class="font-virtual-spacer"
+                      :style="{ height: `${localFontListTotalHeight}px` }"
+                    >
+                      <div
+                        class="font-virtual-content"
+                        :style="{ transform: `translateY(${localFontListOffset}px)` }"
+                      >
+                        <button
+                          v-for="option in visibleLocalFontOptions"
+                          :key="option.value"
+                          type="button"
+                          class="font-option"
+                          :class="{ 'font-option-selected': isSelectedFont(option.value) }"
+                          @click="selectFontOption(option.value)"
+                        >
+                          {{ option.label }}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="form-group">
@@ -305,7 +342,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, onBeforeUnmount } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useEditorStore } from '@/store/editor'
 import { parseInput, applyOperation, formatInputDisplay, parseColorWithAlpha, blendColor } from '@/utils/parser'
 import { validateField, normalizeColor, validateRange, M7_RULES } from '@/utils/validation'
@@ -322,6 +359,10 @@ type LocalFontData = {
 
 type QueryLocalFontsFn = () => Promise<LocalFontData[]>
 
+const LOCAL_FONT_ITEM_HEIGHT = 32
+const LOCAL_FONT_LIST_HEIGHT = 224
+const LOCAL_FONT_OVERSCAN = 6
+
 const store = useEditorStore()
 
 const builtInFontOptions: FontOption[] = [
@@ -335,11 +376,16 @@ const builtInFontOptions: FontOption[] = [
 // 本地编辑缓存，避免频繁触发响应式更新
 const editCache = ref<Record<string, any>>({})
 const updateDebounceTimer = ref<ReturnType<typeof setTimeout> | null>(null)
-const localFontFamilies = ref<string[]>([])
+const fontPickerRef = ref<HTMLElement | null>(null)
+const localFontListRef = ref<HTMLElement | null>(null)
+const localFontOptions = ref<FontOption[]>([])
+const localFontKeySet = ref<Set<string>>(new Set())
 const localFontsLoaded = ref(false)
 const localFontsSupported = ref(true)
 const localFontsPermissionDenied = ref(false)
 const isLoadingLocalFonts = ref(false)
+const isFontDropdownOpen = ref(false)
+const localFontListScrollTop = ref(0)
 
 // 计算属性：是否有选中的弹幕
 const hasSelection = computed(() => store.selectedIds.length > 0)
@@ -550,22 +596,90 @@ const easing = computed<string>({
 })
 
 const builtInFontKeys = new Set(builtInFontOptions.map(option => normalizeFontKey(option.value)))
-const localFontOptions = computed<FontOption[]>(() => {
-  return localFontFamilies.value
-    .filter(family => {
-      const familyKey = normalizeFontKey(family)
-      return !builtInFontKeys.has(familyKey)
-    })
-    .map(family => ({
-      value: family,
-      label: family
-    }))
+
+const currentFontOption = computed<FontOption | null>(() => {
+  const currentFontValue = font.value.trim()
+  if (!currentFontValue) {
+    return null
+  }
+
+  const currentFontKey = normalizeFontKey(currentFontValue)
+  if (builtInFontKeys.has(currentFontKey) || localFontKeySet.value.has(currentFontKey)) {
+    return null
+  }
+
+  return {
+    value: currentFontValue,
+    label: `${currentFontValue} (当前)`
+  }
+})
+
+const selectedFontLabel = computed(() => {
+  const currentFontValue = font.value.trim()
+  if (!currentFontValue) {
+    return '请选择字体'
+  }
+
+  const builtInMatch = builtInFontOptions.find(option => option.value === currentFontValue)
+  if (builtInMatch) {
+    return builtInMatch.label
+  }
+
+  return currentFontOption.value?.label || currentFontValue
+})
+
+const localFontListStartIndex = computed(() => {
+  const startIndex = Math.floor(localFontListScrollTop.value / LOCAL_FONT_ITEM_HEIGHT) - LOCAL_FONT_OVERSCAN
+  return Math.max(0, startIndex)
+})
+
+const localFontListEndIndex = computed(() => {
+  const visibleCount = Math.ceil(LOCAL_FONT_LIST_HEIGHT / LOCAL_FONT_ITEM_HEIGHT) + LOCAL_FONT_OVERSCAN * 2
+  return Math.min(localFontOptions.value.length, localFontListStartIndex.value + visibleCount)
+})
+
+const localFontListOffset = computed(() => localFontListStartIndex.value * LOCAL_FONT_ITEM_HEIGHT)
+const localFontListTotalHeight = computed(() => localFontOptions.value.length * LOCAL_FONT_ITEM_HEIGHT)
+
+const visibleLocalFontOptions = computed(() => {
+  return localFontOptions.value.slice(localFontListStartIndex.value, localFontListEndIndex.value)
 })
 
 let skipNextTextChange = false
 
 function normalizeFontKey(value: string): string {
   return value.trim().toLocaleLowerCase()
+}
+
+function isSelectedFont(value: string): boolean {
+  return normalizeFontKey(font.value) === normalizeFontKey(value)
+}
+
+function buildLocalFontOptions(fonts: LocalFontData[]): { options: FontOption[]; keys: Set<string> } {
+  const uniqueFamilies = new Map<string, string>()
+
+  for (const fontData of fonts) {
+    const family = fontData.family?.trim()
+    if (!family) {
+      continue
+    }
+
+    const familyKey = normalizeFontKey(family)
+    if (builtInFontKeys.has(familyKey) || uniqueFamilies.has(familyKey)) {
+      continue
+    }
+
+    uniqueFamilies.set(familyKey, family)
+  }
+
+  const sortedFamilies = Array.from(uniqueFamilies.values()).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'))
+  return {
+    options: sortedFamilies.map(family => ({
+      value: family,
+      label: family
+    })),
+    keys: new Set(uniqueFamilies.keys())
+  }
 }
 
 function getQueryLocalFonts(): QueryLocalFontsFn | null {
@@ -596,13 +710,9 @@ async function loadLocalFonts() {
 
   try {
     const fonts = await queryLocalFonts()
-    localFontFamilies.value = Array.from(
-      new Set(
-        fonts
-          .map(fontData => fontData.family?.trim())
-          .filter((family): family is string => Boolean(family))
-      )
-    ).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'))
+    const { options, keys } = buildLocalFontOptions(fonts)
+    localFontOptions.value = options
+    localFontKeySet.value = keys
     localFontsLoaded.value = true
   } catch (error) {
     if (error instanceof DOMException) {
@@ -620,6 +730,86 @@ async function loadLocalFonts() {
     console.warn('读取本地字体失败:', error)
   } finally {
     isLoadingLocalFonts.value = false
+  }
+}
+
+// 字体选择逻辑
+async function openFontDropdown() {
+  if (isFontDropdownOpen.value) {
+    return
+  }
+
+  isFontDropdownOpen.value = true
+  localFontListScrollTop.value = 0
+
+  await loadLocalFonts()
+  await nextTick()
+  scrollSelectedFontIntoView()
+}
+
+function closeFontDropdown() {
+  isFontDropdownOpen.value = false
+}
+
+function toggleFontDropdown() {
+  if (isFontDropdownOpen.value) {
+    closeFontDropdown()
+    return
+  }
+
+  void openFontDropdown()
+}
+
+function selectFontOption(value: string) {
+  font.value = value
+  updateField('content.font', value)
+  closeFontDropdown()
+}
+
+function onLocalFontListScroll(event: Event) {
+  localFontListScrollTop.value = (event.target as HTMLElement).scrollTop
+}
+
+// 将选中字体滚动到可视区域
+function scrollSelectedFontIntoView() {
+  const currentFontKey = normalizeFontKey(font.value)
+  const targetIndex = localFontOptions.value.findIndex(option => normalizeFontKey(option.value) === currentFontKey)
+  const listElement = localFontListRef.value
+
+  if (targetIndex < 0 || !listElement) {
+    return
+  }
+
+  const targetTop = targetIndex * LOCAL_FONT_ITEM_HEIGHT
+  const targetBottom = targetTop + LOCAL_FONT_ITEM_HEIGHT
+  const viewportTop = listElement.scrollTop
+  const viewportBottom = viewportTop + LOCAL_FONT_LIST_HEIGHT
+
+  if (targetTop < viewportTop) {
+    listElement.scrollTop = targetTop
+  } else if (targetBottom > viewportBottom) {
+    listElement.scrollTop = targetBottom - LOCAL_FONT_LIST_HEIGHT
+  }
+
+  localFontListScrollTop.value = listElement.scrollTop
+}
+
+function onDocumentPointerDown(event: PointerEvent) {
+  if (!isFontDropdownOpen.value) {
+    return
+  }
+
+  const targetNode = event.target as Node | null
+  if (targetNode && fontPickerRef.value?.contains(targetNode)) {
+    return
+  }
+
+  closeFontDropdown()
+}
+
+function onDocumentKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && isFontDropdownOpen.value) {
+    closeFontDropdown()
   }
 }
 
@@ -922,18 +1112,37 @@ function isTextLengthValid(str: string): boolean {
 function handleClearSelection() {
   store.clearSelection()
   editCache.value = {}
+  closeFontDropdown()
 }
 
 // 监听选择变化，清除编辑缓存
 watch(() => store.selectedIds, () => {
   editCache.value = {}
+  closeFontDropdown()
 }, { deep: true })
+
+watch(() => [isFontDropdownOpen.value, localFontOptions.value.length, font.value], async ([isOpen]) => {
+  if (!isOpen) {
+    return
+  }
+
+  await nextTick()
+  scrollSelectedFontIntoView()
+})
+
+onMounted(() => {
+  document.addEventListener('pointerdown', onDocumentPointerDown)
+  document.addEventListener('keydown', onDocumentKeydown)
+})
 
 // 组件卸载时清理
 onBeforeUnmount(() => {
   if (updateDebounceTimer.value) {
     clearTimeout(updateDebounceTimer.value)
   }
+
+  document.removeEventListener('pointerdown', onDocumentPointerDown)
+  document.removeEventListener('keydown', onDocumentKeydown)
 })
 </script>
 
@@ -1070,6 +1279,115 @@ onBeforeUnmount(() => {
   background-color: #444;
 }
 
+.font-picker {
+  position: relative;
+}
+
+.font-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  background-color: #3c3c3c;
+  color: #e0e0e0;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+
+.font-trigger:hover,
+.font-trigger-open {
+  border-color: #4ec9b0;
+  background-color: #444;
+}
+
+.font-trigger-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.font-trigger-arrow {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.font-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  padding: 8px;
+  border: 1px solid #3e3e42;
+  border-radius: 6px;
+  background-color: #252526;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+}
+
+.font-section + .font-section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #333;
+}
+
+.font-section-title {
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: #888;
+}
+
+.font-option {
+  height: 32px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #e0e0e0;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.font-option:hover {
+  background-color: #2d2d30;
+}
+
+.font-option-selected {
+  background-color: rgba(78, 201, 176, 0.18);
+  color: #7de6d2;
+}
+
+.font-status {
+  padding: 10px;
+  color: #888;
+  font-size: 12px;
+}
+
+.font-virtual-list {
+  max-height: 224px;
+  overflow-y: auto;
+}
+
+.font-virtual-spacer {
+  position: relative;
+}
+
+.font-virtual-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
 .form-group input[type='number'],
 .form-group input[type='text'] {
   font-family: 'Consolas', 'Courier New', monospace;
@@ -1185,23 +1503,23 @@ onBeforeUnmount(() => {
 }
 
 /* 滚动条美化 */
-.font-select::-webkit-scrollbar,
+.font-virtual-list::-webkit-scrollbar,
 .panel-content::-webkit-scrollbar {
   width: 8px;
 }
 
-.font-select::-webkit-scrollbar-track,
+.font-virtual-list::-webkit-scrollbar-track,
 .panel-content::-webkit-scrollbar-track {
   background: #1e1e1e;
 }
 
-.font-select::-webkit-scrollbar-thumb,
+.font-virtual-list::-webkit-scrollbar-thumb,
 .panel-content::-webkit-scrollbar-thumb {
   background: #464647;
   border-radius: 4px;
 }
 
-.font-select::-webkit-scrollbar-thumb:hover,
+.font-virtual-list::-webkit-scrollbar-thumb:hover,
 .panel-content::-webkit-scrollbar-thumb:hover {
   background: #5a5a5a;
 }
