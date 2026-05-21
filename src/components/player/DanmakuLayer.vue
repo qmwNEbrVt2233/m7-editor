@@ -309,8 +309,12 @@ async function handleToolbarMeasure(event: Event) {
 }
 
 function handleTabKeyPress(event: KeyboardEvent) {
+  // 避免在输入框中触发快捷键
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+    return
+  }
+
   if (event.key === 'Tab') {
-    event.preventDefault()
     updateBuffer(store.currentTime)
     console.log('[DanmakuLayer] TAB 快捷键：手动触发缓冲池重构')
   }

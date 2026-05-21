@@ -1499,6 +1499,11 @@ onBeforeUnmount(() => {
 .tool-btn img {
   width: 30px;
   height: 30px;
+  transition: transform 0.1s ease;
+}
+
+.tool-btn.active img {
+  transform: rotate(90deg);
 }
 
 .framed-group {

@@ -4,7 +4,7 @@
       <div class="logo-container" @mouseenter="showShortcutsNow" @mouseleave="hideShortcutsWithDelay">
         <a href="https://github.com/qmwNEbrVt2233/m7-editor"><img src="/favicon.svg" width="35" height="35" alt="logo"></a>
       </div>
-      <div v-if="showShortcuts" class="shortcuts-tooltip" @mouseenter="showShortcutsNow" @mouseleave="hideShortcutsWithDelay">
+      <div v-show="showShortcuts" class="shortcuts-tooltip" @mouseenter="showShortcutsNow" @mouseleave="hideShortcutsWithDelay">
         <div class="shortcuts-content">
             <h3>快捷键</h3>
             
@@ -582,7 +582,7 @@ function formatTime(ms: number) {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
-  z-index: 1;
+  z-index: 11;
   background-color: #1e1e1e;
   padding: 3px 16px;
   border-radius: 6px;
@@ -619,7 +619,6 @@ function formatTime(ms: number) {
   border: 1px solid #404040;
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
-  z-index: 1000;
   max-height: 80vh;
   overflow-y: auto;
   font-size: 12px;
