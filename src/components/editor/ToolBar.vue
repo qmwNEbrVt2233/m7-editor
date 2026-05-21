@@ -1109,41 +1109,42 @@ function handleSwapStartAndEnd() {
   finishToolbarOperation('工具栏：互换结束与起始坐标')
 }
 
-/**
- * 行分隔工具
- * 对于每个含有换行符 \n 的选中弹幕，将其拆分为多个弹幕。
- * 考虑弹幕的 Z 轴旋转，新行沿旋转方向偏移 (size) 像素。
- */
-function handleLineSplit() {
-  if (!hasSelection.value) {
-    return
-  }
+function mirrorCoordinate(value: number, axisSize: number): number {
+  return roundToInteger(axisSize - value)
+}
 
-  const allocateId = createIdAllocator()
+function createMeasureDanmaku(danmaku: DanmakuItem, id: string, text: string): DanmakuItem {
+  const measureDanmaku = cloneDanmaku(danmaku)
+  measureDanmaku.id = id
+  measureDanmaku.content.text = text
+  return measureDanmaku
+}
+
+// 通用行分隔实现
+function splitDanmakusByLine(danmakus: DanmakuItem[], allocateId: () => string) {
   const newDanmakus: DanmakuItem[] = []
   const nextSelectedIds = [...store.selectedIds]
+  const singleLineDanmakus: DanmakuItem[] = []
   let hasClampWarning = false
   let hasChange = false
 
-
-  selectedDanmakus.value.forEach((danmaku) => {
+  danmakus.forEach((danmaku) => {
     const lines = danmaku.content.text.split('\n')
-    
-    // 如果只有一行，无需拆分
+
     if (lines.length <= 1) {
+      singleLineDanmakus.push(danmaku)
       return
     }
 
     hasChange = true
 
-    // 复制一份作为模板，后续行将基于此生成
     const sourceDanmaku = cloneDanmaku(danmaku)
     const radian = (sourceDanmaku.transform.zRotate * Math.PI) / 180
     const lineStep = sourceDanmaku.content.size
 
     danmaku.content.text = lines[0]
+    singleLineDanmakus.push(danmaku)
 
-    // 从第二行开始创建新弹幕，并根据 Z 轴旋转计算偏移量
     lines.slice(1).forEach((line, index) => {
       const offsetIndex = index + 1
       const offsetX = -Math.sin(radian) * lineStep * offsetIndex
@@ -1158,7 +1159,6 @@ function handleLineSplit() {
         hasClampWarning = true
       }
 
-      // 分配新 ID，继承原 layer
       splitDanmaku.id = allocateId()
       splitDanmaku.layer = sourceDanmaku.layer
       splitDanmaku.content.text = line
@@ -1169,8 +1169,106 @@ function handleLineSplit() {
 
       newDanmakus.push(splitDanmaku)
       nextSelectedIds.push(splitDanmaku.id)
+      singleLineDanmakus.push(splitDanmaku)
     })
   })
+
+  return {
+    hasChange,
+    hasClampWarning,
+    newDanmakus,
+    nextSelectedIds,
+    singleLineDanmakus
+  }
+}
+
+// 水平镜像功能
+function handleHorizontalMirror() {
+  if (!hasSelection.value) {
+    return
+  }
+
+  let hasChange = false
+  let hasClampWarning = false
+
+  selectedDanmakus.value.forEach((danmaku) => {
+    const mirroredStartX = clampCoordinate(mirrorCoordinate(danmaku.transform.start.x, store.screenWidth))
+    const mirroredEndX = clampCoordinate(mirrorCoordinate(danmaku.transform.end.x, store.screenWidth))
+
+    if (mirroredStartX.clamped || mirroredEndX.clamped) {
+      hasClampWarning = true
+    }
+
+    danmaku.transform.start.x = mirroredStartX.value
+    danmaku.transform.end.x = mirroredEndX.value
+    danmaku.transform.zRotate = normalizeAngle(360 - danmaku.transform.zRotate)
+    danmaku.transform.yRotate = normalizeAngle(180 - danmaku.transform.yRotate)
+    hasChange = true
+  })
+
+  if (!hasChange) {
+    return
+  }
+
+  finishToolbarOperation('工具栏：水平镜像')
+
+  if (hasClampWarning) {
+    window.alert('部分水平镜像后的坐标小于 0，已自动修正为 0。')
+  }
+}
+
+// 垂直镜像功能
+function handleVerticalMirror() {
+  if (!hasSelection.value) {
+    return
+  }
+
+  let hasChange = false
+  let hasClampWarning = false
+
+  selectedDanmakus.value.forEach((danmaku) => {
+    const mirroredStartY = clampCoordinate(mirrorCoordinate(danmaku.transform.start.y, store.screenHeight))
+    const mirroredEndY = clampCoordinate(mirrorCoordinate(danmaku.transform.end.y, store.screenHeight))
+
+    if (mirroredStartY.clamped || mirroredEndY.clamped) {
+      hasClampWarning = true
+    }
+
+    danmaku.transform.start.y = mirroredStartY.value
+    danmaku.transform.end.y = mirroredEndY.value
+    danmaku.transform.zRotate = normalizeAngle(180 - danmaku.transform.zRotate)
+    danmaku.transform.yRotate = normalizeAngle(180 - danmaku.transform.yRotate)
+    hasChange = true
+  })
+
+  if (!hasChange) {
+    return
+  }
+
+  finishToolbarOperation('工具栏：垂直镜像')
+
+  if (hasClampWarning) {
+    window.alert('部分垂直镜像后的坐标小于 0，已自动修正为 0。')
+  }
+}
+
+/**
+ * 行分隔工具
+ * 对于每个含有换行符 \n 的选中弹幕，将其拆分为多个弹幕。
+ * 考虑弹幕的 Z 轴旋转，新行沿旋转方向偏移 (size) 像素。
+ */
+function handleLineSplit() {
+  if (!hasSelection.value) {
+    return
+  }
+
+  const allocateId = createIdAllocator()
+  const {
+    hasChange,
+    hasClampWarning,
+    newDanmakus,
+    nextSelectedIds
+  } = splitDanmakusByLine(selectedDanmakus.value, allocateId)
 
   if (!hasChange) {
     return
@@ -1186,6 +1284,111 @@ function handleLineSplit() {
 
   if (hasClampWarning) {
     window.alert('部分行分隔后的坐标小于 0，已自动修正为 0。')
+  }
+}
+
+// 字分隔工具
+async function handleLetterSplit() {
+  if (!hasSelection.value) {
+    return
+  }
+
+  const allocateId = createIdAllocator()
+  const lineSplitResult = splitDanmakusByLine(selectedDanmakus.value, allocateId)
+  const letterDanmakus: DanmakuItem[] = []
+  const nextSelectedIds = [...lineSplitResult.nextSelectedIds]
+  let hasChange = lineSplitResult.hasChange
+  let hasClampWarning = lineSplitResult.hasClampWarning
+
+  const measurableDanmakus = lineSplitResult.singleLineDanmakus.filter((danmaku) => {
+    return danmaku.content.text.length > 1
+  })
+
+  if (measurableDanmakus.length === 0 && !lineSplitResult.hasChange) {
+    return
+  }
+
+  const measureRequests: DanmakuItem[] = []
+  const prefixWidthMap = new Map<string, number>()
+
+  measurableDanmakus.forEach((danmaku) => {
+    for (let index = 1; index < danmaku.content.text.length; index++) {
+      measureRequests.push(
+        createMeasureDanmaku(
+          danmaku,
+          `measure-${danmaku.id}-${index}`,
+          danmaku.content.text.slice(0, index)
+        )
+      )
+    }
+  })
+
+  if (measureRequests.length > 0) {
+    try {
+      const measurements = await measureDanmakus(measureRequests)
+
+      measurableDanmakus.forEach((danmaku) => {
+        for (let index = 1; index < danmaku.content.text.length; index++) {
+          const measurementId = `measure-${danmaku.id}-${index}`
+          prefixWidthMap.set(measurementId, measurements[measurementId]?.rawWidth ?? 0)
+        }
+      })
+    } catch (error) {
+      console.warn('[ToolBar] 字分隔测量失败:', error)
+      return
+    }
+  }
+
+  measurableDanmakus.forEach((danmaku) => {
+    const sourceDanmaku = cloneDanmaku(danmaku)
+    const text = sourceDanmaku.content.text
+    const radian = (sourceDanmaku.transform.zRotate * Math.PI) / 180
+
+    danmaku.content.text = text[0]
+    hasChange = true
+
+    for (let index = 1; index < text.length; index++) {
+      const prefixWidth = prefixWidthMap.get(`measure-${danmaku.id}-${index}`) ?? 0
+      const offsetX = Math.cos(radian) * prefixWidth
+      const offsetY = Math.sin(radian) * prefixWidth
+      const splitDanmaku = cloneDanmaku(sourceDanmaku)
+      const startX = clampCoordinate(sourceDanmaku.transform.start.x + offsetX)
+      const startY = clampCoordinate(sourceDanmaku.transform.start.y + offsetY)
+      const endX = clampCoordinate(sourceDanmaku.transform.end.x + offsetX)
+      const endY = clampCoordinate(sourceDanmaku.transform.end.y + offsetY)
+
+      if (startX.clamped || startY.clamped || endX.clamped || endY.clamped) {
+        hasClampWarning = true
+      }
+
+      splitDanmaku.id = allocateId()
+      splitDanmaku.layer = sourceDanmaku.layer
+      splitDanmaku.content.text = text[index]
+      splitDanmaku.transform.start.x = startX.value
+      splitDanmaku.transform.start.y = startY.value
+      splitDanmaku.transform.end.x = endX.value
+      splitDanmaku.transform.end.y = endY.value
+
+      letterDanmakus.push(splitDanmaku)
+      nextSelectedIds.push(splitDanmaku.id)
+    }
+  })
+
+  const newDanmakus = [...lineSplitResult.newDanmakus, ...letterDanmakus]
+
+  if (!hasChange) {
+    return
+  }
+
+  if (newDanmakus.length > 0) {
+    store.assignLayersForDanmakusSequentially(newDanmakus)
+    store.danmakus.push(...newDanmakus)
+  }
+
+  finishToolbarOperation('工具栏：字分隔', nextSelectedIds)
+
+  if (hasClampWarning) {
+    window.alert('部分字分隔后的坐标小于 0，已自动修正为 0。')
   }
 }
 
