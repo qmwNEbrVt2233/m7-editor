@@ -4,375 +4,388 @@
     class="creation-tools-overlay"
     @mousedown.self="closePanel"
   >
-    <section class="creation-tools-modal" role="dialog" aria-modal="true" aria-label="高级创建工具">
-      <header class="modal-header">
-        <div>
-          <h2>高级创建工具</h2>
-          <p>Ctrl + ; 开关面板</p>
-        </div>
-        <button class="icon-btn" type="button" @click="closePanel">关闭</button>
-      </header>
-
-      <div class="modal-content">
-        <section class="panel-block preview-block">
-          <div class="block-header">
-            <div>
-              <h3>预备弹幕数据</h3>
-              <p>支持单条对象、对象数组，或包含 `danmakus` 字段的对象。</p>
-            </div>
-            <div class="preview-summary" :class="{ error: previewSummary.hasError }">
-              {{ previewSummary.message }}
-            </div>
+    <div class="creation-tools-shell">
+      <section class="creation-tools-modal" role="dialog" aria-modal="true" aria-label="高级创建工具">
+        <header class="modal-header">
+          <div>
+            <h2>高级创建工具</h2>
+            <p>Ctrl + ; 开关面板</p>
           </div>
+          <button class="icon-btn" type="button" @click="closePanel">关闭</button>
+        </header>
 
-          <textarea
-            v-model="previewText"
-            class="preview-editor"
-            spellcheck="false"
-            placeholder="在此编辑待创建的弹幕 JSON"
-          />
-
-          <div class="preview-actions">
-            <button class="btn-primary" type="button" @click="handleCreate">
-              创建
-            </button>
-            <button class="btn-secondary" type="button" @click="formatPreview">
-              格式化 JSON
-            </button>
-            <button class="btn-secondary" type="button" @click="resetPreviewToTemplate">
-              重置模板
-            </button>
-            <span class="status-text" :class="previewStatusTone">
-              {{ previewStatus }}
-            </span>
-          </div>
-        </section>
-
-        <section class="panel-block tool-block">
-          <div class="block-header tool-header">
-            <div>
-              <h3>工具面板</h3>
-              <span class="status-text info">{{ toolStatus }}</span>
-            </div>
-            
-            <div class="tool-header-actions">
-              <label class="inline-field expression-toggle">
-                <input
-                  v-model="expressionEnabled"
-                  type="checkbox"
-                />
-                <span>表达式</span>
-              </label>
-
-              <label class="inline-field">
-                <span>数量</span>
-                <input
-                  v-model="quantityInput"
-                  type="number"
-                  min="1"
-                  step="1"
-                  class="small-input"
-                />
-              </label>
-
-              <div class="toggle-group">
-                <button
-                  class="toggle-btn"
-                  :class="{ active: writeMode === 'replace' }"
-                  type="button"
-                  @click="writeMode = 'replace'"
-                >
-                  替换
-                </button>
-                <button
-                  class="toggle-btn"
-                  :class="{ active: writeMode === 'append' }"
-                  type="button"
-                  @click="writeMode = 'append'"
-                >
-                  添加
-                </button>
+        <div class="modal-content">
+          <section class="panel-block preview-block">
+            <div class="block-header">
+              <div>
+                <h3>预备弹幕数据</h3>
+                <p>支持单条对象、对象数组，或包含 `danmakus` 字段的对象。</p>
               </div>
-
-              <button class="btn-secondary" type="button" @click="handleToolReset">
-                重置
-              </button>
-
-              <button class="btn-primary" type="button" @click="handleToolWrite">
-                写入
-              </button>
+              <div class="preview-summary" :class="{ error: previewSummary.hasError }">
+                {{ previewSummary.message }}
+              </div>
             </div>
-          </div>
 
-          <div class="tool-grid">
-            <section
-              v-for="section in toolSections"
-              :key="section.title"
-              class="tool-section"
-            >
-              <h4>{{ section.title }}</h4>
+            <textarea
+              v-model="previewText"
+              class="preview-editor"
+              spellcheck="false"
+              placeholder="在此编辑待创建的弹幕 JSON"
+            />
 
-              <article
-                v-for="field in section.fields"
-                :key="field.path"
-                class="field-card"
-              >
-                <div class="field-card-header">
-                  <div>
-                    <div class="field-title">{{ field.label }}</div>
-                    <div class="field-path">{{ field.path }}</div>
-                  </div>
+            <div class="preview-actions">
+              <button class="btn-primary" type="button" @click="handleCreate">
+                创建
+              </button>
+              <button class="btn-secondary" type="button" @click="formatPreview">
+                格式化 JSON
+              </button>
+              <button class="btn-secondary" type="button" @click="resetPreviewToTemplate">
+                重置模板
+              </button>
+              <span class="status-text" :class="previewStatusTone">
+                {{ previewStatus }}
+              </span>
+            </div>
+          </section>
 
-                  <div
-                    v-if="field.kind === 'numeric' || field.kind === 'color'"
-                    class="mode-switch"
+          <section class="panel-block tool-block">
+            <div class="block-header tool-header">
+              <div>
+                <h3>工具面板</h3>
+                <span class="status-text info">{{ toolStatus }}</span>
+              </div>
+              
+              <div class="tool-header-actions">
+                <label class="inline-field expression-toggle">
+                  <input
+                    v-model="expressionEnabled"
+                    type="checkbox"
+                  />
+                  <span>表达式</span>
+                </label>
+
+                <label class="inline-field">
+                  <span>数量</span>
+                  <input
+                    v-model="quantityInput"
+                    type="number"
+                    min="1"
+                    step="1"
+                    class="small-input"
+                  />
+                </label>
+
+                <div class="toggle-group">
+                  <button
+                    class="toggle-btn"
+                    :class="{ active: writeMode === 'replace' }"
+                    type="button"
+                    @click="writeMode = 'replace'"
                   >
-                    <button
-                      class="mode-btn"
-                      :class="{ active: getFieldMode(field.path) === 'cycle' }"
-                      type="button"
-                      @click="setFieldMode(field.path, 'cycle')"
-                    >
-                      循环
-                    </button>
-                    <button
-                      class="mode-btn"
-                      :class="{ active: getFieldMode(field.path) === 'range' }"
-                      type="button"
-                      @click="setFieldMode(field.path, 'range')"
-                    >
-                      范围
-                    </button>
-                    <button
-                      class="mode-btn"
-                      :class="{ active: getFieldMode(field.path) === 'relative' }"
-                      type="button"
-                      @click="setFieldMode(field.path, 'relative')"
-                    >
-                      相对
-                    </button>
-                  </div>
-                  <div
-                    v-else
-                    class="mode-switch"
+                    替换
+                  </button>
+                  <button
+                    class="toggle-btn"
+                    :class="{ active: writeMode === 'append' }"
+                    type="button"
+                    @click="writeMode = 'append'"
                   >
-                    <button
-                      class="mode-btn"
-                      :class="{ active: getFieldMode(field.path) === 'assign' }"
-                      type="button"
-                      @click="setFieldMode(field.path, 'assign')"
-                    >
-                      赋值
-                    </button>
-                    <button
-                      class="mode-btn"
-                      :class="{ active: getFieldMode(field.path) === 'cycle' }"
-                      type="button"
-                      @click="setFieldMode(field.path, 'cycle')"
-                    >
-                      循环
-                    </button>
-                  </div>
+                    添加
+                  </button>
                 </div>
 
-                <div v-if="field.kind === 'numeric'" class="field-card-body">
-                  <label v-if="numericRules[field.path].mode === 'cycle'" class="stack-field">
-                    <span>循环列表</span>
-                    <textarea
-                      v-model="numericRules[field.path].cycleList"
-                      rows="4"
-                      placeholder="使用 ; + 换行 分隔，最后一个值也可用 ; 结尾"
-                    />
-                  </label>
+                <button class="btn-secondary" type="button" @click="handleToolReset">
+                  重置
+                </button>
 
-                  <div v-else class="input-grid two-column">
-                    <label class="stack-field">
-                      <span>起始</span>
-                      <input
-                        v-model="numericRules[field.path].start"
-                        type="text"
-                        :placeholder="field.startPlaceholder"
-                      />
-                    </label>
+                <button class="btn-primary" type="button" @click="handleToolWrite">
+                  写入
+                </button>
+              </div>
+            </div>
 
-                    <label class="stack-field">
-                      <span>{{ numericRules[field.path].mode === 'range' ? '结束' : '每次偏移值' }}</span>
-                      <input
-                        v-model="numericRules[field.path][numericRules[field.path].mode === 'range' ? 'end' : 'step']"
-                        type="text"
-                        :placeholder="numericRules[field.path].mode === 'range' ? field.endPlaceholder : field.stepPlaceholder"
-                      />
-                    </label>
+            <div class="tool-grid">
+              <section
+                v-for="section in toolSections"
+                :key="section.title"
+                class="tool-section"
+              >
+                <h4>{{ section.title }}</h4>
+
+                <article
+                  v-for="field in section.fields"
+                  :key="field.path"
+                  class="field-card"
+                >
+                  <div class="field-card-header">
+                    <div>
+                      <div class="field-title">{{ field.label }}</div>
+                      <div class="field-path">{{ field.path }}</div>
+                    </div>
+
+                    <div
+                      v-if="field.kind === 'numeric' || field.kind === 'color'"
+                      class="mode-switch"
+                    >
+                      <button
+                        class="mode-btn"
+                        :class="{ active: getFieldMode(field.path) === 'cycle' }"
+                        type="button"
+                        @click="setFieldMode(field.path, 'cycle')"
+                      >
+                        循环
+                      </button>
+                      <button
+                        class="mode-btn"
+                        :class="{ active: getFieldMode(field.path) === 'range' }"
+                        type="button"
+                        @click="setFieldMode(field.path, 'range')"
+                      >
+                        范围
+                      </button>
+                      <button
+                        class="mode-btn"
+                        :class="{ active: getFieldMode(field.path) === 'relative' }"
+                        type="button"
+                        @click="setFieldMode(field.path, 'relative')"
+                      >
+                        相对
+                      </button>
+                    </div>
+                    <div
+                      v-else
+                      class="mode-switch"
+                    >
+                      <button
+                        class="mode-btn"
+                        :class="{ active: getFieldMode(field.path) === 'assign' }"
+                        type="button"
+                        @click="setFieldMode(field.path, 'assign')"
+                      >
+                        赋值
+                      </button>
+                      <button
+                        class="mode-btn"
+                        :class="{ active: getFieldMode(field.path) === 'cycle' }"
+                        type="button"
+                        @click="setFieldMode(field.path, 'cycle')"
+                      >
+                        循环
+                      </button>
+                    </div>
                   </div>
 
-                  <template v-if="expressionEnabled && numericRules[field.path].mode === 'range'">
-                    <div class="input-grid expression-grid">
+                  <div v-if="field.kind === 'numeric'" class="field-card-body">
+                    <label v-if="numericRules[field.path].mode === 'cycle'" class="stack-field">
+                      <span>循环列表</span>
+                      <textarea
+                        v-model="numericRules[field.path].cycleList"
+                        rows="4"
+                        placeholder="使用 ; + 换行 分隔，最后一个值也可用 ; 结尾"
+                      />
+                    </label>
+
+                    <div v-else class="input-grid two-column">
                       <label class="stack-field">
-                        <span>表达式预设</span>
-                        <select
-                          :value="numericRules[field.path].expressionPreset"
-                          @change="onExpressionPresetChange(field.path, $event)"
-                        >
-                          <option
-                            v-for="preset in rangeExpressionPresets"
-                            :key="preset.key"
-                            :value="preset.key"
-                          >
-                            {{ preset.label }}
-                          </option>
-                          <option value="custom">自定义</option>
-                        </select>
+                        <span>起始</span>
+                        <input
+                          v-model="numericRules[field.path].start"
+                          type="text"
+                          :placeholder="field.startPlaceholder"
+                        />
                       </label>
 
-                      <label class="stack-field expression-field">
-                        <span>表达式</span>
+                      <label class="stack-field">
+                        <span>{{ numericRules[field.path].mode === 'range' ? '结束' : '每次偏移值' }}</span>
                         <input
-                          v-model="numericRules[field.path].expression"
+                          v-model="numericRules[field.path][numericRules[field.path].mode === 'range' ? 'end' : 'step']"
                           type="text"
-                          placeholder="S + (E - S) * t"
-                          @input="handleExpressionInput(field.path)"
+                          :placeholder="numericRules[field.path].mode === 'range' ? field.endPlaceholder : field.stepPlaceholder"
                         />
                       </label>
                     </div>
-                  </template>
-                </div>
 
-                <div v-else-if="field.kind === 'color'" class="field-card-body">
-                  <label v-if="colorRule.mode === 'cycle'" class="stack-field">
-                    <span>颜色循环列表</span>
-                    <textarea
-                      v-model="colorRule.cycleList"
-                      rows="4"
-                      placeholder="每项填写一个颜色，使用 ; + 换行 分隔"
-                    />
-                  </label>
+                    <template v-if="expressionEnabled && numericRules[field.path].mode === 'range'">
+                      <div class="input-grid expression-grid">
+                        <label class="stack-field">
+                          <span>表达式预设</span>
+                          <select
+                            :value="numericRules[field.path].expressionPreset"
+                            @change="onExpressionPresetChange(field.path, $event)"
+                          >
+                            <option
+                              v-for="preset in rangeExpressionPresets"
+                              :key="preset.key"
+                              :value="preset.key"
+                            >
+                              {{ preset.label }}
+                            </option>
+                            <option value="custom">自定义</option>
+                          </select>
+                        </label>
 
-                  <div v-else class="input-grid two-column">
-                    <label class="stack-field">
-                      <span>起始颜色</span>
-                      <div class="color-input-row">
-                        <input
-                          v-model="colorRule.start"
-                          type="color"
-                          class="color-picker"
-                          @input="syncColorInput('start')"
-                        />
-                        <input
-                          v-model="colorRule.startText"
-                          type="text"
-                          placeholder="#FFFFFF"
-                          @change="normalizeColorInput('start')"
-                          style="width: 80%;"
-                        />
+                        <label class="stack-field expression-field">
+                          <span>表达式</span>
+                          <input
+                            v-model="numericRules[field.path].expression"
+                            type="text"
+                            placeholder="S + (E - S) * t"
+                            @input="handleExpressionInput(field.path)"
+                          />
+                        </label>
                       </div>
+                    </template>
+                  </div>
+
+                  <div v-else-if="field.kind === 'color'" class="field-card-body">
+                    <label v-if="colorRule.mode === 'cycle'" class="stack-field">
+                      <span>颜色循环列表</span>
+                      <textarea
+                        v-model="colorRule.cycleList"
+                        rows="4"
+                        placeholder="每项填写一个颜色，使用 ; + 换行 分隔"
+                      />
                     </label>
 
-                    <label class="stack-field">
-                      <span>{{ colorRule.mode === 'range' ? '目标颜色' : '叠加颜色' }}</span>
-                      <div class="color-input-row">
-                        <input
-                          v-model="colorRule.target"
-                          type="color"
-                          class="color-picker"
-                          @input="syncColorInput('target')"
-                        />
-                        <input
-                          v-model="colorRule.targetText"
-                          type="text"
-                          placeholder="#FFAA00"
-                          @change="normalizeColorInput('target')"
-                          style="width: 80%;"
-                        />
-                      </div>
+                    <div v-else class="input-grid two-column">
+                      <label class="stack-field">
+                        <span>起始颜色</span>
+                        <div class="color-input-row">
+                          <input
+                            v-model="colorRule.start"
+                            type="color"
+                            class="color-picker"
+                            @input="syncColorInput('start')"
+                          />
+                          <input
+                            v-model="colorRule.startText"
+                            type="text"
+                            placeholder="#FFFFFF"
+                            @change="normalizeColorInput('start')"
+                            style="width: 80%;"
+                          />
+                        </div>
+                      </label>
+
+                      <label class="stack-field">
+                        <span>{{ colorRule.mode === 'range' ? '目标颜色' : '叠加颜色' }}</span>
+                        <div class="color-input-row">
+                          <input
+                            v-model="colorRule.target"
+                            type="color"
+                            class="color-picker"
+                            @input="syncColorInput('target')"
+                          />
+                          <input
+                            v-model="colorRule.targetText"
+                            type="text"
+                            placeholder="#FFAA00"
+                            @change="normalizeColorInput('target')"
+                            style="width: 80%;"
+                          />
+                        </div>
+                      </label>
+                    </div>
+
+                    <label class="stack-field" v-if="colorRule.mode === 'relative'">
+                      <span>Alpha混合每次偏移值（加法）</span>
+                      <input
+                        v-model="colorRule.alpha"
+                        type="text"
+                        :placeholder="'例如 0.1'"
+                      />
                     </label>
                   </div>
 
-                  <label class="stack-field" v-if="colorRule.mode === 'relative'">
-                    <span>Alpha混合每次偏移值（加法）</span>
-                    <input
-                      v-model="colorRule.alpha"
-                      type="text"
-                      :placeholder="'例如 0.1'"
-                    />
-                  </label>
-                </div>
+                  <div v-else-if="field.kind === 'text'" class="field-card-body">
+                    <label v-if="directRules.text.mode === 'assign'" class="stack-field">
+                      <span>文本内容</span>
+                      <textarea
+                        v-model="directRules.text.value"
+                        rows="3"
+                        placeholder="输入固定文本"
+                      />
+                    </label>
+                    <label v-else class="stack-field">
+                      <span>文本循环列表</span>
+                      <textarea
+                        v-model="directRules.text.cycleList"
+                        rows="5"
+                        placeholder="使用 ; + 换行 分隔，完整保留空格与内部换行"
+                      />
+                    </label>
+                  </div>
 
-                <div v-else-if="field.kind === 'text'" class="field-card-body">
-                  <label v-if="directRules.text.mode === 'assign'" class="stack-field">
-                    <span>文本内容</span>
-                    <textarea
-                      v-model="directRules.text.value"
-                      rows="3"
-                      placeholder="输入固定文本"
-                    />
-                  </label>
-                  <label v-else class="stack-field">
-                    <span>文本循环列表</span>
-                    <textarea
-                      v-model="directRules.text.cycleList"
-                      rows="5"
-                      placeholder="使用 ; + 换行 分隔，完整保留空格与内部换行"
-                    />
-                  </label>
-                </div>
+                  <div v-else-if="field.kind === 'font'" class="field-card-body">
+                    <label v-if="directRules.font.mode === 'assign'" class="stack-field">
+                      <span>字体名称</span>
+                      <input
+                        v-model="directRules.font.value"
+                        type="text"
+                        placeholder="Microsoft YaHei"
+                      />
+                    </label>
+                    <label v-else class="stack-field">
+                      <span>字体循环列表</span>
+                      <textarea
+                        v-model="directRules.font.cycleList"
+                        rows="4"
+                        placeholder="使用 ; + 换行 分隔"
+                      />
+                    </label>
+                  </div>
 
-                <div v-else-if="field.kind === 'font'" class="field-card-body">
-                  <label v-if="directRules.font.mode === 'assign'" class="stack-field">
-                    <span>字体名称</span>
-                    <input
-                      v-model="directRules.font.value"
-                      type="text"
-                      placeholder="Microsoft YaHei"
-                    />
-                  </label>
-                  <label v-else class="stack-field">
-                    <span>字体循环列表</span>
-                    <textarea
-                      v-model="directRules.font.cycleList"
-                      rows="4"
-                      placeholder="使用 ; + 换行 分隔"
-                    />
-                  </label>
-                </div>
+                  <div v-else-if="field.kind === 'stroke'" class="field-card-body">
+                    <label v-if="directRules.stroke.mode === 'assign'" class="checkbox-field">
+                      <input v-model="directRules.stroke.value" type="checkbox" />
+                      <span>启用描边</span>
+                    </label>
+                    <label v-else class="stack-field">
+                      <span>描边循环列表</span>
+                      <textarea
+                        v-model="directRules.stroke.cycleList"
+                        rows="4"
+                        placeholder="支持 true / false / 1 / 0，使用 ; + 换行 分隔"
+                      />
+                    </label>
+                  </div>
 
-                <div v-else-if="field.kind === 'stroke'" class="field-card-body">
-                  <label v-if="directRules.stroke.mode === 'assign'" class="checkbox-field">
-                    <input v-model="directRules.stroke.value" type="checkbox" />
-                    <span>启用描边</span>
-                  </label>
-                  <label v-else class="stack-field">
-                    <span>描边循环列表</span>
-                    <textarea
-                      v-model="directRules.stroke.cycleList"
-                      rows="4"
-                      placeholder="支持 true / false / 1 / 0，使用 ; + 换行 分隔"
-                    />
-                  </label>
-                </div>
+                  <div v-else-if="field.kind === 'easing'" class="field-card-body">
+                    <label v-if="directRules.easing.mode === 'assign'" class="stack-field">
+                      <span>缓动类型</span>
+                      <select v-model="directRules.easing.value">
+                        <option value="speedup">speedup</option>
+                        <option value="speeddown">speeddown</option>
+                      </select>
+                    </label>
+                    <label v-else class="stack-field">
+                      <span>缓动循环列表</span>
+                      <textarea
+                        v-model="directRules.easing.cycleList"
+                        rows="4"
+                        placeholder="支持 speedup / speeddown，使用 ;\n 分隔"
+                      />
+                    </label>
+                  </div>
+                </article>
+              </section>
+            </div>
+          </section>
+        </div>
+      </section>
 
-                <div v-else-if="field.kind === 'easing'" class="field-card-body">
-                  <label v-if="directRules.easing.mode === 'assign'" class="stack-field">
-                    <span>缓动类型</span>
-                    <select v-model="directRules.easing.value">
-                      <option value="speedup">speedup</option>
-                      <option value="speeddown">speeddown</option>
-                    </select>
-                  </label>
-                  <label v-else class="stack-field">
-                    <span>缓动循环列表</span>
-                    <textarea
-                      v-model="directRules.easing.cycleList"
-                      rows="4"
-                      placeholder="支持 speedup / speeddown，使用 ;\n 分隔"
-                    />
-                  </label>
-                </div>
-              </article>
-            </section>
-          </div>
-        </section>
-      </div>
-    </section>
+      <PresetManager
+        :presets="presets"
+        :managed-preset-id="managedPresetId"
+        @add-current="handleAddPreset"
+        @apply-preset="handleApplyPreset"
+        @select-managed-preset="handleSelectManagedPreset"
+        @rename-preset="handleRenamePreset"
+        @delete-preset="handleDeletePreset"
+        @import-presets="handleImportPresets"
+      />
+    </div>
   </div>
 </template>
 
@@ -401,6 +414,15 @@ import {
   writeGeneratedDanmakusToPreview
 } from '@/utils/danmakuGenerator'
 import { normalizeColor } from '@/utils/validation'
+import PresetManager from './PresetManager.vue'
+import type { CreationToolPanelState, CreationToolPreset } from '@/utils/toolPresets'
+import {
+  createPresetFromState,
+  loadCreationToolPresets,
+  mergeImportedPresets,
+  saveCreationToolPresets,
+  updatePresetName
+} from '@/utils/toolPresets'
 
 type FieldPath = NumericFieldPath | ColorFieldPath | DirectFieldPath
 type ColorInputTarget = 'start' | 'target'
@@ -454,6 +476,8 @@ const quantityInput = ref('10')
 const expressionEnabled = ref(false)
 const writeMode = ref<WriteMode>('replace')
 const rangeExpressionPresets = RANGE_EXPRESSION_PRESETS_VALUE
+const presets = ref<CreationToolPreset[]>(loadCreationToolPresets())
+const managedPresetId = ref<string | null>(null)
 
 function createDefaultNumericRules(): Record<NumericFieldPath, NumericRuleState> {
   return {
@@ -574,6 +598,14 @@ watch(
     }
   },
   { immediate: true }
+)
+
+watch(
+  presets,
+  (nextPresets) => {
+    saveCreationToolPresets(nextPresets)
+  },
+  { deep: true }
 )
 
 function createNumericRule(start = '', end = '', step = ''): NumericRuleState {
@@ -751,6 +783,26 @@ function buildToolWriteRequest(): ToolWriteRequest {
   }
 }
 
+function buildPanelState(): CreationToolPanelState {
+  return {
+    quantityInput: quantityInput.value,
+    expressionEnabled: expressionEnabled.value,
+    writeMode: writeMode.value,
+    numericRules: cloneValue(numericRules.value),
+    colorRule: cloneValue(colorRule.value),
+    directRules: cloneValue(directRules.value)
+  }
+}
+
+function applyPanelState(state: CreationToolPanelState) {
+  quantityInput.value = state.quantityInput
+  expressionEnabled.value = state.expressionEnabled
+  writeMode.value = state.writeMode
+  numericRules.value = cloneValue(state.numericRules)
+  colorRule.value = cloneValue(state.colorRule)
+  directRules.value = cloneValue(state.directRules)
+}
+
 function handleToolWrite() {
   try {
     const request = buildToolWriteRequest()
@@ -775,6 +827,65 @@ function handleToolReset() {
   colorRule.value = createDefaultColorRule()
   directRules.value = createDefaultDirectRules()
   toolStatus.value = '工具栏已重置至默认值。'
+}
+
+function handleAddPreset() {
+  const preset = createPresetFromState(presets.value, buildPanelState())
+  presets.value = [...presets.value, preset]
+  managedPresetId.value = preset.id
+  toolStatus.value = `已添加预设：${preset.name}`
+}
+
+function handleApplyPreset(presetId: string) {
+  const preset = presets.value.find((item) => item.id === presetId)
+  if (!preset) {
+    return
+  }
+
+  applyPanelState(preset.state)
+  toolStatus.value = `已应用预设：${preset.name}`
+}
+
+function handleSelectManagedPreset(presetId: string | null) {
+  managedPresetId.value = presetId
+}
+
+function handleRenamePreset(payload: { presetId: string; name: string }) {
+  presets.value = updatePresetName(presets.value, payload.presetId, payload.name)
+  const preset = presets.value.find((item) => item.id === payload.presetId)
+  if (preset) {
+    managedPresetId.value = preset.id
+    toolStatus.value = `已重命名预设：${preset.name}`
+  }
+}
+
+function handleDeletePreset(presetId: string) {
+  const presetIndex = presets.value.findIndex((item) => item.id === presetId)
+  if (presetIndex === -1) {
+    return
+  }
+
+  const deletedName = presets.value[presetIndex].name
+  const nextPresets = presets.value.filter((item) => item.id !== presetId)
+  presets.value = nextPresets
+
+  if (managedPresetId.value === presetId) {
+    managedPresetId.value = nextPresets[presetIndex]?.id || nextPresets[presetIndex - 1]?.id || null
+  }
+
+  toolStatus.value = `已删除预设：${deletedName}`
+}
+
+function handleImportPresets(importedPresets: CreationToolPreset[]) {
+  const previousLength = presets.value.length
+  presets.value = mergeImportedPresets(presets.value, importedPresets)
+
+  const firstImportedPreset = presets.value[previousLength]
+  if (firstImportedPreset) {
+    managedPresetId.value = firstImportedPreset.id
+  }
+
+  toolStatus.value = `已导入 ${importedPresets.length} 个预设，可在预设列表中点击应用。`
 }
 
 function setExpressionPreset(path: NumericFieldPath, presetKey: string) {
@@ -892,10 +1003,19 @@ defineExpose({
   backdrop-filter: blur(4px);
 }
 
+.creation-tools-shell {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  width: 100%;
+  max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 40px);
+}
+
 .creation-tools-modal {
   width: 85%;
-  max-width: calc(100vw - 40px);
   height: 98%;
+  max-width: min(1280px, calc(100vw - 300px));
   max-height: calc(100vh - 40px);
   display: flex;
   flex-direction: column;
@@ -1320,10 +1440,16 @@ defineExpose({
 }
 
 @media (max-width: 860px) {
+  .creation-tools-shell {
+    flex-direction: column;
+    max-width: calc(100vw - 24px);
+  }
+
   .creation-tools-modal {
     height: calc(100vh - 24px);
     max-height: calc(100vh - 24px);
     max-width: calc(100vw - 24px);
+    width: 100%;
   }
 
   .modal-content {
