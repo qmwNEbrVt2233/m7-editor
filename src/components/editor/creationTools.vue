@@ -129,6 +129,14 @@
                   >
                     <button
                       class="mode-btn"
+                      :class="{ active: getFieldMode(field.path) === 'cycle' }"
+                      type="button"
+                      @click="setFieldMode(field.path, 'cycle')"
+                    >
+                      循环
+                    </button>
+                    <button
+                      class="mode-btn"
                       :class="{ active: getFieldMode(field.path) === 'range' }"
                       type="button"
                       @click="setFieldMode(field.path, 'range')"
@@ -144,10 +152,40 @@
                       相对
                     </button>
                   </div>
+                  <div
+                    v-else
+                    class="mode-switch"
+                  >
+                    <button
+                      class="mode-btn"
+                      :class="{ active: getFieldMode(field.path) === 'assign' }"
+                      type="button"
+                      @click="setFieldMode(field.path, 'assign')"
+                    >
+                      赋值
+                    </button>
+                    <button
+                      class="mode-btn"
+                      :class="{ active: getFieldMode(field.path) === 'cycle' }"
+                      type="button"
+                      @click="setFieldMode(field.path, 'cycle')"
+                    >
+                      循环
+                    </button>
+                  </div>
                 </div>
 
                 <div v-if="field.kind === 'numeric'" class="field-card-body">
-                  <div class="input-grid two-column">
+                  <label v-if="numericRules[field.path].mode === 'cycle'" class="stack-field">
+                    <span>循环列表</span>
+                    <textarea
+                      v-model="numericRules[field.path].cycleList"
+                      rows="4"
+                      placeholder="使用 ; + 换行 分隔，最后一个值也可用 ; 结尾"
+                    />
+                  </label>
+
+                  <div v-else class="input-grid two-column">
                     <label class="stack-field">
                       <span>起始</span>
                       <input
@@ -200,7 +238,16 @@
                 </div>
 
                 <div v-else-if="field.kind === 'color'" class="field-card-body">
-                  <div class="input-grid two-column">
+                  <label v-if="colorRule.mode === 'cycle'" class="stack-field">
+                    <span>颜色循环列表</span>
+                    <textarea
+                      v-model="colorRule.cycleList"
+                      rows="4"
+                      placeholder="每项填写一个颜色，使用 ; + 换行 分隔"
+                    />
+                  </label>
+
+                  <div v-else class="input-grid two-column">
                     <label class="stack-field">
                       <span>起始颜色</span>
                       <div class="color-input-row">
@@ -240,7 +287,7 @@
                     </label>
                   </div>
 
-                  <label class="stack-field" v-if="colorRule.mode !== 'range'">
+                  <label class="stack-field" v-if="colorRule.mode === 'relative'">
                     <span>Alpha混合每次偏移值（加法）</span>
                     <input
                       v-model="colorRule.alpha"
@@ -251,41 +298,73 @@
                 </div>
 
                 <div v-else-if="field.kind === 'text'" class="field-card-body">
-                  <label class="stack-field">
+                  <label v-if="directRules.text.mode === 'assign'" class="stack-field">
                     <span>文本内容</span>
                     <textarea
-                      v-model="directRules.text"
+                      v-model="directRules.text.value"
                       rows="3"
                       placeholder="输入固定文本"
+                    />
+                  </label>
+                  <label v-else class="stack-field">
+                    <span>文本循环列表</span>
+                    <textarea
+                      v-model="directRules.text.cycleList"
+                      rows="5"
+                      placeholder="使用 ; + 换行 分隔，完整保留空格与内部换行"
                     />
                   </label>
                 </div>
 
                 <div v-else-if="field.kind === 'font'" class="field-card-body">
-                  <label class="stack-field">
+                  <label v-if="directRules.font.mode === 'assign'" class="stack-field">
                     <span>字体名称</span>
                     <input
-                      v-model="directRules.font"
+                      v-model="directRules.font.value"
                       type="text"
                       placeholder="Microsoft YaHei"
+                    />
+                  </label>
+                  <label v-else class="stack-field">
+                    <span>字体循环列表</span>
+                    <textarea
+                      v-model="directRules.font.cycleList"
+                      rows="4"
+                      placeholder="使用 ; + 换行 分隔"
                     />
                   </label>
                 </div>
 
                 <div v-else-if="field.kind === 'stroke'" class="field-card-body">
-                  <label class="checkbox-field">
-                    <input v-model="directRules.stroke" type="checkbox" />
+                  <label v-if="directRules.stroke.mode === 'assign'" class="checkbox-field">
+                    <input v-model="directRules.stroke.value" type="checkbox" />
                     <span>启用描边</span>
+                  </label>
+                  <label v-else class="stack-field">
+                    <span>描边循环列表</span>
+                    <textarea
+                      v-model="directRules.stroke.cycleList"
+                      rows="4"
+                      placeholder="支持 true / false / 1 / 0，使用 ; + 换行 分隔"
+                    />
                   </label>
                 </div>
 
                 <div v-else-if="field.kind === 'easing'" class="field-card-body">
-                  <label class="stack-field">
+                  <label v-if="directRules.easing.mode === 'assign'" class="stack-field">
                     <span>缓动类型</span>
-                    <select v-model="directRules.easing">
+                    <select v-model="directRules.easing.value">
                       <option value="speedup">speedup</option>
                       <option value="speeddown">speeddown</option>
                     </select>
+                  </label>
+                  <label v-else class="stack-field">
+                    <span>缓动循环列表</span>
+                    <textarea
+                      v-model="directRules.easing.cycleList"
+                      rows="4"
+                      placeholder="支持 speedup / speeddown，使用 ;\n 分隔"
+                    />
                   </label>
                 </div>
               </article>
@@ -306,6 +385,8 @@ import type {
   ColorFieldPath,
   ColorRuleState,
   DanmakuDraft,
+  DirectRuleMode,
+  DirectRuleState,
   DirectFieldPath,
   NumericFieldPath,
   NumericRuleState,
@@ -323,6 +404,7 @@ import { normalizeColor } from '@/utils/validation'
 
 type FieldPath = NumericFieldPath | ColorFieldPath | DirectFieldPath
 type ColorInputTarget = 'start' | 'target'
+type FieldMode = RuleMode | DirectRuleMode
 
 type NumericFieldConfig = {
   path: NumericFieldPath
@@ -395,6 +477,7 @@ function createDefaultNumericRules(): Record<NumericFieldPath, NumericRuleState>
 function createDefaultColorRule(): ColorRuleState {
   return {
     mode: 'range',
+    cycleList: '',
     start: '#FFFFFF',
     startText: '#FFFFFF',
     target: '#FFAA00',
@@ -405,10 +488,10 @@ function createDefaultColorRule(): ColorRuleState {
 
 function createDefaultDirectRules() {
   return {
-    text: '欢迎使用高级创建工具',
-    font: 'Microsoft YaHei',
-    stroke: false,
-    easing: 'speedup' as DanmakuItem['animation']['easing']
+    text: createDirectRule('欢迎使用高级创建工具'),
+    font: createDirectRule('Microsoft YaHei'),
+    stroke: createDirectRule(false),
+    easing: createDirectRule('speedup' as DanmakuItem['animation']['easing'])
   }
 }
 
@@ -496,11 +579,20 @@ watch(
 function createNumericRule(start = '', end = '', step = ''): NumericRuleState {
   return {
     mode: 'range',
+    cycleList: '',
     start,
     end,
     step,
     expression: RANGE_EXPRESSION_PRESETS_VALUE[0].expression,
     expressionPreset: RANGE_EXPRESSION_PRESETS_VALUE[0].key
+  }
+}
+
+function createDirectRule<T>(value: T): DirectRuleState<T> {
+  return {
+    mode: 'assign',
+    value,
+    cycleList: ''
   }
 }
 
@@ -575,23 +667,48 @@ function formatPreview() {
   }
 }
 
-function getFieldMode(path: FieldPath): RuleMode {
+function getFieldMode(path: FieldPath): FieldMode {
   if (path === 'content.color') {
     return colorRule.value.mode
   }
 
+  if (path === 'content.text') return directRules.value.text.mode
+  if (path === 'content.font') return directRules.value.font.mode
+  if (path === 'content.stroke') return directRules.value.stroke.mode
+  if (path === 'animation.easing') return directRules.value.easing.mode
+
   return numericRules.value[path as NumericFieldPath]?.mode ?? 'range'
 }
 
-function setFieldMode(path: FieldPath, mode: RuleMode) {
+function setFieldMode(path: FieldPath, mode: FieldMode) {
   if (path === 'content.color') {
-    colorRule.value.mode = mode
+    colorRule.value.mode = mode as RuleMode
+    return
+  }
+
+  if (path === 'content.text') {
+    directRules.value.text.mode = mode as DirectRuleMode
+    return
+  }
+
+  if (path === 'content.font') {
+    directRules.value.font.mode = mode as DirectRuleMode
+    return
+  }
+
+  if (path === 'content.stroke') {
+    directRules.value.stroke.mode = mode as DirectRuleMode
+    return
+  }
+
+  if (path === 'animation.easing') {
+    directRules.value.easing.mode = mode as DirectRuleMode
     return
   }
 
   const rule = numericRules.value[path as NumericFieldPath]
   if (rule) {
-    rule.mode = mode
+    rule.mode = mode as RuleMode
   }
 }
 

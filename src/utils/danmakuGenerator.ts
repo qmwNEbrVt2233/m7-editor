@@ -13,6 +13,7 @@ math.import({
   pow: (a: number, b: number) => a ** b,
   unaryMinus: (value: number) => -value,
   unaryPlus: (value: number) => +value,
+  random: Math.random,
   sin: Math.sin,
   cos: Math.cos,
   tan: Math.tan,
@@ -32,8 +33,9 @@ math.import({
   silent: true
 })
 
-export type RuleMode = 'range' | 'relative'
+export type RuleMode = 'cycle' | 'range' | 'relative'
 export type WriteMode = 'append' | 'replace'
+export type DirectRuleMode = 'assign' | 'cycle'
 
 export type NumericFieldPath =
   | 'layer'
@@ -56,6 +58,7 @@ export type DirectFieldPath = 'content.text' | 'content.font' | 'content.stroke'
 
 export type NumericRuleState = {
   mode: RuleMode
+  cycleList: string
   start: string
   end: string
   step: string
@@ -65,11 +68,18 @@ export type NumericRuleState = {
 
 export type ColorRuleState = {
   mode: RuleMode
+  cycleList: string
   start: string
   startText: string
   target: string
   targetText: string
   alpha: string
+}
+
+export type DirectRuleState<T> = {
+  mode: DirectRuleMode
+  value: T
+  cycleList: string
 }
 
 export type ToolWriteRequest = {
@@ -80,10 +90,10 @@ export type ToolWriteRequest = {
   numericRules: Record<NumericFieldPath, NumericRuleState>
   colorRule: ColorRuleState
   directRules: {
-    text: string
-    font: string
-    stroke: boolean
-    easing: DanmakuItem['animation']['easing']
+    text: DirectRuleState<string>
+    font: DirectRuleState<string>
+    stroke: DirectRuleState<boolean>
+    easing: DirectRuleState<DanmakuItem['animation']['easing']>
   }
 }
 
@@ -135,7 +145,13 @@ export const RANGE_EXPRESSION_PRESETS: ExpressionPreset[] = [
     key: 'overshoot',
     label: '轻微回弹',
     expression: 'S + (E - S) * (t + 0.18 * sin(pi * t) * (1 - t))'
+  },
+  {
+    key: 'random',
+    label: '随机',
+    expression: 'S + (E - S) * random()'
   }
+  
 ]
 
 const NUMERIC_FIELD_PATHS: NumericFieldPath[] = [
@@ -178,6 +194,10 @@ export function generateDanmakuDraftsFromRules(request: ToolWriteRequest): Danma
     request.expressionEnabled
   )
   const colorSeries = buildColorSeries(request.colorRule, quantity)
+  const textSeries = buildDirectFieldSeries<string>('content.text', request.directRules.text, quantity)
+  const fontSeries = buildDirectFieldSeries<string>('content.font', request.directRules.font, quantity)
+  const strokeSeries = buildDirectFieldSeries<boolean>('content.stroke', request.directRules.stroke, quantity)
+  const easingSeries = buildDirectFieldSeries<DanmakuItem['animation']['easing']>('animation.easing', request.directRules.easing, quantity)
 
   const drafts: DanmakuDraft[] = []
 
@@ -186,11 +206,11 @@ export function generateDanmakuDraftsFromRules(request: ToolWriteRequest): Danma
       layer: numericSeries.layer[index],
       startTime: numericSeries.startTime[index],
       content: {
-        text: request.directRules.text,
-        font: request.directRules.font,
+        text: textSeries[index],
+        font: fontSeries[index],
         size: numericSeries['content.size'][index],
         color: colorSeries[index],
-        stroke: request.directRules.stroke
+        stroke: strokeSeries[index]
       },
       transform: {
         start: {
@@ -212,7 +232,7 @@ export function generateDanmakuDraftsFromRules(request: ToolWriteRequest): Danma
         duration: numericSeries['animation.duration'][index],
         moveDuration: numericSeries['animation.moveDuration'][index],
         delay: numericSeries['animation.delay'][index],
-        easing: request.directRules.easing
+        easing: easingSeries[index]
       }
     })
   }
@@ -244,7 +264,8 @@ export function parsePreviewDanmakus(text: string): DanmakuDraft[] {
 
 export function normalizeGeneratedDraft(draft: DanmakuDraft): Omit<DanmakuItem, 'id'> {
   const normalizedColorValue = normalizeColor(String(draft.content?.color ?? '#FFFFFF')) || '#FFFFFF'
-  const easingValue = draft.animation?.easing === 'speeddown' ? 'speeddown' : 'speedup'
+  const easingValue = normalizeEasingValue(draft.animation?.easing)
+  const strokeValue = normalizeStrokeValue(draft.content?.stroke)
 
   return {
     layer: clampIntegerByRule(draft.layer, M7_RULES.layer),
@@ -254,7 +275,7 @@ export function normalizeGeneratedDraft(draft: DanmakuDraft): Omit<DanmakuItem, 
       font: String(draft.content?.font ?? 'Microsoft YaHei'),
       size: clampIntegerByRule(draft.content?.size, M7_RULES.size),
       color: normalizedColorValue,
-      stroke: Boolean(draft.content?.stroke)
+      stroke: strokeValue
     },
     transform: {
       start: {
@@ -301,6 +322,10 @@ function buildNumericSeries(
   quantity: number,
   expressionEnabled: boolean
 ): number[] {
+  if (rule.mode === 'cycle') {
+    return buildCycleNumericSeries(path, rule.cycleList, quantity)
+  }
+
   const startValue = parseRequiredNumber(rule.start, `${path} 起始值`)
 
   if (quantity <= 1) {
@@ -353,6 +378,10 @@ function buildNumericSeries(
 }
 
 function buildColorSeries(rule: ColorRuleState, quantity: number): string[] {
+  if (rule.mode === 'cycle') {
+    return buildCycleColorSeries(rule.cycleList, quantity)
+  }
+
   const startColor = normalizeColor(rule.startText || rule.start)
   const targetColor = normalizeColor(rule.targetText || rule.target)
 
@@ -404,6 +433,85 @@ function parseRelativeColorStep(value: string): number {
   }
 
   return validateRange(parsed, 0, 1)
+}
+
+function buildCycleNumericSeries(path: NumericFieldPath, cycleList: string, quantity: number): number[] {
+  const entries = parseStrictList(cycleList)
+  if (entries.length === 0) {
+    throw new Error(`${path} 循环列表不能为空`)
+  }
+
+  return Array.from({ length: quantity }, (_, index) => {
+    const rawValue = entries[index % entries.length]
+    return parseRequiredNumber(rawValue, `${path} 循环值`)
+  })
+}
+
+function buildCycleColorSeries(cycleList: string, quantity: number): string[] {
+  const entries = parseStrictList(cycleList)
+  if (entries.length === 0) {
+    throw new Error('颜色循环列表不能为空')
+  }
+
+  return Array.from({ length: quantity }, (_, index) => {
+    const rawValue = entries[index % entries.length]
+    const normalized = normalizeColor(rawValue.trim())
+    if (!normalized) {
+      throw new Error(`颜色循环值无效: ${rawValue}`)
+    }
+    return normalized
+  })
+}
+
+function buildDirectFieldSeries<T>(
+  path: DirectFieldPath,
+  rule: DirectRuleState<T>,
+  quantity: number
+): T[] {
+  if (rule.mode === 'assign') {
+    return Array.from({ length: quantity }, () => rule.value)
+  }
+
+  const entries = parseStrictList(rule.cycleList)
+  if (entries.length === 0) {
+    throw new Error(`${path} 循环列表不能为空`)
+  }
+
+  return Array.from({ length: quantity }, (_, index) => {
+    const rawValue = entries[index % entries.length]
+    return parseDirectCycleValue(path, rawValue)
+  })
+}
+
+function parseDirectCycleValue(path: DirectFieldPath, rawValue: string): any {
+  if (path === 'content.text' || path === 'content.font') {
+    return rawValue
+  }
+
+  if (path === 'content.stroke') {
+    return parseBooleanLike(rawValue, '描边循环值')
+  }
+
+  if (path === 'animation.easing') {
+    return parseEasingLike(rawValue)
+  }
+
+  return rawValue
+}
+
+function parseStrictList(rawText: string): string[] {
+  if (!rawText) {
+    return []
+  }
+
+  const strictRegex = /;\n|;$/
+  const list = rawText.split(strictRegex)
+
+  if (rawText.endsWith(';') && list[list.length - 1] === '') {
+    list.pop()
+  }
+
+  return list
 }
 
 function parseRequiredNumber(input: string, label: string): number {
@@ -546,6 +654,49 @@ function clampOpacity(value: unknown): number {
   const parsed = Number(value)
   const normalized = Number.isFinite(parsed) ? validateRange(parsed, 0, 1) : 1
   return Number(normalized.toFixed(2))
+}
+
+function normalizeStrokeValue(value: unknown): boolean {
+  if (typeof value === 'boolean') {
+    return value
+  }
+
+  if (typeof value === 'string') {
+    return parseBooleanLike(value, '描边值')
+  }
+
+  return Boolean(value)
+}
+
+function normalizeEasingValue(value: unknown): DanmakuItem['animation']['easing'] {
+  if (value === 'speeddown') {
+    return 'speeddown'
+  }
+
+  return 'speedup'
+}
+
+function parseBooleanLike(value: string, label: string): boolean {
+  const normalized = value.trim().toLowerCase()
+
+  if (['true', '1', 'yes', 'on', '是'].includes(normalized)) {
+    return true
+  }
+
+  if (['false', '0', 'no', 'off', '否'].includes(normalized)) {
+    return false
+  }
+
+  throw new Error(`${label}无效: ${value}`)
+}
+
+function parseEasingLike(value: string): DanmakuItem['animation']['easing'] {
+  const normalized = value.trim()
+  if (normalized === 'speedup' || normalized === 'speeddown') {
+    return normalized
+  }
+
+  throw new Error(`缓动循环值无效: ${value}`)
 }
 
 // 标准三阶贝塞尔曲线缓动求解器 (Cubic Bezier Easing Solver)
