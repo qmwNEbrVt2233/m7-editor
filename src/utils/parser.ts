@@ -1,18 +1,65 @@
 /**
  * 输入解析工具
- * 支持四种模式：
+ * 支持五种模式：
  * 1. 直接赋值: "100" => { mode: 'set', value: 100 }
  * 2. 增量操作: "+10" => { mode: 'add', value: 10 }
  *            "-5"  => { mode: 'add', value: -5 }
  * 3. 倍率操作: "*2"  => { mode: 'mul', value: 2 }
  *            "/2"  => { mode: 'div', value: 2 }
- * 4. 多值检测: null => { mode: 'multiple' }
+ * 4. 随机范围: "r+50" => { mode: 'random', randomMinOffset: 0, randomMaxOffset: 50 }
+ *            "r-30" => { mode: 'random', randomMinOffset: -30, randomMaxOffset: 0 }
+ *            "r100" => { mode: 'random', randomMinOffset: -100, randomMaxOffset: 100 }
+ * 5. 多值检测: null => { mode: 'multiple' }
  */
 
 export interface ParseResult {
-  mode: 'set' | 'add' | 'mul' | 'div' | 'multiple'
+  mode: 'set' | 'add' | 'mul' | 'div' | 'random' | 'multiple'
   value?: number
+  randomMinOffset?: number
+  randomMaxOffset?: number
   error?: string
+}
+
+/**
+ * 解析随机范围表达式
+ */
+function parseRandomRangeExpression(input: string): ParseResult | null {
+  const compact = input.replace(/\s+/g, '')
+
+  if (!/^r/i.test(compact)) {
+    return null
+  }
+
+  const signedMatch = compact.match(/^r([+\-])(\d+(?:\.\d+)?)$/i)
+  if (signedMatch) {
+    const operator = signedMatch[1]
+    const rawValue = parseFloat(signedMatch[2])
+
+    if (isNaN(rawValue)) {
+      return { mode: 'set', error: '无效的随机范围数值' }
+    }
+
+    return operator === '+'
+      ? { mode: 'random', randomMinOffset: 0, randomMaxOffset: rawValue }
+      : { mode: 'random', randomMinOffset: -rawValue, randomMaxOffset: 0 }
+  }
+
+  const symmetricMatch = compact.match(/^r(\d+(?:\.\d+)?)$/i)
+  if (symmetricMatch) {
+    const rawValue = parseFloat(symmetricMatch[1])
+
+    if (isNaN(rawValue)) {
+      return { mode: 'set', error: '无效的随机范围数值' }
+    }
+
+    return {
+      mode: 'random',
+      randomMinOffset: -rawValue,
+      randomMaxOffset: rawValue
+    }
+  }
+
+  return { mode: 'set', error: '随机范围格式不正确，支持 r+50、r-30、r100' }
 }
 
 /**
@@ -122,6 +169,11 @@ export function parseInput(input: string | null, isTextField = false): ParseResu
     return { mode: 'set', value: 0 } // value不用于文本字段
   }
 
+  const randomParseResult = parseRandomRangeExpression(trimmed)
+  if (randomParseResult) {
+    return randomParseResult
+  }
+
   // 验证四则运算表达式的合法性
   const validation = validateArithmeticExpression(trimmed)
   if (!validation.valid) {
@@ -159,19 +211,43 @@ export function parseInput(input: string | null, isTextField = false): ParseResu
  * 应用操作到值
  */
 export function applyOperation(originalValue: number, parseResult: ParseResult): number {
-  if (parseResult.mode === 'multiple' || parseResult.value === undefined) {
+  if (parseResult.mode === 'multiple') {
     return originalValue
   }
 
   switch (parseResult.mode) {
     case 'set':
+      if (parseResult.value === undefined) {
+        return originalValue
+      }
       return parseResult.value
     case 'add':
+      if (parseResult.value === undefined) {
+        return originalValue
+      }
       return originalValue + parseResult.value
     case 'mul':
+      if (parseResult.value === undefined) {
+        return originalValue
+      }
       return originalValue * parseResult.value
     case 'div':
+      if (parseResult.value === undefined) {
+        return originalValue
+      }
       return originalValue / parseResult.value
+    case 'random': {
+      if (parseResult.randomMinOffset === undefined || parseResult.randomMaxOffset === undefined) {
+        return originalValue
+      }
+
+      const minValue = originalValue + parseResult.randomMinOffset
+      const maxValue = originalValue + parseResult.randomMaxOffset
+      const lowerBound = Math.min(minValue, maxValue)
+      const upperBound = Math.max(minValue, maxValue)
+
+      return lowerBound + Math.random() * (upperBound - lowerBound)
+    }
     default:
       return originalValue
   }
