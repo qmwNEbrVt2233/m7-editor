@@ -596,7 +596,6 @@ function finishToolbarOperation(description: string, nextSelectedIds?: string[])
   }
 
   historyManager.recordSnapshot(store.danmakus, description)
-  store._clearPendingChangeTracking()
 }
 
 // 取消拾取定位模式，移除事件监听器并重置状态

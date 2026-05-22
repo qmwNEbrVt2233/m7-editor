@@ -320,9 +320,15 @@ function handleTabKeyPress(event: KeyboardEvent) {
   }
 }
 
+function handleUpdateBufferRequest(event: Event) {
+  const customEvent = event as CustomEvent<{ time: number }>
+  updateBuffer(customEvent.detail.time)
+}
+
 onMounted(() => {
   window.addEventListener(TOOLBAR_MEASURE_EVENT, handleToolbarMeasure as EventListener)
   window.addEventListener('keydown', handleTabKeyPress)
+  window.addEventListener('danmaku-update-buffer', handleUpdateBufferRequest as EventListener)
 })
 
 onBeforeUnmount(() => {
@@ -332,6 +338,7 @@ onBeforeUnmount(() => {
 
   window.removeEventListener(TOOLBAR_MEASURE_EVENT, handleToolbarMeasure as EventListener)
   window.removeEventListener('keydown', handleTabKeyPress)
+  window.removeEventListener('danmaku-update-buffer', handleUpdateBufferRequest as EventListener)
 })
 </script>
 

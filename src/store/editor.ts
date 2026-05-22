@@ -2,7 +2,6 @@ import { defineStore } from 'pinia'
 import type { DanmakuItem } from '@/core/danmaku.ts'
 import { saveProject, loadProject } from '../localStorage/projectStorage'
 import { historyManager } from '@/core/history'
-import { watch } from 'vue'
 import { parseXML, toXML } from '@/core/converter.ts'
 
 type SavePickerAcceptType = {
@@ -61,33 +60,6 @@ async function saveBlobWithFallback(
     console.warn('[保存] File System Access API 保存失败，回退到 Blob 下载', error)
     triggerBlobDownload(blob, filename)
   }
-}
-
-let hasPendingChange = false
-let hasSelectionSnapshotWatcher = false
-
-function clearPendingChangeTracking() {
-  hasPendingChange = false
-}
-
-function ensureSelectionSnapshotWatcher(store: {
-  selectedIds: string[]
-  danmakus: DanmakuItem[]
-}) {
-  if (hasSelectionSnapshotWatcher) {
-    return
-  }
-
-  watch(
-    () => store.selectedIds,
-    () => {
-      historyManager.recordSnapshot(store.danmakus, '数据修改')
-      hasPendingChange = false
-    },
-    { deep: true }
-  )
-
-  hasSelectionSnapshotWatcher = true
 }
 
 function isDanmakuLike(value: unknown): value is DanmakuItem {
@@ -393,7 +365,6 @@ export const useEditorStore = defineStore('editor', {
 
           historyManager.clear()
           historyManager.recordSnapshot(this.danmakus, `导入XML(${danmakus.length}条弹幕)`)
-          clearPendingChangeTracking()
 
           errors.forEach((error) => {
             console.warn('[XML 导入] 已跳过异常弹幕:', error.message, error.metadata)
@@ -459,10 +430,12 @@ export const useEditorStore = defineStore('editor', {
     */
     _applyDeepPatch(id: string, obj: any, patch: any) {
       for (const [key, value] of Object.entries(patch)) {
-        console.log('写入:', key, value, typeof value)
-        // 检测到数据被修改，检查是否需要记录快照
-        this._checkAndRecordSnapshot()
-        
+        // console.log('写入:', key, value, typeof value)
+
+        setTimeout(() => {
+          historyManager.recordSnapshot(this.danmakus)
+        },500)
+
         // 检查是否写入了transform.end
         this._checkAndMovePlayhead(patch, id)
 
@@ -503,7 +476,7 @@ export const useEditorStore = defineStore('editor', {
     },
 
     updateDanmaku(id: string, patch: any) {
-      console.log('正在更新弹幕:', id, '补丁内容:', patch);
+      // console.log('正在更新弹幕:', id, '补丁内容:', patch);
       const d = this.danmakus.find((d: any) => d.id === id)
       if (!d) return
 
@@ -516,18 +489,6 @@ export const useEditorStore = defineStore('editor', {
           this._applyDeepPatch(d.id, d, patch)
         }
       })
-    },
-    
-    /**
-     * 检查是否需要记录快照（当没有弹幕被选中时）
-    */ 
-    _checkAndRecordSnapshot(): void {
-      ensureSelectionSnapshotWatcher(this)
-      hasPendingChange = true
-    },
-
-    _clearPendingChangeTracking(): void {
-      clearPendingChangeTracking()
     },
     
     /**
@@ -575,7 +536,7 @@ export const useEditorStore = defineStore('editor', {
         if (danmaku) {
           const endTime = danmaku.startTime + danmaku.animation.duration
           this.setTime(endTime)
-          console.log('移动播放头到弹幕结束位置:', endTime)
+          // console.log('移动播放头到弹幕结束位置:', endTime)
         }
       }
       if (hasChangedGrop2) {
@@ -583,7 +544,7 @@ export const useEditorStore = defineStore('editor', {
         if (danmaku) {
           const startTime = danmaku.startTime
           this.setTime(startTime)
-          console.log('移动播放头到弹幕开始位置:', startTime)
+          // console.log('移动播放头到弹幕开始位置:', startTime)
         }
       }
       if (hasDuration) {
@@ -592,7 +553,7 @@ export const useEditorStore = defineStore('editor', {
           if (danmaku) {
             const endTime = danmaku.startTime + danmaku.animation.duration
             this.setTime(endTime)
-            console.log('移动播放头到弹幕结束位置:', endTime)
+            // console.log('移动播放头到弹幕结束位置:', endTime)
           }
         }, 10)
       }
@@ -602,7 +563,7 @@ export const useEditorStore = defineStore('editor', {
           if (danmaku) {
             const startTime = danmaku.startTime
             this.setTime(startTime)
-            console.log('移动播放头到弹幕开始位置:', startTime)
+            // console.log('移动播放头到弹幕开始位置:', startTime)
           }
         }, 10)
       }
@@ -860,7 +821,6 @@ export const useEditorStore = defineStore('editor', {
 
       // 记录历史
       historyManager.recordSnapshot(this.danmakus, '创建弹幕')
-      clearPendingChangeTracking()
 
       console.log('[操作] 创建单条弹幕:', newDanmaku.id)
     },
@@ -875,7 +835,6 @@ export const useEditorStore = defineStore('editor', {
 
       // 记录历史
       historyManager.recordSnapshot(this.danmakus, `删除${idsToDelete.length}条弹幕`)
-      clearPendingChangeTracking()
 
       console.log('[操作] 删除弹幕:', idsToDelete)
     },
@@ -1048,7 +1007,6 @@ export const useEditorStore = defineStore('editor', {
 
         // 记录历史
         historyManager.recordSnapshot(this.danmakus, `粘贴${danmakusToAdd.length}条弹幕`)
-        clearPendingChangeTracking()
 
         console.log('[操作] 粘贴弹幕:', danmakusToAdd.length, '条')
       } catch (error) {
@@ -1118,7 +1076,6 @@ export const useEditorStore = defineStore('editor', {
       if (result) {
         this.danmakus = result
         this.selectedIds = []
-        clearPendingChangeTracking()
       }
     },
 
@@ -1130,7 +1087,6 @@ export const useEditorStore = defineStore('editor', {
       if (result) {
         this.danmakus = result
         this.selectedIds = []
-        clearPendingChangeTracking()
       }
     },
 
@@ -1140,7 +1096,6 @@ export const useEditorStore = defineStore('editor', {
     initHistory(): void {
       historyManager.clear()
       historyManager.recordSnapshot(this.danmakus, '项目初始化')
-      clearPendingChangeTracking()
     },
 
     /**
@@ -1192,7 +1147,9 @@ export const useEditorStore = defineStore('editor', {
         danmaku.layer += appliedDelta
       })
 
-      this._checkAndRecordSnapshot()
+      setTimeout(() => {
+        historyManager.recordSnapshot(this.danmakus)
+      },1000)
     }
   }
 })

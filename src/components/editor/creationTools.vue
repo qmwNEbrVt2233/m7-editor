@@ -946,7 +946,6 @@ function handleCreate() {
     store.danmakus.push(...createdDanmakus)
     store.selectedIds = createdDanmakus.map((item) => item.id)
     historyManager.recordSnapshot(store.danmakus, `高级创建工具：创建${createdDanmakus.length}条弹幕`)
-    store._clearPendingChangeTracking()
 
     previewStatus.value = `已创建 ${createdDanmakus.length} 条弹幕。`
     previewStatusTone.value = 'success'

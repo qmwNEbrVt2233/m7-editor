@@ -392,6 +392,7 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   if (e.key === 'z' && isCtrl && !isAlt && !isShift) {
     e.preventDefault()
     store.undo()
+    window.dispatchEvent(new CustomEvent('danmaku-update-buffer', { detail: { time: store.currentTime } }))
     console.log('[快捷键] 撤销')
     return
   }
@@ -400,6 +401,7 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   if (e.key === 'y' && isCtrl && !isAlt && !isShift) {
     e.preventDefault()
     store.redo()
+    window.dispatchEvent(new CustomEvent('danmaku-update-buffer', { detail: { time: store.currentTime } }))
     console.log('[快捷键] 重做')
     return
   }
@@ -874,7 +876,6 @@ function finishBlockInteraction() {
       store.danmakus,
       completedMode === 'move' ? '拖动弹幕' : '调整弹幕时长'
     )
-    store._clearPendingChangeTracking()
   }
 
   dragMode.value = null
