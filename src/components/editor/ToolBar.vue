@@ -298,6 +298,20 @@ type ScopeMode = 'S' | 'E' | 'B'
 type TransformTarget = 'start' | 'end'
 type Axis = 'x' | 'y'
 type AdvancedPanel = 'stroke' | 'calculator' | 'command'
+type NumericFieldKind = 'integer' | 'opacity'
+type NumericFieldDefinition = {
+  path: string
+  kind: NumericFieldKind
+}
+type CommandRule = {
+  target: string
+  expression: string
+}
+type ExpressionToken =
+  | { type: 'number'; value: number }
+  | { type: 'identifier'; value: string }
+  | { type: 'operator'; value: '+' | '-' | '*' | '/' }
+  | { type: 'paren'; value: '(' | ')' }
 type ToolbarMeasureRequest = {
   requestId: string
   danmaku: DanmakuItem
@@ -325,6 +339,22 @@ const STROKE_OFFSETS = [
   { x: 0, y: 1 },
   { x: 1, y: 1 }
 ]
+const NUMERIC_FIELD_DEFINITIONS: Record<string, NumericFieldDefinition> = {
+  layer: { path: 'layer', kind: 'integer' },
+  startTime: { path: 'startTime', kind: 'integer' },
+  size: { path: 'content.size', kind: 'integer' },
+  startX: { path: 'transform.start.x', kind: 'integer' },
+  startY: { path: 'transform.start.y', kind: 'integer' },
+  endX: { path: 'transform.end.x', kind: 'integer' },
+  endY: { path: 'transform.end.y', kind: 'integer' },
+  zRotate: { path: 'transform.zRotate', kind: 'integer' },
+  yRotate: { path: 'transform.yRotate', kind: 'integer' },
+  opacityFrom: { path: 'opacity.from', kind: 'opacity' },
+  opacityTo: { path: 'opacity.to', kind: 'opacity' },
+  duration: { path: 'animation.duration', kind: 'integer' },
+  moveDuration: { path: 'animation.moveDuration', kind: 'integer' },
+  delay: { path: 'animation.delay', kind: 'integer' }
+}
 
 const store = useEditorStore()
 
@@ -340,7 +370,7 @@ const calculatorLengthInput = ref('200')
 const lockAngleEnabled = ref(false)
 const commandInput = ref('')
 const commandLogs = ref<string[]>([
-  '命令模块暂未开发'
+  '运算赋值命令已就绪，使用 ; 分隔多条规则。'
 ])
 
 const selectedDanmakus = computed(() => store.getSelectedDanmakus)
@@ -383,6 +413,25 @@ function cloneDanmaku(danmaku: DanmakuItem): DanmakuItem {
   return JSON.parse(JSON.stringify(danmaku)) as DanmakuItem
 }
 
+function getValueByPath(target: Record<string, any>, path: string): any {
+  return path.split('.').reduce((current, key) => current?.[key], target)
+}
+
+function setValueByPath(target: Record<string, any>, path: string, value: number) {
+  const keys = path.split('.')
+  let current: Record<string, any> = target
+
+  for (let index = 0; index < keys.length - 1; index++) {
+    const key = keys[index]
+    if (!current[key] || typeof current[key] !== 'object') {
+      current[key] = {}
+    }
+    current = current[key]
+  }
+
+  current[keys[keys.length - 1]] = value
+}
+
 function createIdAllocator() {
   const generatedId = Number(store.generateNewId())
   const maxExistingId = store.danmakus.reduce((max: number, danmaku: DanmakuItem) => {
@@ -418,6 +467,10 @@ function clampToCoordinateRange(value: number): number {
   return Math.max(0, Math.min(10000, value))
 }
 
+function roundOpacityValue(value: number): number {
+  return Number(value.toFixed(2))
+}
+
 // 计算四个角旋转后的包围盒，用于居中计算时考虑旋转对宽高的影响
 function getRotatedBoundingBox(rawWidth: number, rawHeight: number, zRotate: number) {
   const radian = zRotate * (Math.PI / 180)
@@ -446,6 +499,214 @@ function getRotatedBoundingBox(rawWidth: number, rawHeight: number, zRotate: num
     width: maxX - minX,
     height: maxY - minY
   }
+}
+
+// 解析用户输入的命令表达式
+function tokenizeCommandExpression(expression: string): ExpressionToken[] {
+  const tokens: ExpressionToken[] = []
+  let index = 0
+
+  while (index < expression.length) {
+    const char = expression[index]
+
+    if (/\s/.test(char)) {
+      index++
+      continue
+    }
+
+    if (/[+\-*/]/.test(char)) {
+      tokens.push({ type: 'operator', value: char as '+' | '-' | '*' | '/' })
+      index++
+      continue
+    }
+
+    if (/[()]/.test(char)) {
+      tokens.push({ type: 'paren', value: char as '(' | ')' })
+      index++
+      continue
+    }
+
+    if (/\d|\./.test(char)) {
+      let end = index + 1
+      while (end < expression.length && /[\d.]/.test(expression[end])) {
+        end++
+      }
+
+      const rawNumber = expression.slice(index, end)
+      const parsedNumber = Number(rawNumber)
+      if (!Number.isFinite(parsedNumber)) {
+        throw new Error(`无效数字：${rawNumber}`)
+      }
+
+      tokens.push({ type: 'number', value: parsedNumber })
+      index = end
+      continue
+    }
+
+    if (/[A-Za-z_]/.test(char)) {
+      let end = index + 1
+      while (end < expression.length && /[A-Za-z0-9_]/.test(expression[end])) {
+        end++
+      }
+
+      tokens.push({
+        type: 'identifier',
+        value: expression.slice(index, end)
+      })
+      index = end
+      continue
+    }
+
+    throw new Error(`不支持的字符：${char}`)
+  }
+
+  return tokens
+}
+
+// 命令表达式求值函数，支持基本算术运算、括号和变量，使用递归下降解析方法实现
+function evaluateCommandExpression(expression: string, variables: Record<string, number>): number {
+  const tokens = tokenizeCommandExpression(expression)
+  let index = 0
+
+  function peekToken() {
+    return tokens[index]
+  }
+
+  function consumeToken() {
+    const token = tokens[index]
+    index++
+    return token
+  }
+
+  function parseExpression(): number {
+    let value = parseTerm()
+
+    while (true) {
+      const token = peekToken()
+      if (!token || token.type !== 'operator' || (token.value !== '+' && token.value !== '-')) {
+        break
+      }
+
+      consumeToken()
+      const right = parseTerm()
+      value = token.value === '+' ? value + right : value - right
+    }
+
+    return value
+  }
+
+  function parseTerm(): number {
+    let value = parseFactor()
+
+    while (true) {
+      const token = peekToken()
+      if (!token || token.type !== 'operator' || (token.value !== '*' && token.value !== '/')) {
+        break
+      }
+
+      consumeToken()
+      const right = parseFactor()
+      if (token.value === '/') {
+        if (right === 0) {
+          throw new Error('不允许除以 0')
+        }
+        value = value / right
+      } else {
+        value = value * right
+      }
+    }
+
+    return value
+  }
+
+  function parseFactor(): number {
+    const token = consumeToken()
+    if (!token) {
+      throw new Error('表达式不完整')
+    }
+
+    if (token.type === 'operator' && (token.value === '+' || token.value === '-')) {
+      const value = parseFactor()
+      return token.value === '+' ? value : -value
+    }
+
+    if (token.type === 'number') {
+      return token.value
+    }
+
+    if (token.type === 'identifier') {
+      if (!(token.value in variables)) {
+        throw new Error(`变量 ${token.value} 不存在或不是数值字段`)
+      }
+      return variables[token.value]
+    }
+
+    if (token.type === 'paren' && token.value === '(') {
+      const value = parseExpression()
+      const closeToken = consumeToken()
+      if (!closeToken || closeToken.type !== 'paren' || closeToken.value !== ')') {
+        throw new Error('括号未闭合')
+      }
+      return value
+    }
+
+    throw new Error('表达式格式无效')
+  }
+
+  const result = parseExpression()
+  if (index < tokens.length) {
+    throw new Error('表达式中存在无法解析的多余内容')
+  }
+
+  if (!Number.isFinite(result)) {
+    throw new Error('表达式结果不是有效数字')
+  }
+
+  return result
+}
+
+function parseCommandRules(commandText: string): CommandRule[] {
+  const normalizedText = commandText.replace(/；/g, ';')
+  const rules = normalizedText
+    .split(';')
+    .map((rule) => rule.trim())
+    .filter(Boolean)
+
+  if (rules.length === 0) {
+    throw new Error('请输入至少一条赋值规则')
+  }
+
+  return rules.map((rule, index) => {
+    const match = rule.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/)
+    if (!match) {
+      throw new Error(`第 ${index + 1} 条规则格式无效，应为 变量 = 表达式`)
+    }
+
+    const target = match[1]
+    const expression = match[2].trim()
+    if (!expression) {
+      throw new Error(`第 ${index + 1} 条规则缺少右侧表达式`)
+    }
+
+    if (!NUMERIC_FIELD_DEFINITIONS[target]) {
+      throw new Error(`第 ${index + 1} 条规则的目标字段 ${target} 不是可写入的数值字段`)
+    }
+
+    return { target, expression }
+  })
+}
+
+function createNumericVariableContext(danmaku: DanmakuItem): Record<string, number> {
+  const variables: Record<string, number> = {}
+
+  Object.entries(NUMERIC_FIELD_DEFINITIONS).forEach(([fieldName, definition]) => {
+    const value = getValueByPath(danmaku as Record<string, any>, definition.path)
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      variables[fieldName] = value
+    }
+  })
+
+  return variables
 }
 
 function parseAngleMode(input: string) {
@@ -762,6 +1023,7 @@ function handleApplyStroke() {
   }
 }
 
+// 命令输入框提交事件处理函数，解析用户输入的命令规则并应用到选中弹幕上，支持复杂表达式和多个规则
 function handleCommandSubmit() {
   const command = commandInput.value.trim()
   if (!command) {
@@ -769,8 +1031,72 @@ function handleCommandSubmit() {
     return
   }
 
-  appendCommandLog(`收到命令：${command}`)
-  appendCommandLog('命令功能暂未开发')
+  if (!hasSelection.value) {
+    appendCommandLog('没有选中弹幕，命令未执行。')
+    return
+  }
+
+  let rules: CommandRule[]
+
+  try {
+    rules = parseCommandRules(command)
+  } catch (error) {
+    appendCommandLog(error instanceof Error ? error.message : '命令解析失败')
+    return
+  }
+
+  const originalDanmakus = selectedDanmakus.value.map((danmaku) => cloneDanmaku(danmaku))
+  let hasChange = false
+
+  try {
+    originalDanmakus.forEach((danmaku) => {
+      const baseVariables = createNumericVariableContext(danmaku)
+      const pendingAssignments = new Map<string, number>()
+
+      rules.forEach((rule) => {
+        const definition = NUMERIC_FIELD_DEFINITIONS[rule.target]
+        const result = evaluateCommandExpression(rule.expression, baseVariables)
+        const normalizedValue = definition.kind === 'opacity'
+          ? roundOpacityValue(result)
+          : roundToInteger(result)
+
+        pendingAssignments.set(rule.target, normalizedValue)
+      })
+
+      pendingAssignments.forEach((value, target) => {
+        const definition = NUMERIC_FIELD_DEFINITIONS[target]
+        setValueByPath(danmaku as Record<string, any>, definition.path, value)
+      })
+    })
+  } catch (error) {
+    appendCommandLog(error instanceof Error ? error.message : '命令执行失败')
+    return
+  }
+
+  originalDanmakus.forEach((updatedDanmaku, index) => {
+    const targetDanmaku = selectedDanmakus.value[index]
+    if (!targetDanmaku) {
+      return
+    }
+
+    const nextValue = JSON.stringify(updatedDanmaku)
+    const currentValue = JSON.stringify(targetDanmaku)
+    if (nextValue === currentValue) {
+      return
+    }
+
+    Object.assign(targetDanmaku, updatedDanmaku)
+    hasChange = true
+  })
+
+  if (!hasChange) {
+    appendCommandLog('命令执行完成，但没有产生实际变更。')
+    commandInput.value = ''
+    return
+  }
+
+  finishToolbarOperation(`命令执行：${rules.length} 条规则`)
+  appendCommandLog(`命令执行成功：${rules.length} 条规则，${selectedDanmakus.value.length} 条弹幕。`)
   commandInput.value = ''
 }
 

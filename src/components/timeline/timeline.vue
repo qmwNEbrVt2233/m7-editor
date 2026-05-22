@@ -1228,7 +1228,7 @@ function onMouseMove(e: MouseEvent) {
   maybeAutoScrollDuringDrag(e)
 }
 
-function onMouseUp() {
+function onMouseUp(e?: MouseEvent) {
   // 框选模式处理
   if (isBoxSelectingMode.value) {
     isBoxSelectingMode.value = false
@@ -1249,9 +1249,24 @@ function onMouseUp() {
       })
     }
     
-    // 更新选中状态（框选会替换之前的选择）
+    // 更新选中状态：若ctrl键按下则toggle，否则替换
+    const isCtrlPressed = e?.ctrlKey || e?.metaKey
     if (selectedInBox.length > 0) {
-      store.selectedIds = selectedInBox
+      if (isCtrlPressed) {
+        // Ctrl按下时：toggle模式 - 如果弹幕已选中则取消，如果未选中则添加
+        const result = new Set(store.selectedIds)
+        selectedInBox.forEach(id => {
+          if (result.has(id)) {
+            result.delete(id)
+          } else {
+            result.add(id)
+          }
+        })
+        store.selectedIds = Array.from(result)
+      } else {
+        // Ctrl未按下：替换选择
+        store.selectedIds = selectedInBox
+      }
     }
     
     resetSelectionBox()

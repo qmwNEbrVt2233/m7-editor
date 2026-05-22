@@ -211,25 +211,44 @@ npm run preview
 ### 高级工具列表：
 
 #### 描边工具
-  - 支持选择描边宽度
-  - 支持输入描边颜色
-  - 有layer避让
-  - 若新建弹幕坐标有小于0的则弹窗提醒，并钳至0
+- 支持选择描边宽度
+- 支持输入描边颜色
+- 有layer避让
+- 若新建弹幕坐标有小于0的则弹窗提醒，并钳至0
 
 #### 计算工具
-  - 目标角度解析：
-    1. 留空则为使用选中弹幕自身的zRotate参数作为目标角度
-    2. 若输入`+/-`+`数字`则以弹幕自身`zRotate值`+/-`数值`计算相对目标角度
-    3. 若仅输入数字，则直接以输入值作为目标角度
-  - 长度应用工具
-    - 通过起始坐标、输入的长度以及设置的目标角度计算结束坐标
-    - 需点击`应用`应用更改
-  - 锁定角度功能
-    - 勾选后在修改结束坐标X/Y时会根据设置的目标角度计算另一个X/Y坐标
-    - 结果会被钳至0~10000
-    - 支持批量操作
+- 目标角度解析：
+  1. 留空则为使用选中弹幕自身的zRotate参数作为目标角度
+  2. 若输入`+/-`+`数字`则以弹幕自身`zRotate值`+/-`数值`计算相对目标角度
+  3. 若仅输入数字，则直接以输入值作为目标角度
+- 长度应用工具
+  - 通过起始坐标、输入的长度以及设置的目标角度计算结束坐标
+  - 需点击`应用`应用更改
+- 锁定角度功能
+  - 勾选后在修改结束坐标X/Y时会根据设置的目标角度计算另一个X/Y坐标
+  - 结果会被钳至0~10000
+  - 支持批量操作
 
-#### 命令工具（暂未开发）
+#### 命令工具
+- 现支持输入赋值计算公式，作用范围依旧为选中的弹幕
+- 格式：
+  - `被赋值字段名 = 赋值计算式（支持四则）`
+  - 支持使用`;`分隔设置多个赋值规则
+- 可用字段（名称）：
+  1. `layer`
+  2. `startTime`
+  3. `size`
+  4. `startX`
+  5. `startY`
+  6. `endX`
+  7. `endY`
+  8. `zRotate`
+  9. `yRotate`
+  10. `opacityFrom`
+  11. `opacityTo`
+  12. `duration`
+  13. `moveDuration`
+  14. `delay`
 
 ## 4. 时间轴区域
 
@@ -244,7 +263,7 @@ npm run preview
 - 支持在拖动弹幕时快捷移动视图
 
 ## 5. 高级创建工具模块
-<img src="public/2397-21y3n92-183-y89yh80321ihjn.png">
+<img src="public/zney812dm21ey890523-18297.jpg">
 
 通过 `Ctrl + ;` 可唤出高级创建工具。这个模块采用“工具面板生成规则 -> 写入预览 JSON -> 用户确认后点击创建”的流程，和主编辑器数据解耦，适合批量造大量弹幕。
 
@@ -490,11 +509,14 @@ npm run preview
     │       cut.svg
     │       E_to_S.svg
     │       horizontal_centering.svg
+    │       horizontal_mirror.svg
     │       Pick_and_locate.svg
-    │       Split_by_line.svg
     │       S_E_exchange.svg
     │       S_to_E.svg
+    │       Split_by_letter.svg
+    │       Split_by_line.svg
     │       vertical_centering.svg
+    │       vertical_mirror.svg
     │       zRotate_calculate.svg
     │
     ├───localStorage

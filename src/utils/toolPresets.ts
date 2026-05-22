@@ -8,7 +8,7 @@ import type {
 
 const PRESET_STORAGE_KEY = 'm7-editor.creation-tool-presets'
 const PRESET_EXPORT_TYPE = 'm7-editor.creation-tool-presets'
-const PRESET_EXPORT_VERSION = '1.0.0'
+const PRESET_EXPORT_VERSION = '1.1.0'
 
 export type CreationToolPanelState = {
   quantityInput: string

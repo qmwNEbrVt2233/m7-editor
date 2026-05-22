@@ -315,6 +315,7 @@ function handleTabKeyPress(event: KeyboardEvent) {
   }
 
   if (event.key === 'Tab') {
+    event.preventDefault()
     updateBuffer(store.currentTime)
     console.log('[DanmakuLayer] TAB 快捷键：手动触发缓冲池重构')
   }

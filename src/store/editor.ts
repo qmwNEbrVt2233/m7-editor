@@ -436,7 +436,7 @@ export const useEditorStore = defineStore('editor', {
           historyManager.recordSnapshot(this.danmakus)
         },500)
 
-        // 检查是否写入了transform.end
+        // 检查是否需要移动播放头
         this._checkAndMovePlayhead(patch, id)
 
         // 情况1：路径写法（优先级最高）
@@ -648,7 +648,7 @@ export const useEditorStore = defineStore('editor', {
     exportProject() {
       return {
         meta: {
-          version: '1.0.0',
+          version: '1.1.0',
           createdAt: Date.now()
         },
         timeline: {
@@ -1112,7 +1112,7 @@ export const useEditorStore = defineStore('editor', {
     clearCache(): void {
       const confirmed = window.confirm('确定要清空本地缓存的工程吗？此操作不可撤销。')
       if (confirmed) {
-        localStorage.clear()
+        localStorage.removeItem("m7-project")
         console.log('[操作] 已清空缓存工程')
         // 重新加载以恢复默认状态
         window.location.reload()
