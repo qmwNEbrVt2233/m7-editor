@@ -271,7 +271,7 @@
     <div class="divider"></div>
 
     <button
-      class="tool-btn"
+      class="advanced-tool-btn"
       :class="{ active: showAdvancedTools }"
       title="高级工具"
       @click="toggleAdvancedTools"
@@ -1940,6 +1940,17 @@ onBeforeUnmount(() => {
   border-color: #4caf50;
   background-color: #444;
 }
+
+.advanced-tool-btn img {
+  width: 30px;
+  height: 30px;
+  transition: transform 0.1s ease;
+}
+
+.advanced-tool-btn.active img {
+  transform: rotate(90deg);
+}
+
 .color-row {
   display: flex;
   gap: 8px;
@@ -2031,6 +2042,7 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
 }
 
+.advanced-tool-btn,
 .tool-btn {
   display: flex;
   justify-content: center;
@@ -2062,11 +2074,6 @@ onBeforeUnmount(() => {
 .tool-btn img {
   width: 30px;
   height: 30px;
-  transition: transform 0.1s ease;
-}
-
-.tool-btn.active img {
-  transform: rotate(90deg);
 }
 
 .framed-group {
