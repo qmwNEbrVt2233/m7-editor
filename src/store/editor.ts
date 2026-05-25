@@ -766,7 +766,7 @@ export const useEditorStore = defineStore('editor', {
 
       // 应用偏移到所有弹幕
       danmakusToAdd.forEach((d) => {
-        d.startTime = Math.max(0, d.startTime + offset)
+        d.startTime = Math.round(Math.max(0, d.startTime + offset))
       })
     },
 
@@ -906,7 +906,7 @@ export const useEditorStore = defineStore('editor', {
         // 计算 duration（使用用户设置）
         let duration = 1000
         if (this.danmakuDuration.mode === 'ms') {
-          duration = Math.max(100, this.danmakuDuration.value)
+          duration = Math.round(Math.max(100, this.danmakuDuration.value))
         } else if (this.danmakuDuration.mode === 'multiplier') {
           const playheadStepMs = this.playheadStepMs || 16.666667
           duration = Math.round(
