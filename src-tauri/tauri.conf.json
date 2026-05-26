@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "m7-editor",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "identifier": "com.jerryeee.m7-editor",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -15,7 +15,8 @@
         "title": "m7-editor",
         "width": 2560,
         "height": 1600,
-        "devtools": true
+        "devtools": true,
+        "maximized": true
       }
     ],
     "security": {
