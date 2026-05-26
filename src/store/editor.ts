@@ -206,6 +206,7 @@ export const useEditorStore = defineStore('editor', {
       timelineOffset: saved?.timeline?.offset || 0,
       timelineScrollTop: saved?.timeline?.scrollTop || 0,
       playing: false,
+      aggressiveOptimization: false,
       // 快捷键配置：播放头移动的步长（毫秒）
       playheadStepMs: 16.666667,  // 默认60fps对应的毫秒值
       // 弹幕生存时间配置
@@ -253,7 +254,11 @@ export const useEditorStore = defineStore('editor', {
     togglePlay() {
       this.playing = !this.playing
     },
-    
+
+    setAggressiveOptimization(enabled: boolean) {
+      this.aggressiveOptimization = enabled
+    },
+     
     startPlayback() {
       this.playing = true
       const startTime = performance.now();

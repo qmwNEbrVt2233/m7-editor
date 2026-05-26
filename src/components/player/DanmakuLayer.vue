@@ -1,15 +1,24 @@
 <template>
   <div class="layer">
-    <div
-      v-for="(d, index) in visibleDanmakus"
-      :key="d.id"
-      class="danmaku"
-      :style="getStyle(d, +index)"
-    >
+    <template v-if="!isAggressivePlaybackActive">
       <div
-        class="danmaku-content"
-        v-html="formatText(d.content.text)"
-      ></div>
+        v-for="(d, index) in standardDanmakus"
+        :key="d.id"
+        class="danmaku"
+        :style="getPausedStyle(d, +index)"
+      >
+        <div
+          class="danmaku-content"
+          v-html="formatText(d.content.text)"
+        ></div>
+      </div>
+    </template>
+
+    <div
+      ref="playbackLayer"
+      class="playbackLayer"
+      :class="{ active: isAggressivePlaybackActive }"
+    >
     </div>
   </div>
 
@@ -62,11 +71,20 @@ type ToolbarMeasureEventDetail = {
 
 // 使用 shallowRef 拒绝深度 Proxy 劫持
 const activeBuffer = shallowRef<DanmakuItem[]>([])
+const standardDanmakus = shallowRef<DanmakuItem[]>([])
 const ghostRequests = ref<ToolbarMeasureRequest[]>([])
+const playbackLayer = ref<HTMLDivElement | null>(null)
 const ghostElements = new Map<string, HTMLDivElement>()
 
 let currentBufferStart = -1
 let currentBufferEnd = -1
+let playbackFrameId: number | null = null
+let playbackVisibleDanmakus: DanmakuItem[] = []
+let playbackNextStartIndex = 0
+let playbackLastTime = 0
+let playbackResyncRequested = false
+const playbackActiveNodes = new Map<string, HTMLDivElement>()
+const playbackNodePool: HTMLDivElement[] = []
 
 const danmakuBufferSignature = computed(() => {
   return store.danmakus
@@ -74,17 +92,59 @@ const danmakuBufferSignature = computed(() => {
     .join(';')
 })
 
+const isAggressivePlaybackActive = computed(() => {
+  return store.playing && store.aggressiveOptimization
+})
+
+function sortDanmakus(danmakus: DanmakuItem[]) {
+  return [...danmakus].sort((a: DanmakuItem, b: DanmakuItem) => {
+    if (a.startTime !== b.startTime) {
+      return a.startTime - b.startTime
+    }
+
+    const layerA = a.layer || 0
+    const layerB = b.layer || 0
+    return layerA - layerB
+  })
+}
+
+function getDanmakuEndTime(d: DanmakuItem) {
+  return d.startTime + d.animation.duration
+}
+
+function isVisibleAtTime(d: DanmakuItem, time: number) {
+  return time >= d.startTime && time <= getDanmakuEndTime(d)
+}
+
+function syncStandardRenderList(time: number) {
+  standardDanmakus.value = activeBuffer.value.filter((d: DanmakuItem) => {
+    return isVisibleAtTime(d, time)
+  })
+}
+
+function requestPlaybackResync() {
+  playbackResyncRequested = true
+}
+
 // 低频刷新核心
 function updateBuffer(time: number) {
   console.log(`[Buffer] 正在重构缓冲池，当前时间: ${time}`)
   currentBufferStart = time - PRELOAD_THRESHOLD
   currentBufferEnd = time + BUFFER_WINDOW
 
-  activeBuffer.value = store.danmakus.filter((d: DanmakuItem) => {
+  const nextBuffer = store.danmakus.filter((d: DanmakuItem) => {
     const dEnd = d.startTime + d.animation.duration
     return dEnd >= currentBufferStart && d.startTime <= currentBufferEnd
   })
+  activeBuffer.value = sortDanmakus(nextBuffer)
   console.log(`缓存池大小：${activeBuffer.value.length}条弹幕`)
+
+  if (isAggressivePlaybackActive.value) {
+    requestPlaybackResync()
+    return
+  }
+
+  syncStandardRenderList(time)
 }
 
 // 监听时间轴：加入容差判断
@@ -95,6 +155,11 @@ watch(() => store.currentTime, (newTime) => {
     newTime > currentBufferEnd - PRELOAD_THRESHOLD
   ) {
     updateBuffer(newTime)
+    return
+  }
+
+  if (!isAggressivePlaybackActive.value) {
+    syncStandardRenderList(newTime)
   }
 }, { immediate: true })
 
@@ -115,24 +180,6 @@ watch(() => store.importTimestamp, (newTimestamp) => {
   }
 })
 
-// --- 高频刷新：实时可见弹幕 ---
-const visibleDanmakus = computed(() => {
-  const time = store.currentTime
-
-  const filtered = activeBuffer.value.filter((d: DanmakuItem) => {
-    return time >= d.startTime && time <= d.startTime + d.animation.duration
-  })
-
-  return filtered.sort((a: DanmakuItem, b: DanmakuItem) => {
-    if (a.startTime !== b.startTime) {
-      return a.startTime - b.startTime
-    }
-    const layerA = a.layer || 0
-    const layerB = b.layer || 0
-    return layerA - layerB
-  })
-})
-
 // 缓动函数
 function applyEasing(progress: number, easing: string) {
   if (easing === 'speedup') {
@@ -146,8 +193,7 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value))
 }
 
-function getRenderState(d: DanmakuItem) {
-  const currentTime = store.currentTime
+function getRenderState(d: DanmakuItem, currentTime: number) {
   const t = currentTime - d.startTime
   const { delay, moveDuration, easing } = d.animation
 
@@ -185,6 +231,20 @@ function getRenderState(d: DanmakuItem) {
   return { x, y, opacity }
 }
 
+function buildTransform(d: DanmakuItem, x: number, y: number) {
+  const transformParts = [`translate3d(${x}px, ${y}px, 0)`]
+
+  if (d.transform.zRotate !== 0) {
+    transformParts.push(`rotateZ(${d.transform.zRotate}deg)`)
+  }
+
+  if (d.transform.yRotate !== 0) {
+    transformParts.push(`rotateY(${360 - d.transform.yRotate}deg)`)
+  }
+
+  return transformParts.join(' ')
+}
+
 function buildBaseStyle(d: DanmakuItem, index: number) {
   return {
     position: 'absolute' as const,
@@ -207,20 +267,34 @@ function buildBaseStyle(d: DanmakuItem, index: number) {
   }
 }
 
-// 核心样式计算
-function getStyle(d: DanmakuItem, index: number) {
-  const { x, y, opacity } = getRenderState(d)
-  const transform = `
-    translate3d(${x}px, ${y}px, 0)
-    rotateZ(${d.transform.zRotate}deg)
-    rotateY(${360 - d.transform.yRotate}deg)
-  `
+// 使用原生 DOM API 直接设置样式，避免 Vue 的响应式系统带来的性能开销（激进优化模式下）
+function applyBaseStyleToElement(
+  element: HTMLDivElement,
+  d: DanmakuItem,
+  index: number,
+  willChange: string
+) {
+  const baseStyle = buildBaseStyle(d, index)
+  element.style.position = baseStyle.position
+  element.style.zIndex = String(baseStyle.zIndex)
+  element.style.color = baseStyle.color
+  element.style.fontSize = baseStyle.fontSize
+  element.style.fontFamily = baseStyle.fontFamily
+  element.style.fontWeight = baseStyle.fontWeight
+  element.style.lineHeight = String(baseStyle.lineHeight)
+  element.style.textShadow = baseStyle.textShadow ?? ''
+  element.style.willChange = willChange
+  element.style.transformOrigin = '0% 0%'
+}
+
+function getPausedStyle(d: DanmakuItem, index: number) {
+  const { x, y, opacity } = getRenderState(d, store.currentTime)
+  const transform = buildTransform(d, x, y)
 
   return {
     ...buildBaseStyle(d, index),
     transform,
-    opacity,
-    willChange: 'transform, opacity'
+    opacity
   }
 }
 
@@ -242,6 +316,24 @@ function formatText(text: string) {
   return text.replace(/\n/g, '<br />')
 }
 
+function ensurePlaybackNode() {
+  const reusedNode = playbackNodePool.pop()
+  if (reusedNode) {
+    return reusedNode
+  }
+
+  const node = document.createElement('div')
+  node.className = 'danmaku'
+
+  const content = document.createElement('div')
+  content.className = 'danmaku-content'
+  content.style.wordBreak = 'break-word'
+  content.style.whiteSpace = 'pre'
+  node.appendChild(content)
+
+  return node
+}
+
 function setGhostElement(
   requestId: string,
   el: Element | ComponentPublicInstance | null
@@ -253,6 +345,159 @@ function setGhostElement(
 
   ghostElements.delete(requestId)
 }
+
+function recyclePlaybackNode(danmakuId: string) {
+  const node = playbackActiveNodes.get(danmakuId)
+  if (!node) {
+    return
+  }
+
+  playbackActiveNodes.delete(danmakuId)
+  node.remove()
+  node.style.transform = 'translate3d(0px, 0px, 0)'
+  node.style.opacity = '0'
+  node.style.willChange = 'auto'
+  playbackNodePool.push(node)
+}
+
+function mountPlaybackDanmaku(d: DanmakuItem, order: number, time: number) {
+  if (playbackActiveNodes.has(d.id) || !playbackLayer.value) {
+    return
+  }
+
+  const node = ensurePlaybackNode()
+  const content = node.firstElementChild as HTMLDivElement | null
+  if (content) {
+    content.innerHTML = formatText(d.content.text)
+  }
+  applyBaseStyleToElement(node, d, order, 'transform, opacity')
+  playbackLayer.value.appendChild(node)
+  playbackActiveNodes.set(d.id, node)
+
+  const { x, y, opacity } = getRenderState(d, time)
+  node.style.transform = buildTransform(d, x, y)
+  node.style.opacity = String(opacity)
+}
+
+function clearPlaybackNodes() {
+  Array.from(playbackActiveNodes.keys()).forEach((danmakuId) => {
+    recyclePlaybackNode(danmakuId)
+  })
+  playbackVisibleDanmakus = []
+}
+
+function rebuildPlaybackNodes(time: number) {
+  clearPlaybackNodes()
+
+  for (let index = 0; index < activeBuffer.value.length; index += 1) {
+    const danmaku = activeBuffer.value[index]
+    if (!isVisibleAtTime(danmaku, time)) {
+      continue
+    }
+
+    playbackVisibleDanmakus.push(danmaku)
+    mountPlaybackDanmaku(danmaku, index, time)
+  }
+
+  playbackNextStartIndex = 0
+  while (
+    playbackNextStartIndex < activeBuffer.value.length &&
+    activeBuffer.value[playbackNextStartIndex].startTime <= time
+  ) {
+    playbackNextStartIndex += 1
+  }
+
+  playbackLastTime = time
+  playbackResyncRequested = false
+}
+
+function syncPlaybackVisibility(time: number) {
+  if (playbackResyncRequested || time < playbackLastTime - JITTER_TOLERANCE) {
+    rebuildPlaybackNodes(time)
+    return
+  }
+
+  const nextVisibleDanmakus: DanmakuItem[] = []
+  playbackVisibleDanmakus.forEach((d: DanmakuItem) => {
+    if (time <= getDanmakuEndTime(d)) {
+      nextVisibleDanmakus.push(d)
+      return
+    }
+
+    recyclePlaybackNode(d.id)
+  })
+  playbackVisibleDanmakus = nextVisibleDanmakus
+
+  while (
+    playbackNextStartIndex < activeBuffer.value.length &&
+    activeBuffer.value[playbackNextStartIndex].startTime <= time
+  ) {
+    const danmaku = activeBuffer.value[playbackNextStartIndex]
+    if (time <= getDanmakuEndTime(danmaku)) {
+      mountPlaybackDanmaku(danmaku, playbackNextStartIndex, time)
+      playbackVisibleDanmakus.push(danmaku)
+    }
+
+    playbackNextStartIndex += 1
+  }
+
+  playbackLastTime = time
+}
+
+function applyPlaybackStyles(time: number) {
+  playbackVisibleDanmakus.forEach((d: DanmakuItem) => {
+    const element = playbackActiveNodes.get(d.id)
+    if (!element) {
+      return
+    }
+
+    const { x, y, opacity } = getRenderState(d, time)
+    element.style.transform = buildTransform(d, x, y)
+    element.style.opacity = String(opacity)
+  })
+}
+
+function playbackTick() {
+  if (!store.playing) {
+    return
+  }
+
+  const time = store.currentTime
+  syncPlaybackVisibility(time)
+  applyPlaybackStyles(time)
+  playbackFrameId = requestAnimationFrame(playbackTick)
+}
+
+function startPlaybackMode() {
+  if (playbackFrameId !== null) {
+    cancelAnimationFrame(playbackFrameId)
+  }
+
+  rebuildPlaybackNodes(store.currentTime)
+  playbackFrameId = requestAnimationFrame(playbackTick)
+}
+
+function stopPlaybackMode() {
+  if (playbackFrameId !== null) {
+    cancelAnimationFrame(playbackFrameId)
+    playbackFrameId = null
+  }
+
+  clearPlaybackNodes()
+  playbackNextStartIndex = 0
+  playbackLastTime = store.currentTime
+  playbackResyncRequested = false
+  syncStandardRenderList(store.currentTime)
+}
+
+watch(isAggressivePlaybackActive, (enabled) => {
+  if (enabled) {
+    startPlaybackMode()
+    return
+  }
+
+  stopPlaybackMode()
+}, { immediate: true })
 
 async function handleToolbarMeasure(event: Event) {
   const customEvent = event as CustomEvent<ToolbarMeasureEventDetail>
@@ -337,6 +582,11 @@ onBeforeUnmount(() => {
     clearTimeout(editTimeout)
   }
 
+  if (playbackFrameId !== null) {
+    cancelAnimationFrame(playbackFrameId)
+  }
+
+  clearPlaybackNodes()
   window.removeEventListener(TOOLBAR_MEASURE_EVENT, handleToolbarMeasure as EventListener)
   window.removeEventListener('keydown', handleTabKeyPress)
   window.removeEventListener('danmaku-update-buffer', handleUpdateBufferRequest as EventListener)
@@ -361,6 +611,19 @@ onBeforeUnmount(() => {
   perspective: 500px;
   visibility: hidden;
   overflow: visible;
+}
+
+.playbackLayer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  visibility: hidden;
+  overflow: visible;
+  perspective: 500px;
+}
+
+.playbackLayer.active {
+  visibility: visible;
 }
 
 .danmaku {

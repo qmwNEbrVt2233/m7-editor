@@ -162,6 +162,17 @@
             class="dark-input"
           />
         </div>
+
+        <div class="divider"></div>
+
+        <label class="config-group checkbox-group">
+          <input
+            type="checkbox"
+            v-model="aggressiveOptimization"
+            @change="onAggressiveOptimizationChange"
+          />
+          <span>激进优化</span>
+        </label>
       </div>
 
       <div v-if="activeMenu === 'preprocess'" class="menu-panel">
@@ -267,6 +278,7 @@ const maxLayersInput = ref(String(store.maxLayers))
 const exportXmlAsRatio = ref(store.exportXmlAsRatio)
 const importXmlDurationOffsetEnabled = ref(store.importXmlDurationOffsetEnabled)
 const exportXmlDurationOffsetEnabled = ref(store.exportXmlDurationOffsetEnabled)
+const aggressiveOptimization = ref(store.aggressiveOptimization)
 
 const screenStyle = computed(() => ({
   width: `${store.screenWidth}px`,
@@ -362,6 +374,10 @@ function onMaxLayersChange() {
   maxLayersInput.value = String(store.maxLayers)
 }
 
+function onAggressiveOptimizationChange() {
+  store.setAggressiveOptimization(aggressiveOptimization.value)
+}
+
 // 隐藏快捷键提示框，带有延迟以允许鼠标移入快捷键列表
 function hideShortcutsWithDelay() {
   if (shortcutsHideTimer) clearTimeout(shortcutsHideTimer)
@@ -422,6 +438,13 @@ watch(
   () => store.maxLayers,
   (value) => {
     maxLayersInput.value = String(value)
+  }
+)
+
+watch(
+  () => store.aggressiveOptimization,
+  (enabled) => {
+    aggressiveOptimization.value = enabled
   }
 )
 
