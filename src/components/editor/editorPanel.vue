@@ -345,6 +345,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useEditorStore } from '@/store/editor'
 import { parseInput, applyOperation, formatInputDisplay, parseColorWithAlpha, blendColor } from '@/utils/parser'
+import type { ParseResult } from '@/utils/parser'
 import { validateField, normalizeColor, validateRange, M7_RULES } from '@/utils/validation'
 import { formatTime } from '@/utils/time'
 
@@ -833,51 +834,22 @@ function roundOpacityValue(value: number): number {
   return Number(value.toFixed(2))
 }
 
-function parseOpacityInput(input: string): { mode: 'set' | 'add' | 'mul' | 'div'; value: number } | { error: string } {
+function parseOpacityInput(input: string): ParseResult | { error: string } {
   const trimmed = input.trim()
   if (!trimmed) {
     return { error: '输入不能为空' }
   }
 
-  if (/^[+\-*/]/.test(trimmed)) {
-    const operator = trimmed[0]
-    const rawValue = operator === '-' ? trimmed : trimmed.slice(1)
-    const parsedValue = Number(rawValue)
-    if (!Number.isFinite(parsedValue)) {
-      return { error: '无效的透明度数值' }
-    }
-
-    if (operator === '+') return { mode: 'add', value: parsedValue }
-    if (operator === '-') return { mode: 'add', value: parsedValue }
-    if (operator === '*') {
-      if (parsedValue <= 0) return { error: '倍率必须是正数' }
-      return { mode: 'mul', value: parsedValue }
-    }
-    if (operator === '/') {
-      if (parsedValue <= 0) return { error: '除数必须是正数' }
-      return { mode: 'div', value: parsedValue }
-    }
+  const parsed = parseInput(trimmed, false)
+  if (parsed.mode === 'multiple') {
+    return { error: '输入不能为空' }
   }
 
-  const parsedValue = Number(trimmed)
-  if (!Number.isFinite(parsedValue)) {
+  if (parsed.error === '无效的数值') {
     return { error: '无效的透明度数值' }
   }
 
-  return { mode: 'set', value: parsedValue }
-}
-
-function applyOpacityOperation(originalValue: number, operation: { mode: 'set' | 'add' | 'mul' | 'div'; value: number }): number {
-  switch (operation.mode) {
-    case 'set':
-      return operation.value
-    case 'add':
-      return originalValue + operation.value
-    case 'mul':
-      return originalValue * operation.value
-    case 'div':
-      return originalValue / operation.value
-  }
+  return parsed
 }
 
 function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
@@ -926,13 +898,13 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
         const originalValue = fieldValues[idx]
         if (typeof originalValue !== 'number') return
 
-        const updatedValue = applyOpacityOperation(originalValue, operation)
+        const updatedValue = applyOperation(originalValue, operation)
         const normalizedValue = roundOpacityValue(validateRange(updatedValue, 0, 1))
         store.updateDanmaku(d.id, { [path]: normalizedValue })
       })
     } else {
       const baseValue = operation.mode === 'set' ? 0 : fieldValues[0]
-      const updatedValue = applyOpacityOperation(baseValue, operation)
+      const updatedValue = applyOperation(baseValue, operation)
       const normalizedValue = roundOpacityValue(validateRange(updatedValue, 0, 1))
       store.updateSelectedDanmakus({ [path]: normalizedValue })
     }
