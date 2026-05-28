@@ -4,8 +4,8 @@
   "version": "1.2.0",
   "identifier": "com.jerryeee.m7-editor",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev -- --port 2388",
+    "devUrl": "http://localhost:2388",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
@@ -20,7 +20,11 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
     }
   },
   "bundle": {

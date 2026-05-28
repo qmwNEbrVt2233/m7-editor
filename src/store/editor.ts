@@ -3,6 +3,11 @@ import type { DanmakuItem } from '@/core/danmaku.ts'
 import { saveProject, loadProject } from '../localStorage/projectStorage'
 import { historyManager } from '@/core/history'
 import { parseXML, toXML } from '@/core/converter.ts'
+import {
+  getProjectVideoPath,
+  isTauriRuntime,
+  registerMediaPath
+} from '@/utils/tauriMedia'
 
 type SavePickerAcceptType = {
   description: string
@@ -140,13 +145,14 @@ function parsePastedDanmakusText(text: string): DanmakuItem[] {
 export const useEditorStore = defineStore('editor', {
   state: () => {
     const saved = loadProject()
+    const savedVideoPath = getProjectVideoPath(saved?.video)
 
     return {
       // 视频相关状态
-      videoUrl: saved?.video?.url || '',
+      videoUrl: savedVideoPath ? '' : saved?.video?.url || '',
       videoDuration: saved?.video?.duration || 0,
       videoElement: null as HTMLVideoElement | null,
-      videoFilePath: '' as string, // 记录视频文件的磁盘路径
+      videoFilePath: savedVideoPath, // 记录视频文件的磁盘路径
 
       danmakus: saved?.danmakus || [
         {
@@ -283,7 +289,7 @@ export const useEditorStore = defineStore('editor', {
       console.log('已保存到本地')
     },
 
-    loadFromLocal() {
+    async loadFromLocal() {
       const project = loadProject()
 
       if (!project) {
@@ -291,7 +297,7 @@ export const useEditorStore = defineStore('editor', {
         return
       }
 
-      this.applyProject(project)
+      await this.applyProject(project)
       historyManager.recordSnapshot(this.danmakus, `加载工程(${this.danmakus.length}条弹幕)`)
 
       console.log('加载完成')
@@ -334,10 +340,10 @@ export const useEditorStore = defineStore('editor', {
     loadFromFile(file: File) {
       const reader = new FileReader()
 
-      reader.onload = () => {
+      reader.onload = async () => {
         try {
           const project = JSON.parse(reader.result as string)
-          this.applyProject(project)
+          await this.applyProject(project)
           historyManager.recordSnapshot(this.danmakus, `导入工程(${this.danmakus.length}条弹幕)`)
           // 标记导入完成，触发缓冲池重构
           this.importTimestamp = Date.now()
@@ -579,6 +585,11 @@ export const useEditorStore = defineStore('editor', {
       this.videoUrl = url
     },
 
+    setVideoSource(url: string, path = '') {
+      this.videoUrl = url
+      this.videoFilePath = path
+    },
+
     setVideoDuration(duration: number) {
       this.videoDuration = duration
     },
@@ -588,6 +599,29 @@ export const useEditorStore = defineStore('editor', {
      */
     setVideoFilePath(path: string) {
       this.videoFilePath = path
+    },
+
+    async resolveVideoPath(path?: string) {
+      path = path ?? this.videoFilePath
+      if (!path) return
+
+      this.videoFilePath = path
+
+      if (!isTauriRuntime()) {
+        if (path.startsWith('file://')) {
+          this.videoUrl = path
+        }
+        return
+      }
+
+      try {
+        const media = await registerMediaPath(path)
+        this.videoFilePath = media.path
+        this.videoUrl = media.url
+      } catch (error) {
+        console.error('[媒体] 无法读取工程中的媒体文件:', path, error)
+        this.videoUrl = ''
+      }
     },
 
     setVideoElement(element: HTMLVideoElement | null) {
@@ -617,13 +651,22 @@ export const useEditorStore = defineStore('editor', {
     },
 
     // 工程参数加载
-    applyProject(project: any) {
+    async applyProject(project: any) {
       this.danmakus = project.danmakus || []
       this.selectedIds = []
 
-      if (project.video?.url) {
+      const videoPath = getProjectVideoPath(project.video)
+
+      if (videoPath) {
+        await this.resolveVideoPath(videoPath)
+      } else if (project.video?.url) {
+        this.videoFilePath = ''
         this.videoUrl = project.video.url
+      } else {
+        this.videoFilePath = ''
+        this.videoUrl = ''
       }
+
       if (typeof project.video?.duration === 'number') {
         this.videoDuration = project.video.duration
       }
@@ -663,6 +706,7 @@ export const useEditorStore = defineStore('editor', {
           scrollTop: this.timelineScrollTop
         },
         video: {
+          path: this.videoFilePath,
           url: this.videoFilePath || this.videoUrl, // 优先使用文件路径
           duration: this.videoDuration
         },

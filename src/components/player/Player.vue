@@ -250,6 +250,12 @@
 import { useEditorStore } from '../../store/editor'
 import DanmakuLayer from './DanmakuLayer.vue'
 import { ref, watch, onMounted, nextTick, computed } from 'vue'
+import {
+  getFileInputPath,
+  isTauriRuntime,
+  openMediaFileWithTauri,
+  registerMediaPath
+} from '@/utils/tauriMedia'
 
 const store = useEditorStore()
 const videoRef = ref<HTMLVideoElement | null>(null)
@@ -392,11 +398,15 @@ function showShortcutsNow() {
   showShortcuts.value = true
 }
 
-// 初始化视频元素引用
-onMounted(() => {
-  if (videoRef.value) {
-    store.setVideoElement(videoRef.value)
-  }
+// 初始化视频元素引用，并在 Tauri 中恢复工程内记录的真实媒体路径
+onMounted(async () => {
+  await store.resolveVideoPath()
+  await nextTick()
+  store.setVideoElement(videoRef.value)
+})
+
+watch(videoRef, (element) => {
+  store.setVideoElement(element)
 })
 
 watch(
@@ -512,7 +522,22 @@ function toggle() {
   }
 }
 
-function importVideo() {
+async function importVideo() {
+  if (isTauriRuntime()) {
+    try {
+      const media = await openMediaFileWithTauri()
+
+      if (media) {
+        store.setVideoSource(media.url, media.path)
+        console.log('媒体文件路径已设置:', media.path)
+      }
+
+      return
+    } catch (error) {
+      console.warn('[媒体] Tauri 文件选择失败，回退到浏览器文件选择', error)
+    }
+  }
+
   videoInput.value?.click()
 }
 
@@ -524,18 +549,31 @@ function importXml() {
   xmlInput.value?.click()
 }
 
-function onVideoFileChange(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0]
+async function onVideoFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+
   if (file) {
-    // 使用 Object URL 创建本地视频 URL
+    const nativePath = getFileInputPath(file)
+
+    if (nativePath && isTauriRuntime()) {
+      try {
+        const media = await registerMediaPath(nativePath)
+        store.setVideoSource(media.url, media.path)
+        console.log('媒体文件路径已设置:', media.path)
+        input.value = ''
+        return
+      } catch (error) {
+        console.warn('[媒体] 真实路径注册失败，回退到临时 Object URL', error)
+      }
+    }
+
     const url = URL.createObjectURL(file)
-    store.setVideoUrl(url)
-    
-    // 设置视频文件的磁盘路径（用于导出）
-    // 在浏览器中，我们无法直接获取完整路径，但可以保存文件名和大小作为标识
-    store.setVideoFilePath(`file:///${file.name}`)
-    console.log('媒体文件路径已设置:', file.name)
+    store.setVideoSource(url, '')
+    console.log('媒体文件已临时载入:', file.name)
   }
+
+  input.value = ''
 }
 
 function onVideoLoaded() {
