@@ -228,7 +228,11 @@ export const useEditorStore = defineStore('editor', {
       importXmlDurationOffsetEnabled: true,
       exportXmlDurationOffsetEnabled: true,
       // 导入完成时间戳：用于触发缓冲池重构
-      importTimestamp: 0
+      importTimestamp: 0,
+      // _applyDeepPatch 防抖计时器
+      _applyDeepPatchDebounceTimer: null as ReturnType<typeof setTimeout> | null,
+      // moveSelectedLayers 防抖计时器
+      _moveSelectedLayersDebounceTimer: null as ReturnType<typeof setTimeout> | null
     }
   },
 
@@ -443,13 +447,6 @@ export const useEditorStore = defineStore('editor', {
       for (const [key, value] of Object.entries(patch)) {
         // console.log('写入:', key, value, typeof value)
 
-        setTimeout(() => {
-          historyManager.recordSnapshot(this.danmakus)
-        },500)
-
-        // 检查是否需要移动播放头
-        this._checkAndMovePlayhead(patch, id)
-
         // 情况1：路径写法（优先级最高）
         if (key.includes('.')) {
           const keys = key.split('.')
@@ -484,6 +481,17 @@ export const useEditorStore = defineStore('editor', {
         // 情况3：普通值
         obj[key] = value
       }
+
+      // 防抖处理：清除之前的计时器，设置新的100ms延迟
+      if (this._applyDeepPatchDebounceTimer) {
+        clearTimeout(this._applyDeepPatchDebounceTimer)
+      }
+
+      this._applyDeepPatchDebounceTimer = setTimeout(() => {
+        historyManager.recordSnapshot(this.danmakus)
+        this._checkAndMovePlayhead(patch, id)
+        this._applyDeepPatchDebounceTimer = null
+      }, 100)
     },
 
     updateDanmaku(id: string, patch: any) {
@@ -1196,9 +1204,15 @@ export const useEditorStore = defineStore('editor', {
         danmaku.layer += appliedDelta
       })
 
-      setTimeout(() => {
-        historyManager.recordSnapshot(this.danmakus)
-      },1000)
+      // 防抖处理：清除之前的计时器，设置新的500ms延迟
+      if (this._moveSelectedLayersDebounceTimer) {
+        clearTimeout(this._moveSelectedLayersDebounceTimer)
+      }
+
+      this._moveSelectedLayersDebounceTimer = setTimeout(() => {
+        historyManager.recordSnapshot(this.danmakus, '移动选中弹幕层级')
+        this._moveSelectedLayersDebounceTimer = null
+      }, 500)
     }
   }
 })
