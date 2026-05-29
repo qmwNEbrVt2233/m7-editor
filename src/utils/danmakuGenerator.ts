@@ -128,28 +128,38 @@ export const RANGE_EXPRESSION_PRESETS: ExpressionPreset[] = [
   },
   {
     key: 'easeInOut',
-    label: '标准 Ease In Out',
+    label: '标准缓入缓出',
     expression: 'S + (E - S) * bezier(0.42, 0, 0.58, 1, t)'
   },
   {
     key: 'easeIn',
-    label: 'Ease In',
+    label: '缓入',
     expression: 'S + (E - S) * bezier(0.42, 0, 1, 1, t)'
   },
   {
     key: 'easeOut',
-    label: 'Ease Out',
+    label: '缓出',
     expression: 'S + (E - S) * bezier(0, 0, 0.58, 1, t)'
   },
   {
-    key: 'overshoot',
-    label: '轻微回弹',
-    expression: 'S + (E - S) * (t + 0.18 * sin(pi * t) * (1 - t))'
+    key: 'quadIn',
+    label: '二次加速曲线',
+    expression: 'S + (E - S) * t ^ 2'
+  },
+  {
+    key: 'quadOut',
+    label: '二次减速曲线',
+    expression: 'S + (E - S) * (1 - (1 - t) ^ 2)'
   },
   {
     key: 'random',
     label: '随机',
     expression: 'S + (E - S) * random()'
+  },
+  {
+    key: 'overshoot',
+    label: '轻微回弹',
+    expression: 'S + (E - S) * (t + 0.18 * sin(pi * t) * (1 - t))'
   }
   
 ]

@@ -1,9 +1,11 @@
-<font size="10">   m7-editor</font>
+<div align="center">
+  <h1>m7-editor<h1>
 
-<img src="public/favicon.svg" alt="m7-editor"  style="width: 200px; height: 200px;">
+  <img src="public/favicon.svg" alt="m7-editor"  style="width: 200px; height: 200px;">
+  <h3>m7-editor是一个面向 M7 / B 站特效弹幕场景的可视化编辑器</h3>
+  <h3>提供音视频预览、时间轴排布、批量属性编辑、工程保存，以及 XML 导入导出能力</h3>
 
-m7-editor是一个面向 M7 / B 站特效弹幕场景的可视化编辑器。  
-它提供音视频预览、时间轴排布、批量属性编辑、工程保存，以及 XML / JSON 导入导出能力，适合用于编辑带有位移、透明度、旋转、描边、分层的高级弹幕。
+</div>
 
 # 项目概要
 
@@ -66,6 +68,19 @@ npm run build
 
 ```bash
 npm run preview
+```
+<a href="https://v2.tauri.app/"><img src="https://v2.tauri.app/_astro/logo.BQPqkdSq.svg" style="width: 66px; height: 20px"></a>
+
+使用tauri构建应用：
+
+```bash
+npm run tauri build
+```
+
+启用tauri开发环境：
+
+```bash
+npm run tauri dev
 ```
 
 # 界面说明
@@ -333,11 +348,13 @@ npm run preview
 #### 内置表达式预设
 
 - 线性均分：`S + (E - S) * t`
-- 标准 Ease In Out：`S + (E - S) * bezier(0.42, 0, 0.58, 1, t)`
-- Ease In：`S + (E - S) * bezier(0.42, 0, 1, 1, t)`
-- Ease Out：`S + (E - S) * bezier(0, 0, 0.58, 1, t)`
-- 轻微回弹：`S + (E - S) * (t + 0.18 * sin(pi * t) * (1 - t))`
+- 标准缓入缓出（Ease In Out）：`S + (E - S) * bezier(0.42, 0, 0.58, 1, t)`
+- 缓入（Ease In）：`S + (E - S) * bezier(0.42, 0, 1, 1, t)`
+- 缓出（Ease Out）：`S + (E - S) * bezier(0, 0, 0.58, 1, t)`
+- 二次加速曲线：`S + (E - S) * t ^ 2`
+- 二次减速曲线：`S + (E - S) * (1 - (1 - t) ^ 2)`
 - 随机：`S + (E - S) * random()`
+- 轻微回弹：`S + (E - S) * (t + 0.18 * sin(pi * t) * (1 - t))`
 
 #### 示例
 

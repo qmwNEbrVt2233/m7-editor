@@ -1222,7 +1222,7 @@ defineExpose({
 }
 
 .input-grid.expression-grid {
-  grid-template-columns: 180px minmax(0, 1fr);
+  grid-template-columns: 130px minmax(0, 1fr);
   align-items: end;
 }
 
