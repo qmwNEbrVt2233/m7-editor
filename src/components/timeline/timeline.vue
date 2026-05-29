@@ -27,6 +27,13 @@
       :style="{ left: playheadX + 'px' }"
     ></div>
 
+    <canvas 
+      class="spectrogram" 
+      ref="spectrogramCanvasRef"
+      :width="containerWidth"
+      height="200"
+    ></canvas>
+
     <!-- 弹幕块 -->
     <div class="tracks" ref="tracksRef" @scroll="onTracksScroll">
       <div
@@ -80,6 +87,8 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useEditorStore } from '../../store/editor'
 import { historyManager } from '../../core/history'
+import WaveSurfer from 'wavesurfer.js'
+import SpectrogramPlugin from 'wavesurfer.js/dist/plugins/spectrogram.esm.js'
 
 const store = useEditorStore()
 const timelineRef = ref<HTMLElement | null>(null)
@@ -89,8 +98,519 @@ const tracksRef = ref<HTMLElement | null>(null)
 const scale = ref(store.timelineScale) // 1ms = 0.1px
 const offset = ref(store.timelineOffset)
 
+const spectrogramCanvasRef = ref<HTMLCanvasElement | null>(null)
 // 可视宽度（从容器动态获取）
 const containerWidth = ref(800)
+
+type AudioBufferLike = Pick<AudioBuffer, 'duration' | 'length' | 'sampleRate' | 'numberOfChannels' | 'getChannelData'>
+
+type CachedFrequenciesChunk = {
+  data: Uint8Array[]
+  startMs: number
+  endMs: number
+  durationMs: number
+  msPerFrame: number
+}
+
+type PrecisionConfig = {
+  fftSamples: number
+  noverlap: number
+}
+
+let decodedAudioBuffer: AudioBuffer | null = null
+let totalDurationMs = 0      // 音频总时长
+let spectrogramWaveSurfer: WaveSurfer | null = null
+let renderSpectrogramRequestId = 0
+let tileCacheGeneration = 0
+let spectrogramDataGeneration = 0
+
+// 定义 4 个精度档位
+type PrecisionLevel = 'low' | 'medium' | 'high' | 'ultra'
+
+// 将音频分为 30秒 长的“解算分块(Processing Chunk)”（用于向 Web Audio API 索要数据）
+const CHUNK_DURATION_MS = 10000
+const MAX_FREQUENCY_CHUNKS_PER_LEVEL = 8
+const MAX_TILE_CANVASES = 80
+
+const PRECISION_CONFIG: Record<PrecisionLevel, PrecisionConfig> = {
+  low: { fftSamples: 2048, noverlap: 1 },
+  medium: { fftSamples: 1024, noverlap: 1 },
+  high: { fftSamples: 512, noverlap: 256 },
+  ultra: { fftSamples: 256, noverlap: 128 }
+}
+
+// 核心内存缓存：精度级别 -> (分块Index -> 频谱数据)
+const frequenciesDataCache: Record<PrecisionLevel, Map<number, CachedFrequenciesChunk>> = {
+  low: new Map<number, CachedFrequenciesChunk>(),
+  medium: new Map<number, CachedFrequenciesChunk>(),
+  high: new Map<number, CachedFrequenciesChunk>(),
+  ultra: new Map<number, CachedFrequenciesChunk>()
+}
+
+const frequenciesDataRequestCache: Record<PrecisionLevel, Map<number, Promise<CachedFrequenciesChunk | null>>> = {
+  low: new Map<number, Promise<CachedFrequenciesChunk | null>>(),
+  medium: new Map<number, Promise<CachedFrequenciesChunk | null>>(),
+  high: new Map<number, Promise<CachedFrequenciesChunk | null>>(),
+  ultra: new Map<number, Promise<CachedFrequenciesChunk | null>>()
+}
+
+const currentLevel = computed<PrecisionLevel>(() => {
+  const s = scale.value
+  if (s < 0.05) return 'low'
+  if (s < 0.2) return 'medium'
+  if (s < 0.8) return 'high'
+  return 'ultra'
+})
+
+// 瓦片画布缓存同样需要加上“精度”后缀，因为不同档位每一帧的 msPerFrame 是不同的
+// key 变成 `${precisionLevel}_${tileIndex}`
+const tileCache = new Map<string, HTMLCanvasElement>()
+
+// 每一个频谱瓦片代表的时间长度（例如 10000ms = 10秒一个瓦片）
+const TILE_DURATION_MS = 10000
+const SPECTROGRAM_HEIGHT = 200
+
+watch(
+  () => scale.value,
+  () => {
+    // 缩放改变了，瓦片的宽度会发生变化，必须清空缓存重绘
+    tileCache.clear()
+    tileCacheGeneration++
+    renderSpectrogram()
+  }
+)
+
+watch(
+  () => offset.value,
+  () => {
+    // 平移只是改变了可视区，直接用现有缓存贴图，性能极高
+    renderSpectrogram()
+  }
+)
+
+watch(
+  () => containerWidth.value,
+  () => {
+    // 容器大小改变（比如拉伸浏览器窗口），重新渲染
+    renderSpectrogram()
+  }
+)
+
+function resetSpectrogramData() {
+  decodedAudioBuffer = null
+  totalDurationMs = 0
+  renderSpectrogramRequestId++
+  tileCacheGeneration++
+  spectrogramDataGeneration++
+  tileCache.clear()
+  const precisionLevels = Object.keys(frequenciesDataCache) as PrecisionLevel[]
+  precisionLevels.forEach((level) => {
+    frequenciesDataCache[level].clear()
+    frequenciesDataRequestCache[level].clear()
+  })
+
+  const canvas = spectrogramCanvasRef.value
+  const ctx = canvas?.getContext('2d')
+  if (canvas && ctx) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+  }
+}
+
+function destroySpectrogramWaveSurfer() {
+  if (spectrogramWaveSurfer) {
+    spectrogramWaveSurfer.destroy()
+    spectrogramWaveSurfer = null
+  }
+}
+
+function initSpectrogram() {
+  destroySpectrogramWaveSurfer()
+  resetSpectrogramData()
+
+  if (!store.videoUrl) {
+    return
+  }
+
+  const ws = WaveSurfer.create({
+    container: document.createElement('div'),
+    url: store.videoUrl,
+    height: 1,
+    interact: false
+  })
+
+  spectrogramWaveSurfer = ws
+
+  ws.on('ready', () => {
+    try {
+      if (spectrogramWaveSurfer !== ws) {
+        return
+      }
+
+      const decodedData = ws.getDecodedData()
+      if (!decodedData) {
+        return
+      }
+
+      decodedAudioBuffer = decodedData
+      totalDurationMs = ws.getDuration() * 1000
+      console.log(`[频谱] 音频总时长: ${totalDurationMs}ms, 当前精度档位: ${currentLevel.value}`)
+
+      tileCache.clear()
+      renderSpectrogram()
+    } catch (error) {
+      console.error('[频谱] 生成频谱失败:', error)
+      resetSpectrogramData()
+    }
+  })
+}
+
+function getCachedMapValue<K, V>(map: Map<K, V>, key: K) {
+  if (!map.has(key)) {
+    return undefined
+  }
+
+  const value = map.get(key)!
+  map.delete(key)
+  map.set(key, value)
+  return value
+}
+
+function setBoundedMapValue<K, V>(map: Map<K, V>, key: K, value: V, maxSize: number) {
+  if (map.has(key)) {
+    map.delete(key)
+  }
+
+  map.set(key, value)
+
+  while (map.size > maxSize) {
+    const keyIter = map.keys().next()
+    if (keyIter.done) break
+    map.delete(keyIter.value)
+    // console.log(`[频谱] 缓存超出限制，已删除最旧的分块: Key=${keyIter.value}`)
+  }
+}
+
+function createAudioBufferSlice(source: AudioBuffer, startMs: number, endMs: number): AudioBufferLike | null {
+  const sampleRate = source.sampleRate
+  const startSample = Math.max(0, Math.floor(startMs / 1000 * sampleRate))
+  const endSample = Math.min(source.length, Math.ceil(endMs / 1000 * sampleRate))
+  const length = endSample - startSample
+
+  if (length <= 0) {
+    return null
+  }
+
+  const channels = Array.from({ length: source.numberOfChannels }, (_, channelIndex) => {
+    return source.getChannelData(channelIndex).slice(startSample, endSample)
+  })
+
+  return {
+    duration: length / sampleRate,
+    length,
+    sampleRate,
+    numberOfChannels: source.numberOfChannels,
+    getChannelData(channelIndex: number) {
+      const channelData = channels[channelIndex]
+      if (!channelData) {
+        throw new Error(`Channel ${channelIndex} not found`)
+      }
+      return channelData
+    }
+  }
+}
+
+async function calculateFrequenciesChunk(
+  level: PrecisionLevel,
+  chunkIndex: number
+): Promise<CachedFrequenciesChunk | null> {
+  if (!decodedAudioBuffer || totalDurationMs <= 0) {
+    return null
+  }
+
+  const chunkStartMs = chunkIndex * CHUNK_DURATION_MS
+  const chunkEndMs = Math.min(totalDurationMs, chunkStartMs + CHUNK_DURATION_MS)
+  const chunkAudio = createAudioBufferSlice(decodedAudioBuffer, chunkStartMs, chunkEndMs)
+
+  if (!chunkAudio) {
+    return null
+  }
+
+  const config = PRECISION_CONFIG[level]
+  const calculator = SpectrogramPlugin.create({
+    fftSamples: config.fftSamples,
+    noverlap: config.noverlap,
+    height: SPECTROGRAM_HEIGHT,
+    scale: 'erb',
+    windowFunc: 'hann',
+    gainDB: 5,
+    useWebWorker: false
+  }) as unknown as {
+    getFrequencies(audioData: AudioBuffer): Promise<Uint8Array[][]>
+    destroy(): void
+  }
+
+  try {
+    const frequenciesByChannel = await calculator.getFrequencies(chunkAudio as AudioBuffer)
+    const data = frequenciesByChannel?.[0] ?? []
+    if (data.length === 0) {
+      return null
+    }
+
+    return {
+      data,
+      startMs: chunkStartMs,
+      endMs: chunkEndMs,
+      durationMs: chunkEndMs - chunkStartMs,
+      msPerFrame: (chunkEndMs - chunkStartMs) / data.length
+    }
+  } finally {
+    calculator.destroy()
+  }
+}
+
+async function getFrequenciesChunk(level: PrecisionLevel, chunkIndex: number) {
+  const cache = frequenciesDataCache[level]
+  const cached = getCachedMapValue(cache, chunkIndex)
+  if (cached) {
+    return cached
+  }
+
+  const requestCache = frequenciesDataRequestCache[level]
+  const existingRequest = requestCache.get(chunkIndex)
+  if (existingRequest) {
+    return existingRequest
+  }
+
+  const requestGeneration = spectrogramDataGeneration
+  let request: Promise<CachedFrequenciesChunk | null>
+  request = calculateFrequenciesChunk(level, chunkIndex)
+    .then((chunk) => {
+      if (requestCache.get(chunkIndex) === request) {
+        requestCache.delete(chunkIndex)
+      }
+      if (requestGeneration !== spectrogramDataGeneration) {
+        return null
+      }
+
+      if (chunk) {
+        setBoundedMapValue(cache, chunkIndex, chunk, MAX_FREQUENCY_CHUNKS_PER_LEVEL)
+        // console.log(`[频谱] 分段解算完成: 档位=${level}, 每帧时长=${chunk.msPerFrame.toFixed(2)}ms, 当前缓存分块数量=${cache.size}`)
+      }
+      return chunk
+    })
+    .catch((error) => {
+      if (requestCache.get(chunkIndex) === request) {
+        requestCache.delete(chunkIndex)
+      }
+      console.error('[频谱] 分段解算失败:', error)
+      return null
+    })
+
+  requestCache.set(chunkIndex, request)
+  return request
+}
+
+// 热力图颜色生成函数：根据magnitude生成热力图颜色
+function getHeatmapColor(magnitude: number): string {
+  // magnitude范围: 0-255
+  // 配色方案：蓝(冷) -> 青 -> 绿 -> 黄 -> 红(热)
+  const normalized = Math.max(0, Math.min(255, magnitude))
+  const ratio = normalized / 255
+  
+  let r, g, b
+  
+  if (ratio < 0.25) {
+    // 0-0.25: 蓝色 -> 青色
+    const t = ratio / 0.25
+    r = 0
+    g = Math.round(127 * t)
+    b = 255
+  } else if (ratio < 0.45) {
+    // 0.25-0.45: 青色 -> 绿色
+    const t = (ratio - 0.25) / 0.2
+    r = 0
+    g = Math.round(127 + 128 * t)
+    b = Math.round(255 * (1 - t))
+  } else if (ratio < 0.65) {
+    // 0.45-0.65: 绿色 -> 黄色
+    const t = (ratio - 0.45) / 0.2
+    r = Math.round(255 * t)
+    g = 255
+    b = 0
+  } else if (ratio < 0.85) {
+    // 0.65-0.85: 黄色 -> 橙红
+    const t = (ratio - 0.65) / 0.2
+    r = 255
+    g = Math.round(255 * (1 - t * 0.5))
+    b = 0
+  } else {
+    // 0.85-1.0: 橙红 -> 深红
+    const t = (ratio - 0.85) / 0.15
+    r = 255
+    g = Math.round(128 * (1 - t))
+    b = 0
+  }
+  
+  return `rgb(${r}, ${g}, ${b})`
+}
+
+function drawFrequenciesChunkToTile(
+  ctx: CanvasRenderingContext2D,
+  chunk: CachedFrequenciesChunk,
+  tileStartMs: number,
+  tileEndMs: number,
+  renderScale: number
+) {
+  if (chunk.msPerFrame <= 0 || chunk.data.length === 0) {
+    return
+  }
+
+  const drawStartMs = Math.max(tileStartMs, chunk.startMs)
+  const drawEndMs = Math.min(tileEndMs, chunk.endMs)
+  const startFrame = Math.max(0, Math.floor((drawStartMs - chunk.startMs) / chunk.msPerFrame))
+  const endFrame = Math.min(chunk.data.length, Math.ceil((drawEndMs - chunk.startMs) / chunk.msPerFrame))
+  const fftBins = chunk.data[startFrame]?.length || chunk.data[0]?.length || 1
+  const lineWidth = chunk.msPerFrame * renderScale + 0.5
+
+  for (let frameIndex = startFrame; frameIndex < endFrame; frameIndex++) {
+    const frameData = chunk.data[frameIndex]
+    if (!frameData) continue
+
+    const frameTimeMs = chunk.startMs + frameIndex * chunk.msPerFrame
+    const xInTile = (frameTimeMs - tileStartMs) * renderScale
+
+    for (let y = 0; y < fftBins; y++) {
+      const magnitude = frameData[y]
+      const percent = y / fftBins
+      const nextPercent = (y + 1) / fftBins
+      const yTop = SPECTROGRAM_HEIGHT - (nextPercent * SPECTROGRAM_HEIGHT)
+      const yHeight = (nextPercent - percent) * SPECTROGRAM_HEIGHT
+
+      ctx.fillStyle = getHeatmapColor(magnitude)
+      ctx.fillRect(xInTile, yTop, lineWidth, yHeight)
+    }
+  }
+}
+
+// 生成或获取单块瓦片的缓存
+async function getTileCanvas(
+  tileIndex: number,
+  level: PrecisionLevel,
+  renderScale: number,
+  cacheGeneration: number
+): Promise<HTMLCanvasElement> {
+  const tileCacheKey = `${level}_${tileIndex}`
+  const cachedTile = getCachedMapValue(tileCache, tileCacheKey)
+  if (cachedTile) {
+    return cachedTile
+  }
+
+  // 计算当前瓦片对应的音频毫秒区间
+  const tileStartMs = tileIndex * TILE_DURATION_MS
+  const tileEndMs = Math.min(totalDurationMs, tileStartMs + TILE_DURATION_MS)
+  const tileWidthPx = Math.max(1, Math.ceil((tileEndMs - tileStartMs) * renderScale)) // 瓦片物理宽度
+  
+  // 创建离屏 Canvas
+  const offscreenCanvas = document.createElement('canvas')
+  offscreenCanvas.width = tileWidthPx
+  offscreenCanvas.height = SPECTROGRAM_HEIGHT
+  const ctx = offscreenCanvas.getContext('2d')!
+
+  if (!decodedAudioBuffer || totalDurationMs <= 0) return offscreenCanvas
+
+  const startChunkIndex = Math.floor(tileStartMs / CHUNK_DURATION_MS)
+  const endChunkIndex = Math.floor((tileEndMs - 1) / CHUNK_DURATION_MS)
+
+  for (let chunkIndex = startChunkIndex; chunkIndex <= endChunkIndex; chunkIndex++) {
+    const chunk = await getFrequenciesChunk(level, chunkIndex)
+    if (!chunk) {
+      continue
+    }
+
+    drawFrequenciesChunkToTile(ctx, chunk, tileStartMs, tileEndMs, renderScale)
+  }
+
+  // 塞入 Map 缓存，下次直接复用
+  if (cacheGeneration === tileCacheGeneration) {
+    setBoundedMapValue(tileCache, tileCacheKey, offscreenCanvas, MAX_TILE_CANVASES)
+  }
+
+  // 如果已经过期，不返回这个错误的画布
+  if (cacheGeneration !== tileCacheGeneration) {
+    return document.createElement('canvas');
+  }
+
+  tileCache.set(tileCacheKey, offscreenCanvas)
+  return offscreenCanvas
+}
+
+// 主渲染函数：并行解算后统一渲染
+async function renderSpectrogram() {
+  const requestId = ++renderSpectrogramRequestId
+  const canvas = spectrogramCanvasRef.value
+  if (!canvas) return
+  const ctx = canvas.getContext('2d')!
+  
+  // 清空主画布
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+  if (!decodedAudioBuffer || totalDurationMs <= 0) return
+
+  // 1. 算出当前屏幕可视区对应的毫秒范围
+  const viewStartMs = Math.max(0, offset.value)
+  const renderScale = scale.value
+  const level = currentLevel.value
+  const cacheGeneration = tileCacheGeneration
+  const viewEndMs = Math.min(totalDurationMs, viewStartMs + (containerWidth.value / renderScale))
+
+  // 2. 算出当前需要哪些瓦片块（Index）
+  const startTileIdx = Math.floor(viewStartMs / TILE_DURATION_MS)
+  const endTileIdx = Math.floor(Math.max(viewStartMs, viewEndMs - 1) / TILE_DURATION_MS)
+
+  // 3. 并行收集所有需要的频谱数据块
+  const requiredChunks = new Set<number>()
+  for (let idx = startTileIdx; idx <= endTileIdx; idx++) {
+    const tileStartMs = idx * TILE_DURATION_MS
+    const tileEndMs = Math.min(totalDurationMs, tileStartMs + TILE_DURATION_MS)
+    const startChunkIndex = Math.floor(tileStartMs / CHUNK_DURATION_MS)
+    const endChunkIndex = Math.floor((tileEndMs - 1) / CHUNK_DURATION_MS)
+    for (let chunkIndex = startChunkIndex; chunkIndex <= endChunkIndex; chunkIndex++) {
+      requiredChunks.add(chunkIndex)
+    }
+  }
+
+  // 并行获取所有频谱数据块
+  const chunkPromises = Array.from(requiredChunks).map(chunkIndex =>
+    getFrequenciesChunk(level, chunkIndex)
+  )
+  await Promise.all(chunkPromises)
+  
+  if (requestId !== renderSpectrogramRequestId) {
+    return
+  }
+
+  // 4. 并行生成所有需要的瓦片
+  const tilePromises: Array<Promise<{ idx: number; canvas: HTMLCanvasElement }>> = []
+  for (let idx = startTileIdx; idx <= endTileIdx; idx++) {
+    const promise = getTileCanvas(idx, level, renderScale, cacheGeneration).then(canvas => ({
+      idx,
+      canvas
+    }))
+    tilePromises.push(promise)
+  }
+  const tiles = await Promise.all(tilePromises)
+  
+  if (requestId !== renderSpectrogramRequestId) {
+    return
+  }
+
+  // 5. 统一渲染所有瓦片到主画布
+  for (const { idx, canvas: tileCanvas } of tiles) {
+    const tileStartMs = idx * TILE_DURATION_MS
+    const xInMainCanvas = (tileStartMs - viewStartMs) * renderScale
+    ctx.drawImage(tileCanvas, xInMainCanvas, 0)
+  }
+}
 
 const rowHeight = 30
 const RULER_HEIGHT = 20
@@ -144,6 +664,11 @@ function initContainerWidth() {
   if (timelineEl) {
     containerWidth.value = timelineEl.clientWidth
   }
+}
+
+function handleWindowResize() {
+  initContainerWidth()
+  updateTracksViewHeight()
 }
 
 function syncTracksScrollTop(nextTop: number) {
@@ -474,11 +999,9 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
 onMounted(() => {
   initContainerWidth()
   updateTracksViewHeight()
+  initSpectrogram()
   window.addEventListener('keydown', handleKeyboardShortcuts)
-  window.addEventListener('resize', () => {
-    initContainerWidth()
-    updateTracksViewHeight()
-  })
+  window.addEventListener('resize', handleWindowResize)
   // 初始化时确保第一次垂直范围正确
   if (tracksRef.value) {
     syncTracksScrollTop(store.timelineScrollTop)
@@ -496,7 +1019,9 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyboardShortcuts)
-  window.removeEventListener('resize', initContainerWidth)
+  window.removeEventListener('resize', handleWindowResize)
+  destroySpectrogramWaveSurfer()
+  resetSpectrogramData()
   if (offsetAnimationFrame !== null) {
     cancelAnimationFrame(offsetAnimationFrame)
   }
@@ -510,6 +1035,13 @@ watch(
   () => store.currentTime,
   () => {
     ensurePlayheadVisible()
+  }
+)
+
+watch(
+  () => store.videoUrl,
+  () => {
+    initSpectrogram()
   }
 )
 
@@ -1292,6 +1824,15 @@ function onMouseUp(e?: MouseEvent) {
   overflow: hidden;
 }
 
+.spectrogram {
+  position: absolute;
+  width: 100%;
+  height: 95%;
+  pointer-events: none;
+  margin-top: 20px;
+  z-index: 1;
+}
+
 /* 刻度 */
 .ruler {
   position: relative;
@@ -1379,6 +1920,7 @@ function onMouseUp(e?: MouseEvent) {
   clip-path: inset(0);
   outline: 2px solid #d8d8d8;
   outline-offset: -2px;
+  z-index: 6;
 }
 
 .block-text {

@@ -497,58 +497,64 @@ npm run tauri dev
 ├───public
 │       favicon.svg
 │
-└───src
-    │   App.vue
-    │   main.js
+├───src
+│   │   App.vue
+│   │   main.js
+│   │
+│   ├───components
+│   │   ├───editor
+│   │   │       creationTools.vue    #高级创建工具
+│   │   │       PresetManager.vue    #高级创建工具预设管理器
+│   │   │       editorPanel.vue      #编辑面板
+│   │   │       ToolBar.vue          #工具栏
+│   │   │
+│   │   ├───player
+│   │   │       DanmakuLayer.vue     #弹幕渲染
+│   │   │       Player.vue           #播放器渲染
+│   │   │
+│   │   └───timeline
+│   │           timeline.vue         #时间轴模块
+│   │
+│   ├───core
+│   │       converter.ts             #解析xml
+│   │       danmaku.ts               #弹幕数据结构
+│   │       history.ts               #快照管理
+│   │       player.ts                #播放器播放状态
+│   │       project.ts               #工程文件结构
+│   │
+│   ├───icon                         #工具栏图标
+│   │       ...
+│   │
+│   ├───localStorage
+│   │       projectStorage.ts        #工程文件保存/加载
+│   │
+│   ├───store
+│   │       editor.ts                #Pinia 状态管理
+│   │
+│   └───utils
+│           danmakuGenerator.ts      #高级创建工具生成算法
+│           parser.ts                #解析工具
+│           tauriMedia.ts            #媒体文件路径
+│           time.ts                  #时间格式化工具
+│           toolPresets.ts           #高级创建工具预设读写
+│           validation.ts            #验证工具
+│
+└───src-tauri
+    │   .gitignore
+    │   build.rs
+    │   Cargo.lock
+    │   Cargo.toml
+    │   tauri.conf.json              #构建配置
     │
-    ├───components
-    │   ├───editor
-    │   │       creationTools.vue    #高级创建工具
-    │   │       PresetManager.vue    #高级创建工具预设管理器
-    │   │       editorPanel.vue      #编辑面板
-    │   │       ToolBar.vue          #工具栏
-    │   │
-    │   ├───player
-    │   │       DanmakuLayer.vue     #弹幕渲染
-    │   │       Player.vue           #播放器渲染
-    │   │
-    │   └───timeline
-    │           timeline.vue         #时间轴模块
+    ├───capabilities
+    │       default.json
     │
-    ├───core
-    │       converter.ts             #解析xml
-    │       danmaku.ts               #弹幕数据结构
-    │       history.ts               #快照管理
-    │       player.ts                #播放器播放状态
-    │       project.ts               #工程文件结构
+    ├───icons                        #应用图标
+    │       ...
     │
-    ├───icon                         #工具栏图标
-    │       advanced_tools.svg
-    │       cut.svg
-    │       E_to_S.svg
-    │       horizontal_centering.svg
-    │       horizontal_mirror.svg
-    │       Pick_and_locate.svg
-    │       S_E_exchange.svg
-    │       S_to_E.svg
-    │       Split_by_letter.svg
-    │       Split_by_line.svg
-    │       vertical_centering.svg
-    │       vertical_mirror.svg
-    │       zRotate_calculate.svg
-    │
-    ├───localStorage
-    │       projectStorage.ts        #工程文件保存/加载
-    │
-    ├───store
-    │       editor.ts                #Pinia 状态管理
-    │
-    └───utils
-            danmakuGenerator.ts      #高级创建工具生成算法
-            parser.ts                #解析工具
-            time.ts                  #时间格式化工具
-            toolPresets.ts           #高级创建工具预设读写
-            validation.ts            #验证工具
+    └───src                          #后端
+         lib.rs
+         main.rs
 ```
 
 # 联系作者
