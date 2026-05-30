@@ -1,10 +1,10 @@
 <template>
-  <div class="player">
+  <div class="player no-select">
     <div class="controls">
       <div class="logo-container" @mouseenter="showShortcutsNow" @mouseleave="hideShortcutsWithDelay">
         <a href="https://github.com/qmwNEbrVt2233/m7-editor"><img src="/favicon.svg" width="35" height="35" alt="logo"></a>
       </div>
-      <div v-show="showShortcuts" class="shortcuts-tooltip" @mouseenter="showShortcutsNow" @mouseleave="hideShortcutsWithDelay">
+      <div v-show="showShortcuts" class="shortcuts-tooltip have-scrollbar" @mouseenter="showShortcutsNow" @mouseleave="hideShortcutsWithDelay">
         <div class="shortcuts-content">
             <h3>快捷键</h3>
             
@@ -629,7 +629,7 @@ function formatTime(ms: number) {
 }
 </script>
 
-<style scoped>
+<style scoped lang="css">
 .player {
   display: flex;
   flex-direction: column;
@@ -739,42 +739,6 @@ function formatTime(ms: number) {
 
 .shortcuts-table tr:hover {
   background-color: #2d2d2d;
-}
-
-/* 滚动条美化 */
-.shortcuts-tooltip::-webkit-scrollbar {
-  width: 8px;
-}
-
-.shortcuts-tooltip::-webkit-scrollbar-track {
-  background: #1e1e1e;
-}
-
-.shortcuts-tooltip::-webkit-scrollbar-thumb {
-  background: #464647;
-  border-radius: 4px;
-}
-
-.shortcuts-tooltip::-webkit-scrollbar-thumb:hover {
-  background: #5a5a5a;
-}
-
-/* 下拉菜单样式 */
-.menu-select {
-  background-color: #2d2d2d;
-  color: #e0e0e0;
-  border: 1px solid #444;
-  padding: 10px 12px;
-  border-radius: 4px;
-  font-size: 14px;
-  cursor: pointer;
-  outline: none;
-  transition: border-color 0.2s;
-}
-
-.menu-select:hover,
-.menu-select:focus {
-  border-color: #666;
 }
 
 /* 子面板容器 */

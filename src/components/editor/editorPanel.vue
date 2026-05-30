@@ -1,5 +1,5 @@
 <template>
-  <div class="editor-panel">
+  <div class="editor-panel no-select">
     <!-- 无选中状态 -->
     <div v-show="!hasSelection === true" class="empty-state">
       <p>未选择弹幕</p>
@@ -12,7 +12,7 @@
         <h2>已选择：{{ store.selectedCount }} 条弹幕</h2>
       </div>
 
-      <div class="panel-content">
+      <div class="panel-content have-scrollbar">
         <!-- 基础信息 -->
         <section class="editor-section">
           <h3>基础信息</h3>
@@ -50,7 +50,7 @@
               @change="onTextChange"
               @keydown="onTextInputKeydown"
               placeholder="输入弹幕文本内容"
-              class="text-input"
+              class="text-input  have-scrollbar"
             ></textarea>
             <div 
               class="char-counter"
@@ -97,7 +97,7 @@
                   <div
                     v-else
                     ref="localFontListRef"
-                    class="font-virtual-list"
+                    class="font-virtual-list have-scrollbar"
                     @scroll="onLocalFontListScroll"
                   >
                     <div
@@ -1472,27 +1472,5 @@ onBeforeUnmount(() => {
 
 .btn-secondary:active {
   background-color: #2d2d30;
-}
-
-/* 滚动条美化 */
-.font-virtual-list::-webkit-scrollbar,
-.panel-content::-webkit-scrollbar {
-  width: 8px;
-}
-
-.font-virtual-list::-webkit-scrollbar-track,
-.panel-content::-webkit-scrollbar-track {
-  background: #1e1e1e;
-}
-
-.font-virtual-list::-webkit-scrollbar-thumb,
-.panel-content::-webkit-scrollbar-thumb {
-  background: #464647;
-  border-radius: 4px;
-}
-
-.font-virtual-list::-webkit-scrollbar-thumb:hover,
-.panel-content::-webkit-scrollbar-thumb:hover {
-  background: #5a5a5a;
 }
 </style>

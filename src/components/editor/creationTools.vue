@@ -28,7 +28,7 @@
 
             <textarea
               v-model="previewText"
-              class="preview-editor"
+              class="preview-editor have-scrollbar"
               spellcheck="false"
               placeholder="在此编辑待创建的弹幕 JSON"
             />
@@ -105,7 +105,7 @@
               </div>
             </div>
 
-            <div class="tool-grid">
+            <div class="tool-grid have-scrollbar">
               <section
                 v-for="section in toolSections"
                 :key="section.title"
@@ -211,6 +211,7 @@
                         <label class="stack-field">
                           <span>表达式预设</span>
                           <select
+                            class="menu-select"
                             :value="numericRules[field.path].expressionPreset"
                             @change="onExpressionPresetChange(field.path, $event)"
                           >
@@ -1405,31 +1406,6 @@ defineExpose({
 
 .status-text.info {
   color: #9cdcfe;
-}
-
-.tool-grid::-webkit-scrollbar,
-.preview-editor::-webkit-scrollbar,
-.stack-field textarea::-webkit-scrollbar {
-  width: 8px;
-}
-
-.tool-grid::-webkit-scrollbar-track,
-.preview-editor::-webkit-scrollbar-track,
-.stack-field textarea::-webkit-scrollbar-track {
-  background: #1e1e1e;
-}
-
-.tool-grid::-webkit-scrollbar-thumb,
-.preview-editor::-webkit-scrollbar-thumb,
-.stack-field textarea::-webkit-scrollbar-thumb {
-  background: #464647;
-  border-radius: 4px;
-}
-
-.tool-grid::-webkit-scrollbar-thumb:hover,
-.preview-editor::-webkit-scrollbar-thumb:hover,
-.stack-field textarea::-webkit-scrollbar-thumb:hover {
-  background: #5a5a5a;
 }
 
 @media (max-width: 1180px) {

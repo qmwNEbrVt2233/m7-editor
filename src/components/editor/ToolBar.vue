@@ -106,7 +106,7 @@
       </button>
     </div>
     <div v-if="activeAdvancedPanel === `command`" class="advanced-panel command-panel">
-      <div class="command-log">
+      <div class="command-log have-scrollbar">
         <div
           v-for="(log, index) in commandLogs"
           :key="`${index}-${log}`"
@@ -119,14 +119,14 @@
       <textarea
         v-model="commandInput"
         type="text"
-        class="advanced-text-input"
+        class="advanced-text-input have-scrollbar"
         placeholder="输入命令后按 Enter"
         @keydown.enter.prevent="handleCommandSubmit"
       />
     </div>
   </div>
 
-  <div class="toolbar">
+  <div class="toolbar no-select">
     <div class="tool-group framed-group">
       <div class="mode-selector">
         <button
@@ -2004,27 +2004,6 @@ onBeforeUnmount(() => {
   background: #131313;
   font-size: 12px;
   color: #9ad29f;
-}
-
-.advanced-text-input::-webkit-scrollbar,
-.command-log::-webkit-scrollbar {
-  width: 8px;
-}
-
-.advanced-text-input::-webkit-scrollbar-track,
-.command-log::-webkit-scrollbar-track {
-  background: #1e1e1e;
-}
-
-.advanced-text-input::-webkit-scrollbar-thumb,
-.command-log::-webkit-scrollbar-thumb {
-  background: #464647;
-  border-radius: 4px;
-}
-
-.advanced-text-input::-webkit-scrollbar-thumb:hover,
-.command-log::-webkit-scrollbar-thumb:hover {
-  background: #5a5a5a;
 }
 
 .command-log-item + .command-log-item {

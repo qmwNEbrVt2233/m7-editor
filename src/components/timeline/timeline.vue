@@ -35,7 +35,7 @@
     ></canvas>
 
     <!-- 弹幕块 -->
-    <div class="tracks" ref="tracksRef" @scroll="onTracksScroll">
+    <div class="tracks  have-scrollbar" ref="tracksRef" @scroll="onTracksScroll">
       <div
         v-for="layer in visibleLayers"
         :key="layer"
@@ -1889,23 +1889,6 @@ function onMouseUp(e?: MouseEvent) {
   overflow-x: hidden;
   scrollbar-gutter: stable;
   scroll-behavior: smooth;
-}
-
-.tracks::-webkit-scrollbar {
-  width: 8px;
-}
-
-.tracks::-webkit-scrollbar-track {
-  background: #1e1e1e;
-}
-
-.tracks::-webkit-scrollbar-thumb {
-  background: #464647;
-  border-radius: 4px;
-}
-
-.tracks::-webkit-scrollbar-thumb:hover {
-  background: #5a5a5a;
 }
 
 .block {
