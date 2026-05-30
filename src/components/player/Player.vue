@@ -63,7 +63,7 @@
         </div>
 
       <button @click="toggle" class="btn">
-        <svg  v-if="store.playing" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="100" height="100" viewBox="0 0 100 100" xml:space="preserve" style="width: 13px; height: 13px;">
+        <svg  v-if="store.playing" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="100" height="100" viewBox="0 -8 100 100" xml:space="preserve" style="width: 13px; height: 13px;">
           <g transform="matrix(0.11 0 0 0.77 29.84 50)" id="obj-6"  >
             <rect style="stroke: rgb(255,255,255); stroke-opacity: 0; stroke-width: 0; stroke-dasharray: none; stroke-linecap: butt; stroke-dashoffset: 0; stroke-linejoin: miter; stroke-miterlimit: 4; fill: rgb(255,255,255); fill-rule: nonzero; opacity: 1;" vector-effect="non-scaling-stroke"  x="-99" y="-59" rx="0" ry="0" width="198" height="118" />
           </g>
@@ -72,7 +72,7 @@
           </g>
         </svg>
 
-        <svg v-if="!store.playing" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="100" height="100" viewBox="0 0 100 100" xml:space="preserve" style="width: 13px; height: 13px;">
+        <svg v-if="!store.playing" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="100" height="100" viewBox="-7 -5 100 100" xml:space="preserve" style="width: 13px; height: 13px;">
           <g transform="matrix(0 0.58 -0.62 0 50.58 49.91)" id="obj-5"  >
             <path style="stroke: rgb(255,255,255); stroke-opacity: 0; stroke-width: 0; stroke-dasharray: none; stroke-linecap: butt; stroke-dashoffset: 0; stroke-linejoin: round; stroke-miterlimit: 4; fill: rgb(255,255,255); fill-rule: nonzero; opacity: 1;" vector-effect="non-scaling-stroke"  transform=" translate(-100, -90)" d="M 100 10 L 185 170 L 15 170 L 100 10 Z" stroke-linecap="round" />
           </g>
@@ -85,6 +85,7 @@
         <option value="config">配置</option>
         <option value="player">播放器</option>
         <option value="preprocess">预处理</option>
+        <option value="assistant">辅助</option>
       </select>
 
       <div v-if="activeMenu === 'file'" class="menu-panel">
@@ -205,6 +206,39 @@
           <span>对导出xml进行+50ms处理</span>
         </label>
       </div>
+
+      <div v-if="activeMenu === 'assistant'" class="menu-panel">
+        <label class="config-group checkbox-group">
+          <input
+            type="checkbox"
+            v-model="showSpectrogram"
+            @change="onSpectrogramvisibilityChange"
+          />
+          <span>显示频谱图</span>
+        </label>
+
+        <select v-model="spectrogramColorScheme" class="menu-select" @change="onSpectrogramColorSchemeChange">
+          <option value="default">默认彩色</option>
+          <option value="customize">自定义</option>
+        </select>
+
+        <div v-if="spectrogramColorScheme === 'customize'" class="config-group">
+          <input
+            type="color"
+            v-model="spectrogramCustomColor"
+            @change="onSpectrogramColorChange"
+            class="color-picker"
+            style="padding: 8px 10px"
+          />
+          <input
+            type="text"
+            v-model.lazy="spectrogramCustomColor"
+            @change="onSpectrogramColorChange"
+            placeholder="#FFFFFF"
+            class="dark-input"
+          />
+        </div>
+      </div>
       
       <input
         type="file"
@@ -264,7 +298,7 @@ const projectInput = ref<HTMLInputElement | null>(null)
 const xmlInput = ref<HTMLInputElement | null>(null)
 const previousCurrentTime = ref(0) // 上一帧的currentTime
 const isSyncing = ref(false) // 标志位：是否正在同步
-const activeMenu = ref<'file' | 'config' | 'player' | 'preprocess'>('file')
+const activeMenu = ref<'file' | 'config' | 'player' | 'preprocess'| 'assistant' >('file')
 const showShortcuts = ref(false) // 快捷键提示框显示状态
 let shortcutsHideTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -285,6 +319,9 @@ const exportXmlAsRatio = ref(store.exportXmlAsRatio)
 const importXmlDurationOffsetEnabled = ref(store.importXmlDurationOffsetEnabled)
 const exportXmlDurationOffsetEnabled = ref(store.exportXmlDurationOffsetEnabled)
 const aggressiveOptimization = ref(store.aggressiveOptimization)
+const showSpectrogram = ref(store.showSpectrogram)
+const spectrogramColorScheme = ref<'default' | 'customize'>(store.spectrogramColorScheme === 'default' ? 'default' : 'customize')
+const spectrogramCustomColor = ref(store.spectrogramCustomColor)
 
 const screenStyle = computed(() => ({
   width: `${store.screenWidth}px`,
@@ -384,6 +421,18 @@ function onAggressiveOptimizationChange() {
   store.setAggressiveOptimization(aggressiveOptimization.value)
 }
 
+function onSpectrogramvisibilityChange() {
+  store.setShowSpectrogram(showSpectrogram.value)
+}
+
+function onSpectrogramColorSchemeChange() {
+  store.setSpectrogramColorScheme(spectrogramColorScheme.value)
+}
+
+function onSpectrogramColorChange() {
+  store.setSpectrogramCustomColor(spectrogramCustomColor.value)
+}
+
 // 隐藏快捷键提示框，带有延迟以允许鼠标移入快捷键列表
 function hideShortcutsWithDelay() {
   if (shortcutsHideTimer) clearTimeout(shortcutsHideTimer)
@@ -455,6 +504,27 @@ watch(
   () => store.aggressiveOptimization,
   (enabled) => {
     aggressiveOptimization.value = enabled
+  }
+)
+
+watch(
+  () => store.showSpectrogram,
+  (enabled) => {
+    showSpectrogram.value = enabled
+  }
+)
+
+watch(
+  () => store.spectrogramColorScheme,
+  (scheme) => {
+    spectrogramColorScheme.value = scheme === 'default' ? 'default' : 'customize'
+  }
+)
+
+watch(
+  () => store.spectrogramCustomColor,
+  (color) => {
+    spectrogramCustomColor.value = color
   }
 )
 
@@ -820,6 +890,17 @@ function formatTime(ms: number) {
 .status-text {
   color: #888;
   font-size: 12px;
+}
+
+.color-picker {
+  width: 44px;
+  min-width: 44px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  background: #3c3c3c;
+  cursor: pointer;
 }
 
 /* 面板内的分割线 */

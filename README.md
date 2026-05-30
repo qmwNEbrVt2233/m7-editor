@@ -118,6 +118,12 @@ npm run tauri dev
 | 设置 XML 是否按比例导出 | 不勾选 |
 | 设置是否对导入xml进行-50ms处理 | 勾选 |
 | 设置是否对导出xml进行+50ms处理 | 勾选 |
+### 辅助
+| 功能 | 默认值 |
+| --- | --- |
+| 显示频谱图 | 不勾选 |
+| 频谱图上色选项 | `默认彩色` |
+| 自定义颜色 | `#00bbff` |
 
 ## 2. 编辑面板
 
@@ -500,6 +506,7 @@ npm run tauri dev
 ├───src
 │   │   App.vue
 │   │   main.js
+│   │   style.css
 │   │
 │   ├───components
 │   │   ├───editor

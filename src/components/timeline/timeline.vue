@@ -87,6 +87,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useEditorStore } from '../../store/editor'
 import { historyManager } from '../../core/history'
+import { isValidHex , normalizeColor } from '@/utils/validation'
 import WaveSurfer from 'wavesurfer.js'
 import SpectrogramPlugin from 'wavesurfer.js/dist/plugins/spectrogram.esm.js'
 
@@ -196,6 +197,48 @@ watch(
   }
 )
 
+watch(
+  () => store.showSpectrogram,
+  (show) => {
+    if (show) {
+      // showSpectrogram 为 true 时，初始化频谱
+      initSpectrogram()
+    } else {
+      // showSpectrogram 为 false 时，清空频谱数据
+      resetSpectrogramData()
+      destroySpectrogramWaveSurfer()
+    }
+  }
+)
+
+watch(
+  () => store.spectrogramColorScheme,
+  () => {
+    // 直接清空瓦片缓存，迫使重新生成瓦片以应用新的配色方案
+    tileCache.clear()
+    tileCacheGeneration++
+    if (store.showSpectrogram) {
+      requestAnimationFrame(() => {
+        renderSpectrogram()
+      })
+    }
+  }
+)
+
+watch(
+  () => store.spectrogramCustomColor,
+  () => {
+    // 直接清空瓦片缓存，迫使重新生成瓦片以应用新的自定义配色
+    tileCache.clear()
+    tileCacheGeneration++
+    if (store.showSpectrogram) {
+      requestAnimationFrame(() => {
+        renderSpectrogram()
+      })
+    }
+  }
+)
+
 function resetSpectrogramData() {
   decodedAudioBuffer = null
   totalDurationMs = 0
@@ -224,6 +267,10 @@ function destroySpectrogramWaveSurfer() {
 }
 
 function initSpectrogram() {
+  if (!store.showSpectrogram) {
+    return
+  }
+
   destroySpectrogramWaveSurfer()
   resetSpectrogramData()
 
@@ -410,6 +457,30 @@ async function getFrequenciesChunk(level: PrecisionLevel, chunkIndex: number) {
   return request
 }
 
+// 根据当前配色方案生成频谱颜色
+function getSpectrogramColor(magnitude: number): string {
+  const scheme = store.spectrogramColorScheme
+  const customColor = store.spectrogramCustomColor
+  
+  if (scheme === 'customize' && customColor) {
+    // 使用自定义颜色
+    const normalized = normalizeColor(customColor)
+    if (normalized && isValidHex(normalized)) {
+      // 将十六进制颜色转换为 RGB
+      const hex = normalized.slice(1)
+      const r = parseInt(hex.substring(0, 2), 16)
+      const g = parseInt(hex.substring(2, 4), 16)
+      const b = parseInt(hex.substring(4, 6), 16)
+      // 根据 magnitude 调整透明度
+      const alpha = magnitude / 255
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`
+    }
+  }
+  
+  // 默认使用热力图配色方案
+  return getHeatmapColor(magnitude)
+}
+
 // 热力图颜色生成函数：根据magnitude生成热力图颜色
 function getHeatmapColor(magnitude: number): string {
   // magnitude范围: 0-255
@@ -486,7 +557,7 @@ function drawFrequenciesChunkToTile(
       const yTop = SPECTROGRAM_HEIGHT - (nextPercent * SPECTROGRAM_HEIGHT)
       const yHeight = (nextPercent - percent) * SPECTROGRAM_HEIGHT
 
-      ctx.fillStyle = getHeatmapColor(magnitude)
+      ctx.fillStyle = getSpectrogramColor(magnitude)
       ctx.fillRect(xInTile, yTop, lineWidth, yHeight)
     }
   }

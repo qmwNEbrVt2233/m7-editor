@@ -227,6 +227,9 @@ export const useEditorStore = defineStore('editor', {
       exportXmlAsRatio: false,
       importXmlDurationOffsetEnabled: true,
       exportXmlDurationOffsetEnabled: true,
+      showSpectrogram: saved?.timeline?.showSpectrogram || false,
+      spectrogramColorScheme: saved?.timeline?.spectrogramColorScheme || 'default',
+      spectrogramCustomColor: saved?.timeline?.spectrogramCustomColor || '#00bbff',
       // 导入完成时间戳：用于触发缓冲池重构
       importTimestamp: 0,
       // _applyDeepPatch 防抖计时器
@@ -688,6 +691,15 @@ export const useEditorStore = defineStore('editor', {
       if (typeof project.player?.maxLayers === 'number') {
         this.setMaxLayers(project.player.maxLayers)
       }
+      if (typeof project.timeline?.showSpectrogram === 'boolean') {
+        this.showSpectrogram = project.timeline.showSpectrogram
+      }
+      if (typeof project.timeline?.spectrogramColorScheme === 'string') {
+        this.spectrogramColorScheme = project.timeline.spectrogramColorScheme
+      }
+      if (typeof project.timeline?.spectrogramCustomColor === 'string') {
+        this.spectrogramCustomColor = project.timeline.spectrogramCustomColor
+      }
 
       this.currentTime = typeof project.timeline?.currentTime === 'number'
         ? Math.max(0, Math.round(project.timeline.currentTime))
@@ -696,7 +708,7 @@ export const useEditorStore = defineStore('editor', {
       this.setTimelineView(
         typeof project.timeline?.scale === 'number' ? project.timeline.scale : 0.1,
         typeof project.timeline?.offset === 'number' ? project.timeline.offset : 0,
-        typeof project.timeline?.scrollTop === 'number' ? project.timeline.scrollTop : 0
+        typeof project.timeline?.scrollTop === 'number' ? project.timeline.scrollTop : 0,
       )
     },
 
@@ -711,7 +723,10 @@ export const useEditorStore = defineStore('editor', {
           currentTime: this.currentTime,
           scale: this.timelineScale,
           offset: this.timelineOffset,
-          scrollTop: this.timelineScrollTop
+          scrollTop: this.timelineScrollTop,
+          showSpectrogram: this.showSpectrogram,
+          spectrogramColorScheme: this.spectrogramColorScheme,
+          spectrogramCustomColor: this.spectrogramCustomColor,
         },
         video: {
           path: this.videoFilePath,
@@ -758,6 +773,18 @@ export const useEditorStore = defineStore('editor', {
       const minimumAllowed = Math.max(1, maxUsedLayer + 1)
 
       this.maxLayers = Math.max(normalized, minimumAllowed)
+    },
+
+    setShowSpectrogram(enabled: boolean) {
+      this.showSpectrogram = enabled
+    },
+
+    setSpectrogramColorScheme(scheme: string) {
+      this.spectrogramColorScheme = scheme
+    },
+
+    setSpectrogramCustomColor(color: string) {
+      this.spectrogramCustomColor = color
     },
 
     /**
