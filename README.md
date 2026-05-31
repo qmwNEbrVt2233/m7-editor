@@ -1,9 +1,11 @@
-<font size="10">   m7-editor</font>
+<div align="center">
+  <h1>m7-editor<h1>
 
-<img src="public/favicon.svg" alt="m7-editor"  style="width: 200px; height: 200px;">
+  <img src="public/favicon.svg" alt="m7-editor"  style="width: 200px; height: 200px;">
+  <h3>m7-editor是一个面向 M7 / B 站特效弹幕场景的可视化编辑器</h3>
+  <h3>提供音视频预览、时间轴排布、批量属性编辑、工程保存，以及 XML 导入导出能力</h3>
 
-m7-editor是一个面向 M7 / B 站特效弹幕场景的可视化编辑器。  
-它提供音视频预览、时间轴排布、批量属性编辑、工程保存，以及 XML / JSON 导入导出能力，适合用于编辑带有位移、透明度、旋转、描边、分层的高级弹幕。
+</div>
 
 # 项目概要
 
@@ -20,13 +22,13 @@ m7-editor是一个面向 M7 / B 站特效弹幕场景的可视化编辑器。
 - 支持撤销 / 重做、复制 / 粘贴、播放头快速定位等编辑快捷键
 
 # 技术栈
-
-
 [![Vue](https://img.shields.io/badge/-Vue-4FC08D?style=flat-square&logo=vue.js&logoColor=white)](https://vuejs.org/)
 [![Vite](https://img.shields.io/badge/-Vite-646CFF?style=flat-square&logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Pinia](https://img.shields.io/badge/-Pinia-FFDD5F?style=flat-square&logo=vitest&logoColor=black)](https://pinia.vuejs.org/)
 [![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 <a href="https://mathjs.org/"><img src="https://mathjs.org/css/img/mathjs.svg" style="width: 66px; height: 20px"></a>
+<a href="https://wavesurfer.xyz/" style="display: flex; width: 50px; gap: 5px"><img src="https://wavesurfer.xyz/logo-small.png" style="width: 20px; height: 20px"><text style="font-family: 'Comfortaa', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: inherit; color: #CCC">wavesurfer.js</text></a>
+
 原生 DOM / FileReader / Blob API
 
 # 安装依赖
@@ -43,8 +45,9 @@ npm install
 - `pinia`
 - `vue-router`
 - `vite`
-- `mathjs`
 - `@vitejs/plugin-vue`
+- `mathjs`
+- `wavesurfer.js`
 
 建议使用较新的 Node.js 版本运行，以保证与当前 Vite 版本兼容。
 
@@ -66,6 +69,19 @@ npm run build
 
 ```bash
 npm run preview
+```
+<a href="https://v2.tauri.app/"><img src="https://v2.tauri.app/_astro/logo.BQPqkdSq.svg" style="width: 66px; height: 20px"></a>
+
+使用tauri构建应用：
+
+```bash
+npm run tauri build
+```
+
+启用tauri开发环境：
+
+```bash
+npm run tauri dev
 ```
 
 # 界面说明
@@ -103,6 +119,12 @@ npm run preview
 | 设置 XML 是否按比例导出 | 不勾选 |
 | 设置是否对导入xml进行-50ms处理 | 勾选 |
 | 设置是否对导出xml进行+50ms处理 | 勾选 |
+### 辅助
+| 功能 | 默认值 |
+| --- | --- |
+| 显示频谱图 | 不勾选 |
+| 频谱图上色选项 | `默认彩色` |
+| 自定义颜色 | `#00bbff` |
 
 ## 2. 编辑面板
 
@@ -333,11 +355,13 @@ npm run preview
 #### 内置表达式预设
 
 - 线性均分：`S + (E - S) * t`
-- 标准 Ease In Out：`S + (E - S) * bezier(0.42, 0, 0.58, 1, t)`
-- Ease In：`S + (E - S) * bezier(0.42, 0, 1, 1, t)`
-- Ease Out：`S + (E - S) * bezier(0, 0, 0.58, 1, t)`
-- 轻微回弹：`S + (E - S) * (t + 0.18 * sin(pi * t) * (1 - t))`
+- 标准缓入缓出（Ease In Out）：`S + (E - S) * bezier(0.42, 0, 0.58, 1, t)`
+- 缓入（Ease In）：`S + (E - S) * bezier(0.42, 0, 1, 1, t)`
+- 缓出（Ease Out）：`S + (E - S) * bezier(0, 0, 0.58, 1, t)`
+- 二次加速曲线：`S + (E - S) * t ^ 2`
+- 二次减速曲线：`S + (E - S) * (1 - (1 - t) ^ 2)`
 - 随机：`S + (E - S) * random()`
+- 轻微回弹：`S + (E - S) * (t + 0.18 * sin(pi * t) * (1 - t))`
 
 #### 示例
 
@@ -480,58 +504,65 @@ npm run preview
 ├───public
 │       favicon.svg
 │
-└───src
-    │   App.vue
-    │   main.js
+├───src
+│   │   App.vue
+│   │   main.js
+│   │   style.css
+│   │
+│   ├───components
+│   │   ├───editor
+│   │   │       creationTools.vue    #高级创建工具
+│   │   │       PresetManager.vue    #高级创建工具预设管理器
+│   │   │       editorPanel.vue      #编辑面板
+│   │   │       ToolBar.vue          #工具栏
+│   │   │
+│   │   ├───player
+│   │   │       DanmakuLayer.vue     #弹幕渲染
+│   │   │       Player.vue           #播放器渲染
+│   │   │
+│   │   └───timeline
+│   │           timeline.vue         #时间轴模块
+│   │
+│   ├───core
+│   │       converter.ts             #解析xml
+│   │       danmaku.ts               #弹幕数据结构
+│   │       history.ts               #快照管理
+│   │       player.ts                #播放器播放状态
+│   │       project.ts               #工程文件结构
+│   │
+│   ├───icon                         #工具栏图标
+│   │       ...
+│   │
+│   ├───localStorage
+│   │       projectStorage.ts        #工程文件保存/加载
+│   │
+│   ├───store
+│   │       editor.ts                #Pinia 状态管理
+│   │
+│   └───utils
+│           danmakuGenerator.ts      #高级创建工具生成算法
+│           parser.ts                #解析工具
+│           tauriMedia.ts            #媒体文件路径
+│           time.ts                  #时间格式化工具
+│           toolPresets.ts           #高级创建工具预设读写
+│           validation.ts            #验证工具
+│
+└───src-tauri
+    │   .gitignore
+    │   build.rs
+    │   Cargo.lock
+    │   Cargo.toml
+    │   tauri.conf.json              #构建配置
     │
-    ├───components
-    │   ├───editor
-    │   │       creationTools.vue    #高级创建工具
-    │   │       PresetManager.vue    #高级创建工具预设管理器
-    │   │       editorPanel.vue      #编辑面板
-    │   │       ToolBar.vue          #工具栏
-    │   │
-    │   ├───player
-    │   │       DanmakuLayer.vue     #弹幕渲染
-    │   │       Player.vue           #播放器渲染
-    │   │
-    │   └───timeline
-    │           timeline.vue         #时间轴模块
+    ├───capabilities
+    │       default.json
     │
-    ├───core
-    │       converter.ts             #解析xml
-    │       danmaku.ts               #弹幕数据结构
-    │       history.ts               #快照管理
-    │       player.ts                #播放器播放状态
-    │       project.ts               #工程文件结构
+    ├───icons                        #应用图标
+    │       ...
     │
-    ├───icon                         #工具栏图标
-    │       advanced_tools.svg
-    │       cut.svg
-    │       E_to_S.svg
-    │       horizontal_centering.svg
-    │       horizontal_mirror.svg
-    │       Pick_and_locate.svg
-    │       S_E_exchange.svg
-    │       S_to_E.svg
-    │       Split_by_letter.svg
-    │       Split_by_line.svg
-    │       vertical_centering.svg
-    │       vertical_mirror.svg
-    │       zRotate_calculate.svg
-    │
-    ├───localStorage
-    │       projectStorage.ts        #工程文件保存/加载
-    │
-    ├───store
-    │       editor.ts                #Pinia 状态管理
-    │
-    └───utils
-            danmakuGenerator.ts      #高级创建工具生成算法
-            parser.ts                #解析工具
-            time.ts                  #时间格式化工具
-            toolPresets.ts           #高级创建工具预设读写
-            validation.ts            #验证工具
+    └───src                          #后端
+         lib.rs
+         main.rs
 ```
 
 # 联系作者
