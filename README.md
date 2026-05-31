@@ -22,13 +22,13 @@
 - 支持撤销 / 重做、复制 / 粘贴、播放头快速定位等编辑快捷键
 
 # 技术栈
-
-
 [![Vue](https://img.shields.io/badge/-Vue-4FC08D?style=flat-square&logo=vue.js&logoColor=white)](https://vuejs.org/)
 [![Vite](https://img.shields.io/badge/-Vite-646CFF?style=flat-square&logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Pinia](https://img.shields.io/badge/-Pinia-FFDD5F?style=flat-square&logo=vitest&logoColor=black)](https://pinia.vuejs.org/)
 [![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 <a href="https://mathjs.org/"><img src="https://mathjs.org/css/img/mathjs.svg" style="width: 66px; height: 20px"></a>
+<a href="https://wavesurfer.xyz/" style="display: flex; width: 50px; gap: 5px"><img src="https://wavesurfer.xyz/logo-small.png" style="width: 20px; height: 20px"><text style="font-family: 'Comfortaa', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: inherit; color: #CCC">wavesurfer.js</text></a>
+
 原生 DOM / FileReader / Blob API
 
 # 安装依赖
@@ -45,8 +45,9 @@ npm install
 - `pinia`
 - `vue-router`
 - `vite`
-- `mathjs`
 - `@vitejs/plugin-vue`
+- `mathjs`
+- `wavesurfer.js`
 
 建议使用较新的 Node.js 版本运行，以保证与当前 Vite 版本兼容。
 

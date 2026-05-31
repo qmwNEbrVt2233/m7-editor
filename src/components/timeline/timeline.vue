@@ -837,7 +837,6 @@ function handlePan(e: KeyboardEvent) {
   } else if (!isCtrl && !isAlt && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
     // 普通方向键: 移动播放头到最近的stepMs的整数倍位置（排除当前位置）
     const stepMs = store.playheadStepMs
-    const EPS = stepMs * 1e-4
     
     const current = store.currentTime
     const ratio = current / stepMs
@@ -852,22 +851,22 @@ function handlePan(e: KeyboardEvent) {
       // 向左
       let base = Math.floor(ratio) * stepMs
       
-      // 如果正好在刻度上，则再往前一个step
-      if (Math.abs(ratio - Math.round(ratio)) < EPS) {
+      // 如果currentTime和base Math.round后一致，则再往前一个step
+      if (Math.round(current) === Math.round(base)) {
         base -= stepMs
       }
       
-      newTime = Math.round(Math.max(0, base))
+      newTime = Math.max(0, base)
     } else {
       // 向右
       let base = Math.ceil(ratio) * stepMs
       
-      // 如果正好在刻度上，则再往后一个step
-      if (Math.abs(ratio - Math.round(ratio)) < EPS) {
+      // 如果currentTime和base Math.round后一致，则再往后一个step
+      if (Math.round(current) === Math.round(base)) {
         base += stepMs
       }
       
-      newTime = Math.round(base)
+      newTime = base
     }
 
     newTime = quantizeTime(newTime, stepMs)
