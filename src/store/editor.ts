@@ -716,7 +716,7 @@ export const useEditorStore = defineStore('editor', {
     exportProject() {
       return {
         meta: {
-          version: '1.2.0',
+          version: '1.3.0',
           createdAt: Date.now()
         },
         timeline: {

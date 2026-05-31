@@ -18,7 +18,7 @@
       <input
         ref="fileInputRef"
         type="file"
-        accept=".json,application/json"
+        accept=".prs,.json"
         class="hidden-input"
         @change="handleImportFileChange"
       />
@@ -166,7 +166,7 @@ function handleExport() {
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = 'creation-tool-presets.json'
+    anchor.download = 'creation-tool-presets.prs'
     anchor.click()
     URL.revokeObjectURL(url)
 

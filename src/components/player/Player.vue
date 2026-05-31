@@ -2,7 +2,7 @@
   <div class="player no-select">
     <div class="controls">
       <div class="logo-container" @mouseenter="showShortcutsNow" @mouseleave="hideShortcutsWithDelay">
-        <a href="https://github.com/qmwNEbrVt2233/m7-editor"><img src="/favicon.svg" width="35" height="35" alt="logo"></a>
+        <a href="https://github.com/qmwNEbrVt2233/m7-editor" target="_blank"><img src="/favicon.svg" width="35" height="35" alt="logo"></a>
       </div>
       <div v-show="showShortcuts" class="shortcuts-tooltip have-scrollbar" @mouseenter="showShortcutsNow" @mouseleave="hideShortcutsWithDelay">
         <div class="shortcuts-content">
