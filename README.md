@@ -7,6 +7,47 @@
 
 </div>
 
+# 文档目录
+
+## 关于本项目
+- [项目概要](#项目概要)
+- [如何使用](#如何使用)
+- [本地开发运行条件](#技术栈)
+- [项目文件结构](#项目结构)
+- [开源协议](#license)
+
+## 界面说明
+1. [播放器/设置区域](#界面说明-1)
+    - [文件](#文件)
+    - [配置](#配置)
+    - [播放器](#播放器)
+    - [预处理](#预处理)
+    - [辅助](#辅助)
+2. [编辑面板](#2-编辑面板)
+
+3. [工具栏](#3-工具栏区域)
+    - [一般工具列表](#工具列表)
+    - [高级工具列表](#高级工具列表)
+4. [时间轴区域](#4-时间轴区域)
+
+5. [高级创建工具](#5-高级创建工具模块)
+    - [预备弹幕数据区](#预备弹幕数据区)
+    - [工具面板](#工具面板)
+    - [预设管理器](#预设管理器)
+    - [表达式规范](#表达式规范)
+
+## 快捷键
+- [已实现的快捷键](#已实现的快捷键)
+
+## 文件导入导出
+- [工程 json](#文件导入导出说明)
+- [xml弹幕文件](#xml-弹幕文件)
+- [粘贴弹幕](#粘贴弹幕)
+
+## 使用建议与注意事项
+- [使用建议流程](#使用建议)
+- [当前注意事项](#当前注意事项)
+
 # 项目概要
 
 这个项目目前已经具备以下核心能力：
@@ -21,13 +62,20 @@
 - 支持通过高级创建工具批量生成弹幕 JSON
 - 支持撤销 / 重做、复制 / 粘贴、播放头快速定位等编辑快捷键
 
+# 如何使用
+
+- 现提供一键安装使用选择，请从[release](https://github.com/qmwNEbrVt2233/m7-editor/releases)获取最新版本
+- 安装包解压后应用程序大小约9mb
+- 本项目依赖[webview2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)，若启动后白屏，请检查是否安装了webview，其一般绑定为系统组件，随edge预装。如果你没有，请前往[microsoft webview](https://developer.microsoft.com/en-us/microsoft-edge/webview2/?form=MA13LH#download)下载
+- 目前`应用`仅支持windows系统
+
 # 技术栈
 [![Vue](https://img.shields.io/badge/-Vue-4FC08D?style=flat-square&logo=vue.js&logoColor=white)](https://vuejs.org/)
 [![Vite](https://img.shields.io/badge/-Vite-646CFF?style=flat-square&logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Pinia](https://img.shields.io/badge/-Pinia-FFDD5F?style=flat-square&logo=vitest&logoColor=black)](https://pinia.vuejs.org/)
 [![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 <a href="https://mathjs.org/"><img src="https://mathjs.org/css/img/mathjs.svg" style="width: 66px; height: 20px"></a>
-<a href="https://wavesurfer.xyz/" style="display: flex; width: 50px; gap: 5px"><img src="https://wavesurfer.xyz/logo-small.png" style="width: 20px; height: 20px"><text style="font-family: 'Comfortaa', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: inherit; color: #CCC">wavesurfer.js</text></a>
+<a href="https://wavesurfer.xyz/"><img src="https://wavesurfer.xyz/logo-small.png" style="width: 20px; height: 20px"></a>
 
 原生 DOM / FileReader / Blob API
 
@@ -321,8 +369,8 @@ npm run tauri dev
 
 高级创建工具右侧带有独立的预设管理侧边栏，用于保存、导入、导出和管理整套工具面板配置。
 
-- `导入预设`：将 JSON 文件中的预设追加到当前列表
-- `导出预设`：导出当前列表中的全部预设
+- `导入预设`：将 prs / JSON 文件中的预设追加到当前列表
+- `导出预设`：将当前列表中的全部预设导出为自定义格式`.prs`，实际还是json，只是为了防止与工程json混淆
 - `添加预设`：将当前工具面板配置保存为一个新预设，默认命名为 `新建预设1`、`新建预设2` 依次递增
 - `预设列表`：点击即把该预设应用到当前工具面板
 - `预设管理`：拥有独立的管理选中状态，单击选中用于管理，再次点击同一项进入重命名，按 `Delete` 删除当前管理选中的预设
@@ -466,22 +514,22 @@ npm run tauri dev
 
 # 使用建议
 
-推荐的基本工作流：
+## 推荐的基本工作流：
 
-1. 导入媒体
-2. 在时间轴移动播放头到目标位置
-3. 使用 `;` 创建弹幕
-4. 通过拖拽和右侧属性面板调整弹幕参数
-5. 使用复制、粘贴、多选和批量编辑提高效率
-6. 通过本地缓存或导出 JSON 保存工程
-7. 最终导出 XML 用于实际使用
+1. 在上方配置所需屏幕宽高、最大layer层数、xml预处理等
+2. 导入所需资源，如工程文件、xml弹幕文件、媒体，若上次使用了 `ctrl + d` 记录工程缓存则可跳过导入工程（网页版需重新选择媒体文件）
+3. 使用提供的任何编辑手段开始弹幕编辑与创建
+4. 累了？使用 `ctrl + s` 保存至本地或选择 `ctrl + d` 以便下次快速进入工作
+5. 完成后选择你需要的预处理选项并导出 XML
+6. 使用[弹幕发射场](https://github.com/MikuFan039/DMSenderAPP/releases)或其他任何用于发送 xml 的工具将你的弹幕上传至 bilibili 吧！
+7. 做完后想要录屏分享？打开`激进优化`！此选项专为录屏和高密度播放场景而生
 
 # 当前注意事项
 
-- 音视频导入基于浏览器本地文件能力，刷新页面后需要重新选择文件
-- 本地缓存工程依赖浏览器 `localStorage`
+- 若使用网页版，刷新页面后需重新选择媒体文件
+- 若使用网页版，本地缓存工程依赖浏览器 `localStorage`，清空网站数据后会丢失缓存的工程
 - XML 导入可能出现问题，请不要高估解析工具
-- 弹幕密度建议不要超过300个每秒，再高密度请开启`激进优化`
+- 若发现高密度场景下渲染卡顿，请开启`激进优化`
 - XML 比例坐标导入导出依赖当前播放器设置中的 `screen width/height` **若要使用请提前修改宽高！否则转为坐标时会与预期不符！**
 - 弹幕渲染优化采用低频确定高刷范围，若发现弹幕层级显示不正常或无法显示，请按下`Tab`键手动重构缓存池
 - 若您发现修改弹幕结束坐标时不起效用，请检查您的`运动耗时`设置，这可能是因为其设置为0导致的
@@ -567,7 +615,8 @@ npm run tauri dev
 
 # 联系作者
 
-<a href="https://space.bilibili.com/108382388"><img src= "https://i2.hdslb.com/bfs/face/bdbebaed5d1fa486d545d4ce487fe2b0967cabbe.jpg@128w_128h_1c_1s.webp" style="width: 60px; height: 60px;"></a><font size="5">https://space.bilibili.com/108382388</font>
+- bilibili
+  - 个人主页：[jerryeee](https://space.bilibili.com/108382388)
 - QQ
   - 邮箱：1968029490@qq.com
   - 弹幕art研究社：[1006093326](https://qm.qq.com/q/4T5woMsPY4)
