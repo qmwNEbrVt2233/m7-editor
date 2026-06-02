@@ -67,7 +67,7 @@
 - 现提供一键安装使用选择，请从[release](https://github.com/qmwNEbrVt2233/m7-editor/releases)获取最新版本
 - 安装包解压后应用程序大小约9mb
 - 本项目依赖[webview2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)，若启动后白屏，请检查是否安装了webview，其一般绑定为系统组件，随edge预装。如果你没有，请前往[microsoft webview](https://developer.microsoft.com/en-us/microsoft-edge/webview2/?form=MA13LH#download)下载
-- 目前`应用`仅支持windows系统
+- 目前`应用`支持 windows 与 mac 系统
 
 # 技术栈
 [![Vue](https://img.shields.io/badge/-Vue-4FC08D?style=flat-square&logo=vue.js&logoColor=white)](https://vuejs.org/)

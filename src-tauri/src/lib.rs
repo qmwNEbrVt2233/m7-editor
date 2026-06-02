@@ -113,7 +113,48 @@ fn open_media_file_dialog() -> Result<Option<PathBuf>, String> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn open_media_file_dialog() -> Result<Option<PathBuf>, String> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
+    use objc2_foundation::{NSArray, NSString};
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return Err("macOS 文件选择器必须在主线程调用".to_string());
+    };
+
+    let panel = NSOpenPanel::openPanel(mtm);
+
+    panel.setCanChooseFiles(true);
+    panel.setCanChooseDirectories(false);
+    panel.setAllowsMultipleSelection(false);
+
+    let title = NSString::from_str("选择媒体文件");
+    panel.setTitle(Some(&title));
+
+    let extensions = ["mp4", "mov", "mkv", "avi", "mp3", "wav", "flac"];
+    let ns_exts = extensions.map(NSString::from_str);
+    let refs: Vec<&NSString> = ns_exts.iter().map(|extension| &**extension).collect();
+    let allowed_types = NSArray::from_slice(&refs);
+
+    #[allow(deprecated)]
+    panel.setAllowedFileTypes(Some(&allowed_types));
+
+    if panel.runModal() == NSModalResponseOK {
+        let urls = panel.URLs();
+        if urls.count() > 0 {
+            let url = urls.objectAtIndex(0);
+            if let Some(path_str) = url.path() {
+                return Ok(Some(PathBuf::from(path_str.to_string())));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+// 保留针对其他平台的兜底
+#[cfg(not(any(windows, target_os = "macos")))]
 fn open_media_file_dialog() -> Result<Option<PathBuf>, String> {
     Err("当前平台暂未实现后端媒体文件选择器".to_string())
 }
