@@ -482,20 +482,20 @@ const managedPresetId = ref<string | null>(null)
 
 function createDefaultNumericRules(): Record<NumericFieldPath, NumericRuleState> {
   return {
-    layer: createNumericRule('0', '9', '+1'),
-    startTime: createNumericRule(String(Math.round(store.currentTime)), String(Math.round(store.currentTime + 900)), '+100'),
-    'content.size': createNumericRule('60', '60', '+2'),
-    'transform.start.x': createNumericRule('0', '0', '+20'),
-    'transform.start.y': createNumericRule('0', '0', '+10'),
-    'transform.end.x': createNumericRule('0', '0', '+20'),
-    'transform.end.y': createNumericRule('0', '0', '+10'),
-    'transform.zRotate': createNumericRule('0', '0', '+15'),
-    'transform.yRotate': createNumericRule('0', '0', '+15'),
-    'opacity.from': createNumericRule('1', '1', '-0.05'),
-    'opacity.to': createNumericRule('1', '1', '-0.05'),
-    'animation.duration': createNumericRule('1000', '1000', '+100'),
-    'animation.moveDuration': createNumericRule('500', '500', '+100'),
-    'animation.delay': createNumericRule('0', '0', '+100')
+    layer: createNumericRule('relative', '0', '9', '+1'),
+    startTime: createNumericRule('relative', String(Math.round(store.currentTime)), String(Math.round(store.currentTime + 900)), '+100'),
+    'content.size': createNumericRule('range' , '60', '60', '+2'),
+    'transform.start.x': createNumericRule('range', '0', '0', '+20'),
+    'transform.start.y': createNumericRule('range', '0', '0', '+10'),
+    'transform.end.x': createNumericRule('range', '0', '0', '+20'),
+    'transform.end.y': createNumericRule('range', '0', '0', '+10'),
+    'transform.zRotate': createNumericRule('range', '0', '0', '+15'),
+    'transform.yRotate': createNumericRule('range', '0', '0', '+15'),
+    'opacity.from': createNumericRule('range', '1', '1', '-0.05'),
+    'opacity.to': createNumericRule('range', '1', '1', '-0.05'),
+    'animation.duration': createNumericRule('range', '1000', '1000', '+100'),
+    'animation.moveDuration': createNumericRule('range', '500', '500', '+100'),
+    'animation.delay': createNumericRule('range', '0', '0', '+100')
   }
 }
 
@@ -609,9 +609,9 @@ watch(
   { deep: true }
 )
 
-function createNumericRule(start = '', end = '', step = ''): NumericRuleState {
+function createNumericRule(mode: RuleMode, start = '', end = '', step = ''): NumericRuleState {
   return {
-    mode: 'range',
+    mode,
     cycleList: '',
     start,
     end,
