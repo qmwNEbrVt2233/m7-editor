@@ -21,8 +21,8 @@
     </div>
 
     <CreationTools
-      :visible="showCreationTools"
-      @update:visible="showCreationTools = $event"
+      :visible="store.showCreationTools"
+      @update:visible="store.showCreationTools = $event"
     />
   </div>
 </template>
@@ -37,8 +37,7 @@ import ToolBar from './components/editor/ToolBar.vue'
 import CreationTools from './components/editor/creationTools.vue'
 
 const store = useEditorStore()
-const timelineHeight = ref(window.innerHeight - 530)
-const showCreationTools = ref(false)
+const timelineHeight = ref(window.innerHeight - store.screenHeight - 80)
 
 function isTextEditingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -55,21 +54,26 @@ function isTextEditingTarget(target: EventTarget | null): boolean {
 
 // 全局快捷键
 function handleKeyDown(e: KeyboardEvent) {
+  
+  const isCtrl = e.ctrlKey || e.metaKey
+  const isAlt = e.altKey
+  const isShift = e.shiftKey
+
   if ((e.ctrlKey || e.metaKey) && e.code === 'Semicolon') {
     e.preventDefault()
-    showCreationTools.value = !showCreationTools.value
+    store.showCreationTools = !store.showCreationTools
     return
   }
 
-  if (showCreationTools.value && e.code === 'Escape') {
+  if (store.showCreationTools && e.code === 'Escape') {
     e.preventDefault()
-    showCreationTools.value = false
+    store.showCreationTools = false
     return
   }
 
   const target = e.target instanceof HTMLElement ? e.target : null
 
-  if (showCreationTools.value && target?.closest('.creation-tools-overlay')) {
+  if (store.showCreationTools && target?.closest('.creation-tools-overlay')) {
     return
   }
 
@@ -81,6 +85,9 @@ function handleKeyDown(e: KeyboardEvent) {
   // 空格播放/暂停
   if (e.code === 'Space') {
     e.preventDefault()
+    if (store.showCreationTools === true) {
+      return
+    }
     if (store.playing) {
       store.pausePlayback()
     } else {
@@ -89,9 +96,25 @@ function handleKeyDown(e: KeyboardEvent) {
   }
   
   // Ctrl+S 导出JSON
-  if ((e.ctrlKey || e.metaKey) && e.code === 'KeyS') {
+  if (e.code === 'KeyS' && isCtrl) {
     e.preventDefault()
     void store.downloadProject()
+  }
+
+  // `ctrl+d` 保存工程
+  if (e.key === 'd' && isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    store.saveToLocal()
+    console.log('[快捷键] 保存工程')
+    return
+  }
+  
+  // `ctrl+del` 清空缓存工程
+  if (e.key === 'Delete' && isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    store.clearCache()
+    console.log('[快捷键] 清空缓存工程')
+    return
   }
 }
 

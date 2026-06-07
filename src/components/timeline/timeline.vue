@@ -910,7 +910,10 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   const isAlt = e.altKey
   const isShift = e.shiftKey
   
-  // 避免在输入框中触发快捷键
+  if (store.showCreationTools === true) {
+    return
+  }
+
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
     return
   }
@@ -1042,26 +1045,6 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
         console.log('[快捷键] 移动播放头到弹幕结束位置:', endTime)
       }
     }
-    return
-  }
-  
-  // ====== 保存工程快捷键 ======
-  
-  // `ctrl+d` 保存工程
-  if (e.key === 'd' && isCtrl && !isAlt && !isShift) {
-    e.preventDefault()
-    store.saveToLocal()
-    console.log('[快捷键] 保存工程')
-    return
-  }
-  
-  // ====== 清空缓存快捷键 ======
-  
-  // `ctrl+del` 清空缓存工程
-  if (e.key === 'Delete' && isCtrl && !isAlt && !isShift) {
-    e.preventDefault()
-    store.clearCache()
-    console.log('[快捷键] 清空缓存工程')
     return
   }
 }

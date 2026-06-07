@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import type { DanmakuItem } from '@/core/danmaku.ts'
-import { saveProject, loadProject } from '../localStorage/projectStorage'
+import { saveProject, loadProject, clearProject } from '../localStorage/projectStorage'
 import { historyManager } from '@/core/history'
 import { parseXML, toXML } from '@/core/converter.ts'
 import {
@@ -146,6 +146,7 @@ export const useEditorStore = defineStore('editor', {
   state: () => {
     const saved = loadProject()
     const savedVideoPath = getProjectVideoPath(saved?.video)
+    historyManager.recordSnapshot(saved?.danmakus || [], `加载工程(${(saved?.danmakus || []).length}条弹幕)`)
 
     return {
       // 视频相关状态
@@ -227,6 +228,7 @@ export const useEditorStore = defineStore('editor', {
       exportXmlAsRatio: false,
       importXmlDurationOffsetEnabled: true,
       exportXmlDurationOffsetEnabled: true,
+      showCreationTools: false,
       showSpectrogram: saved?.timeline?.showSpectrogram || false,
       spectrogramColorScheme: saved?.timeline?.spectrogramColorScheme || 'default',
       spectrogramCustomColor: saved?.timeline?.spectrogramCustomColor || '#00bbff',
@@ -1196,7 +1198,7 @@ export const useEditorStore = defineStore('editor', {
     clearCache(): void {
       const confirmed = window.confirm('确定要清空本地缓存的工程吗？此操作不可撤销。')
       if (confirmed) {
-        localStorage.removeItem("m7-project")
+        clearProject()
         console.log('[操作] 已清空缓存工程')
         // 重新加载以恢复默认状态
         window.location.reload()
