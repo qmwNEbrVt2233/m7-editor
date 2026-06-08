@@ -303,10 +303,29 @@ type NumericFieldDefinition = {
   path: string
   kind: NumericFieldKind
 }
+type SelectionFieldKind = 'number' | 'string' | 'boolean'
+type SelectionFieldDefinition = {
+  path: string
+  kind: SelectionFieldKind
+}
 type CommandRule = {
   target: string
   expression: string
 }
+type SelectionExactCriterion = {
+  type: 'exact'
+  value: string
+}
+type SelectionRangeCriterion = {
+  type: 'range'
+  fromExpression: string
+  toExpression: string
+}
+type SelectionCriterion = SelectionExactCriterion | SelectionRangeCriterion
+type SelectionFilterRule =
+  | { type: 'selecting' }
+  | { type: 'field'; field: string; definition: SelectionFieldDefinition; criteria: SelectionCriterion[] }
+type SelectionRuleGroup = SelectionFilterRule[]
 type ExpressionToken =
   | { type: 'number'; value: number }
   | { type: 'identifier'; value: string }
@@ -355,6 +374,45 @@ const NUMERIC_FIELD_DEFINITIONS: Record<string, NumericFieldDefinition> = {
   moveDuration: { path: 'animation.moveDuration', kind: 'integer' },
   delay: { path: 'animation.delay', kind: 'integer' }
 }
+const SELECTION_FIELD_DEFINITIONS: Record<string, SelectionFieldDefinition> = {
+  id: { path: 'id', kind: 'string' },
+  layer: { path: 'layer', kind: 'number' },
+  startTime: { path: 'startTime', kind: 'number' },
+  text: { path: 'content.text', kind: 'string' },
+  'content.text': { path: 'content.text', kind: 'string' },
+  font: { path: 'content.font', kind: 'string' },
+  'content.font': { path: 'content.font', kind: 'string' },
+  size: { path: 'content.size', kind: 'number' },
+  'content.size': { path: 'content.size', kind: 'number' },
+  color: { path: 'content.color', kind: 'string' },
+  'content.color': { path: 'content.color', kind: 'string' },
+  stroke: { path: 'content.stroke', kind: 'boolean' },
+  'content.stroke': { path: 'content.stroke', kind: 'boolean' },
+  startX: { path: 'transform.start.x', kind: 'number' },
+  'transform.start.x': { path: 'transform.start.x', kind: 'number' },
+  startY: { path: 'transform.start.y', kind: 'number' },
+  'transform.start.y': { path: 'transform.start.y', kind: 'number' },
+  endX: { path: 'transform.end.x', kind: 'number' },
+  'transform.end.x': { path: 'transform.end.x', kind: 'number' },
+  endY: { path: 'transform.end.y', kind: 'number' },
+  'transform.end.y': { path: 'transform.end.y', kind: 'number' },
+  zRotate: { path: 'transform.zRotate', kind: 'number' },
+  'transform.zRotate': { path: 'transform.zRotate', kind: 'number' },
+  yRotate: { path: 'transform.yRotate', kind: 'number' },
+  'transform.yRotate': { path: 'transform.yRotate', kind: 'number' },
+  opacityFrom: { path: 'opacity.from', kind: 'number' },
+  'opacity.from': { path: 'opacity.from', kind: 'number' },
+  opacityTo: { path: 'opacity.to', kind: 'number' },
+  'opacity.to': { path: 'opacity.to', kind: 'number' },
+  duration: { path: 'animation.duration', kind: 'number' },
+  'animation.duration': { path: 'animation.duration', kind: 'number' },
+  moveDuration: { path: 'animation.moveDuration', kind: 'number' },
+  'animation.moveDuration': { path: 'animation.moveDuration', kind: 'number' },
+  delay: { path: 'animation.delay', kind: 'number' },
+  'animation.delay': { path: 'animation.delay', kind: 'number' },
+  easing: { path: 'animation.easing', kind: 'string' },
+  'animation.easing': { path: 'animation.easing', kind: 'string' }
+}
 
 const store = useEditorStore()
 
@@ -370,7 +428,7 @@ const calculatorLengthInput = ref('200')
 const lockAngleEnabled = ref(false)
 const commandInput = ref('')
 const commandLogs = ref<string[]>([
-  '运算赋值命令已就绪，使用 ; 分隔多条规则。'
+  '运算赋值命令与 /s 筛选命令已就绪。'
 ])
 
 const selectedDanmakus = computed(() => store.getSelectedDanmakus)
@@ -696,6 +754,141 @@ function parseCommandRules(commandText: string): CommandRule[] {
   })
 }
 
+function splitOutsideQuotes(input: string, delimiter: string): string[] {
+  const parts: string[] = []
+  let current = ''
+  let quote: '"' | "'" | null = null
+  let escaping = false
+  const delimiters = delimiter === ';'
+    ? new Set([';', '；'])
+    : delimiter === ','
+      ? new Set([',', '，'])
+      : new Set([delimiter])
+
+  for (const char of input) {
+    if (escaping) {
+      current += char
+      escaping = false
+      continue
+    }
+
+    if (char === '\\' && quote) {
+      current += char
+      escaping = true
+      continue
+    }
+
+    if ((char === '"' || char === "'") && (!quote || quote === char)) {
+      quote = quote ? null : char
+      current += char
+      continue
+    }
+
+    if (delimiters.has(char) && !quote) {
+      parts.push(current.trim())
+      current = ''
+      continue
+    }
+
+    current += char
+  }
+
+  if (quote) {
+    throw new Error('筛选命令中存在未闭合的引号')
+  }
+
+  parts.push(current.trim())
+  return parts.filter(Boolean)
+}
+
+function unescapeSelectionString(value: string): string {
+  return value
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\'/g, "'")
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\')
+}
+
+function parseSelectionCriteria(rawCriteria: string, field: string, definition: SelectionFieldDefinition): SelectionCriterion[] {
+  const criteria = splitOutsideQuotes(rawCriteria, ',')
+  if (criteria.length === 0) {
+    throw new Error(`筛选字段 ${field} 缺少匹配条件`)
+  }
+
+  return criteria.map((criterion) => {
+    const trimmedCriterion = criterion.trim()
+    if (trimmedCriterion.startsWith("'") && trimmedCriterion.endsWith("'")) {
+      return {
+        type: 'exact',
+        value: unescapeSelectionString(trimmedCriterion.slice(1, -1))
+      }
+    }
+
+    if (definition.kind !== 'number') {
+      throw new Error(`筛选字段 ${field} 不是数值字段，不能使用范围表达式`)
+    }
+
+    const rangeParts = splitOutsideQuotes(trimmedCriterion, '~')
+    if (rangeParts.length !== 2 || !rangeParts[0] || !rangeParts[1]) {
+      throw new Error(`筛选字段 ${field} 的条件格式无效，应为 '匹配值' 或 数值~数值`)
+    }
+
+    return {
+      type: 'range',
+      fromExpression: rangeParts[0],
+      toExpression: rangeParts[1]
+    }
+  })
+}
+
+function parseSelectionFilterRule(rawRule: string, groupIndex: number, ruleIndex: number): SelectionFilterRule {
+  const trimmedRule = rawRule.trim()
+  if (trimmedRule === 'selecting') {
+    return { type: 'selecting' }
+  }
+
+  const match = trimmedRule.match(/^([A-Za-z_][A-Za-z0-9_.]*)\s*:\s*"([\s\S]*)"$/)
+  if (!match) {
+    throw new Error(`第 ${groupIndex + 1} 组第 ${ruleIndex + 1} 条筛选规则格式无效`)
+  }
+
+  const field = match[1]
+  const definition = SELECTION_FIELD_DEFINITIONS[field]
+  if (!definition) {
+    throw new Error(`筛选字段 ${field} 不存在`)
+  }
+
+  return {
+    type: 'field',
+    field,
+    definition,
+    criteria: parseSelectionCriteria(match[2], field, definition)
+  }
+}
+
+function parseSelectionCommand(commandText: string): SelectionRuleGroup[] {
+  const body = commandText.replace(/^\/s\b/, '').trim()
+  if (!body) {
+    throw new Error('请输入至少一组筛选规则')
+  }
+
+  const groups = splitOutsideQuotes(body, ';')
+  if (groups.length === 0) {
+    throw new Error('请输入至少一组筛选规则')
+  }
+
+  return groups.map((group, groupIndex) => {
+    const rawRules = splitOutsideQuotes(group, ',')
+    if (rawRules.length === 0) {
+      throw new Error(`第 ${groupIndex + 1} 组筛选规则为空`)
+    }
+
+    return rawRules.map((rule, ruleIndex) => parseSelectionFilterRule(rule, groupIndex, ruleIndex))
+  })
+}
+
 function createNumericVariableContext(danmaku: DanmakuItem): Record<string, number> {
   const variables: Record<string, number> = {}
 
@@ -707,6 +900,76 @@ function createNumericVariableContext(danmaku: DanmakuItem): Record<string, numb
   })
 
   return variables
+}
+
+function matchesExactSelectionCriterion(value: unknown, criterionValue: string): boolean {
+  if (typeof value === 'boolean') {
+    return String(value) === criterionValue
+  }
+
+  if (value === null || value === undefined) {
+    return criterionValue === ''
+  }
+
+  return String(value) === criterionValue
+}
+
+function matchesSelectionFieldRule(danmaku: DanmakuItem, rule: Extract<SelectionFilterRule, { type: 'field' }>): boolean {
+  const value = getValueByPath(danmaku as Record<string, any>, rule.definition.path)
+
+  return rule.criteria.some((criterion) => {
+    if (criterion.type === 'exact') {
+      return matchesExactSelectionCriterion(value, criterion.value)
+    }
+
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return false
+    }
+
+    const variables = createNumericVariableContext(danmaku)
+    const fromValue = evaluateCommandExpression(criterion.fromExpression, variables)
+    const toValue = evaluateCommandExpression(criterion.toExpression, variables)
+    const minValue = Math.min(fromValue, toValue)
+    const maxValue = Math.max(fromValue, toValue)
+    return value >= minValue && value <= maxValue
+  })
+}
+
+function matchesSelectionRuleGroup(danmaku: DanmakuItem, group: SelectionRuleGroup, selectingIds: Set<string>): boolean {
+  return group.every((rule) => {
+    if (rule.type === 'selecting') {
+      return selectingIds.has(danmaku.id)
+    }
+
+    return matchesSelectionFieldRule(danmaku, rule)
+  })
+}
+
+function handleSelectionCommand(command: string) {
+  let groups: SelectionRuleGroup[]
+
+  try {
+    groups = parseSelectionCommand(command)
+  } catch (error) {
+    appendCommandLog(error instanceof Error ? error.message : '筛选命令解析失败')
+    return
+  }
+
+  const selectingIds = new Set(store.selectedIds)
+  let matchedDanmakus: DanmakuItem[]
+
+  try {
+    matchedDanmakus = store.danmakus.filter((danmaku: DanmakuItem) => {
+      return groups.some((group) => matchesSelectionRuleGroup(danmaku, group, selectingIds))
+    })
+  } catch (error) {
+    appendCommandLog(error instanceof Error ? error.message : '筛选命令执行失败')
+    return
+  }
+
+  store.selectedIds = matchedDanmakus.map((danmaku: DanmakuItem) => danmaku.id)
+  appendCommandLog(`筛选命令执行成功：${groups.length} 组规则，选中 ${store.selectedIds.length} 条弹幕。`)
+  commandInput.value = ''
 }
 
 function parseAngleMode(input: string) {
@@ -1028,6 +1291,11 @@ function handleCommandSubmit() {
   const command = commandInput.value.trim()
   if (!command) {
     appendCommandLog('命令为空，未执行。')
+    return
+  }
+
+  if (/^\/s\b/.test(command)) {
+    handleSelectionCommand(command)
     return
   }
 

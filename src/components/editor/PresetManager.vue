@@ -18,7 +18,7 @@
       <input
         ref="fileInputRef"
         type="file"
-        accept=".prs,.json"
+        accept=".prs"
         class="hidden-input"
         @change="handleImportFileChange"
       />

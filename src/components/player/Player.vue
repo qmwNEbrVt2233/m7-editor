@@ -32,6 +32,7 @@
                   <tr><td>Ctrl + Alt + C</td><td>复制当前帧的弹幕，保留当前状态</td></tr>
                   <tr><td>Ctrl + V</td><td>粘贴弹幕</td></tr>
                   <tr><td>Ctrl + A</td><td>全选弹幕</td></tr>
+                  <tr><td>Ctrl + R</td><td>反选弹幕</td></tr>
                   <tr><td>Ctrl + Z</td><td>撤销</td></tr>
                   <tr><td>Ctrl + Y</td><td>重做</td></tr>
                   <tr><td>[</td><td>将播放头移动到弹幕的开始位置</td></tr>

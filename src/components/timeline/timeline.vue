@@ -984,6 +984,24 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
     return
   }
   
+  // `ctrl+r` 反选弹幕
+  if (e.key === 'r' && isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    const allIds = store.danmakus.map((d: any) => d.id)
+    const selectedSet = new Set(store.selectedIds)
+    const result: string[] = []
+    
+    allIds.forEach((id: string) => {
+      if (!selectedSet.has(id)) {
+        result.push(id)
+      }
+    })
+    
+    store.selectedIds = result
+    console.log('[快捷键] 反选弹幕')
+    return
+  }
+  
   // ====== 回滚/重做 ======
   
   // `ctrl+z` 撤销
