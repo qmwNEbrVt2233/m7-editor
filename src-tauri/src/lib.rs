@@ -3,10 +3,32 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
+#[cfg(desktop)]
+use tauri::{
+    menu::MenuBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconEvent},
+    WindowEvent,
+};
+
 #[derive(Serialize)]
 struct MediaFile {
     path: String,
 }
+
+#[cfg(desktop)]
+const MAIN_WINDOW_LABEL: &str = "main";
+
+#[cfg(desktop)]
+const TRAY_ID: &str = "main";
+
+#[cfg(desktop)]
+const TRAY_MENU_SHOW: &str = "tray-show";
+
+#[cfg(desktop)]
+const TRAY_MENU_HIDE: &str = "tray-hide";
+
+#[cfg(desktop)]
+const TRAY_MENU_QUIT: &str = "tray-quit";
 
 fn canonical_media_file(path: impl AsRef<Path>) -> Result<PathBuf, String> {
     let path = path.as_ref();
@@ -35,6 +57,35 @@ fn register_media_path(app: &AppHandle, path: PathBuf) -> Result<MediaFile, Stri
 fn register_media_file(app: AppHandle, path: String) -> Result<MediaFile, String> {
     let path = canonical_media_file(path)?;
     register_media_path(&app, path)
+}
+
+#[cfg(desktop)]
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        let _ = window.show();
+        if window.is_minimized().unwrap_or(false) {
+            let _ = window.unminimize();
+        }
+        let _ = window.set_focus();
+    }
+}
+
+#[cfg(desktop)]
+fn hide_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        let _ = window.hide();
+    }
+}
+
+#[cfg(desktop)]
+fn toggle_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+        } else {
+            show_main_window(app);
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -179,18 +230,76 @@ fn greet(name: &str) -> String {
 pub fn run() {
     unsafe {
         std::env::set_var(
-            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", 
+            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
             "--force-color-profile=srgb --disable-features=UseSkiaRenderer --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding"
         );
     }
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
             register_media_file,
             open_media_file
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        ]);
+
+    #[cfg(desktop)]
+    {
+        builder = builder
+            .on_window_event(|window, event| {
+                if window.label() != MAIN_WINDOW_LABEL {
+                    return;
+                }
+
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            })
+            .on_menu_event(|app, event| match event.id().as_ref() {
+                TRAY_MENU_SHOW => show_main_window(app),
+                TRAY_MENU_HIDE => hide_main_window(app),
+                TRAY_MENU_QUIT => app.exit(0),
+                _ => {}
+            });
+    }
+
+    #[cfg(desktop)]
+    {
+        builder = builder.on_tray_icon_event(|app, event| match event {
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Down,
+                ..
+            } => toggle_main_window(app),
+            TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            } => toggle_main_window(app),
+            _ => {}
+        });
+    }
+
+    let app = builder
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app, event| {
+        #[cfg(desktop)]
+        if matches!(event, tauri::RunEvent::Ready) {
+            let Ok(menu) = MenuBuilder::new(app)
+                .text(TRAY_MENU_SHOW, "显示窗口")
+                .text(TRAY_MENU_HIDE, "隐藏到托盘")
+                .separator()
+                .text(TRAY_MENU_QUIT, "退出")
+                .build()
+            else {
+                return;
+            };
+
+            if let Some(tray) = app.tray_by_id(TRAY_ID) {
+                let _ = tray.set_menu(Some(menu));
+            }
+        }
+    });
 }

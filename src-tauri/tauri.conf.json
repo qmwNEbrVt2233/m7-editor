@@ -19,6 +19,11 @@
         "maximized": true
       }
     ],
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "showMenuOnLeftClick": false,
+      "tooltip": "m7-editor"
+    },
     "security": {
       "csp": null,
       "assetProtocol": {
@@ -36,6 +41,11 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      }
+    }
   }
 }
