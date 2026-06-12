@@ -1,13 +1,13 @@
 <template>
   <div class="editor-panel no-select">
     <!-- 无选中状态 -->
-    <div v-show="!hasSelection === true" class="empty-state">
+    <div v-show="hasSelection === false" class="empty-state">
       <p>未选择弹幕</p>
       <p class="hint">请在时间轴中选择一个或多个弹幕进行编辑</p>
     </div>
 
     <!-- 有选中状态 -->
-    <template v-show="!hasSelection === false" style="display: contents;">
+    <template v-show="hasSelection === true" style="display: contents;">
       <div class="panel-header">
         <h2>已选择：{{ store.selectedCount }} 条弹幕</h2>
       </div>

@@ -346,6 +346,14 @@ export const useEditorStore = defineStore('editor', {
       })
     },
 
+    async saveBlob(
+      blob: Blob,
+      filename: string,
+      acceptType: SavePickerAcceptType
+    ) {
+      await saveBlobWithFallback(blob, filename, acceptType)
+    },
+
     loadFromFile(file: File) {
       const reader = new FileReader()
 
@@ -360,6 +368,7 @@ export const useEditorStore = defineStore('editor', {
           console.log('文件加载成功')
         } catch (e) {
           console.error('文件解析失败', e)
+          alert('文件解析失败: ' + (e instanceof Error ? e.message : String(e)))
         }
       }
 
@@ -397,9 +406,10 @@ export const useEditorStore = defineStore('editor', {
           // 标记导入完成，触发缓冲池重构
           this.importTimestamp = Date.now()
 
-          console.log('XML 导入成功:', danmakus.length, '条弹幕')
+          alert(`XML 导入成功: ${danmakus.length} 条弹幕，共跳过 ${errors.length} 条异常弹幕`)
         } catch (error) {
           console.error('XML 解析失败', error)
+          alert('XML 解析失败: ' + (error instanceof Error ? error.message : String(error)))
         }
       }
 
@@ -718,7 +728,7 @@ export const useEditorStore = defineStore('editor', {
     exportProject() {
       return {
         meta: {
-          version: '1.4.0',
+          version: '1.4.1',
           createdAt: Date.now()
         },
         timeline: {

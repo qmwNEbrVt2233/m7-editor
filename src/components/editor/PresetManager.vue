@@ -108,6 +108,7 @@
 import { nextTick, onBeforeUnmount, ref } from 'vue'
 import type { CreationToolPreset } from '@/utils/toolPresets'
 import { parsePresetImport, serializePresetExport } from '@/utils/toolPresets'
+import { useEditorStore } from '@/store/editor'
 
 const props = defineProps<{
   presets: CreationToolPreset[]
@@ -159,16 +160,18 @@ async function handleImportFileChange(event: Event) {
   }
 }
 
-function handleExport() {
+async function handleExport() {
+  const store = useEditorStore()
   try {
     const payload = serializePresetExport(props.presets)
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = 'creation-tool-presets.prs'
-    anchor.click()
-    URL.revokeObjectURL(url)
+
+    await store.saveBlob(blob, 'creation-tool-presets.prs', {
+      description: 'Creation Tool Preset File',
+      accept: {
+        'application/json': ['.prs']
+      }
+    })
 
     statusMessage.value = `已导出 ${props.presets.length} 个预设。`
     statusTone.value = 'success'

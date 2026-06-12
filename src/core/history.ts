@@ -155,7 +155,7 @@ export class HistoryManager {
 
     this.logOperation(`撤销操作（跃迁至快照 ID: ${prevSnapshot.id}）`)
 
-    return Array.from(this.currentFullData.values())
+    return this.exportCurrentData()
   }
 
   /**
@@ -182,7 +182,7 @@ export class HistoryManager {
 
     this.logOperation(`重做操作（跃迁至快照 ID: ${snapshot.id}）`)
 
-    return Array.from(this.currentFullData.values())
+    return this.exportCurrentData()
   }
 
   /**
@@ -238,6 +238,14 @@ export class HistoryManager {
     this.currentFullData.forEach((item, id) => {
       this.lastStateMap.set(id, JSON.stringify(item))
     })
+  }
+
+  /**
+   * 导出当前数据的深拷贝
+   * 避免调用方直接修改历史管理器内部缓存，污染后续增量计算基准
+   */
+  private exportCurrentData(): DanmakuItem[] {
+    return Array.from(this.currentFullData.values()).map(item => this.clone(item))
   }
 
   /**

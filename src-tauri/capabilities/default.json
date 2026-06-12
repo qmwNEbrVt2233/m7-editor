@@ -12,6 +12,8 @@
     "core:window:allow-hide",
     "core:window:allow-is-visible",
     "core:window:allow-unminimize",
-    "core:window:allow-is-minimized"
+    "core:window:allow-is-minimized",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text"
   ]
 }
