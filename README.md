@@ -417,10 +417,12 @@ npm run tauri dev
 - `n`：生成数量
 - `pi`：圆周率
 - `e`：自然常数
+- `width`: 设置的屏幕宽度
+- `height`: 设置的屏幕高度
 
 #### 可用运算与函数
 
-- 基础运算：`+` `-` `*` `/` `^` `()`
+- 基础运算：`+` `-` `*` `/` `^` `()` `% (取余)`
 - 常用函数：`random` `sin` `cos` `tan` `abs` `sqrt` `min` `max` `floor` `ceil` `round` `log` `exp`
 - 特殊函数：`bezier(x1, y1, x2, y2, t)`
   - 用于按三阶贝塞尔曲线计算缓动进度

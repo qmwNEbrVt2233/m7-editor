@@ -1,3 +1,4 @@
+import { useEditorStore } from '../store/editor'
 import type { DanmakuItem } from '@/core/danmaku'
 import { applyOperation, blendColor, parseColorWithAlpha, parseInput } from '@/utils/parser'
 import { M7_RULES, normalizeAngle, normalizeColor, validateRange } from '@/utils/validation'
@@ -10,6 +11,7 @@ math.import({
   subtract: (a: number, b: number) => a - b,
   multiply: (a: number, b: number) => a * b,
   divide: (a: number, b: number) => a / b,
+  mod: (a: number, b: number) => a % b,
   pow: (a: number, b: number) => a ** b,
   unaryMinus: (value: number) => -value,
   unaryPlus: (value: number) => +value,
@@ -760,38 +762,37 @@ export function createCubicBezierSolver(x1: number, y1: number, x2: number, y2: 
  * 范围模式下，根据数学表达式批量计算数值序列
  */
 export function evaluateRangeExpression(params: RangeEvaluationParams): number[] {
+  const store = useEditorStore()
   const { expression, startVal, endVal, quantity } = params;
   const results: number[] = [];
 
   if (quantity < 2) return [startVal];
 
   try {
-    // 2. 提前编译表达式（编译一次，循环求值，大幅提升跑大批量弹幕时的性能）
     const compiledExpr = math.compile(expression);
 
-    // 3. 构建一个自定义的数学函数：bezier
-    // math.js 允许在 scope 中直接注入普通 JS 函数
     const bezierFunction = (x1: number, y1: number, x2: number, y2: number, t: number) => {
       const solver = createCubicBezierSolver(x1, y1, x2, y2);
       return solver(t);
     };
 
-    // 4. 循环为每条弹幕求值
+    // 循环为每条弹幕求值
     for (let i = 0; i < quantity; i++) {
       const t = i / (quantity - 1); // 归一化进度 0.0 ~ 1.0
 
-      // 5. 组装当前索引的上下文沙盒 (Scope)
+      // 组装当前索引的上下文沙盒 (Scope)
       const scope = {
         S: startVal,
         E: endVal,
         i: i,
         n: quantity,
         t: t,
-        pi: Math.PI, // 注入常用常量小写
-        bezier: bezierFunction // 注入贝塞尔函数
+        bezier: bezierFunction,
+        width: store.screenWidth,
+        height: store.screenHeight
       };
 
-      // 6. 求值
+      // 求值
       const evalResult = compiledExpr.evaluate(scope);
       
       if (typeof evalResult !== 'number' || Number.isNaN(evalResult) || !Number.isFinite(evalResult)) {
