@@ -76,7 +76,7 @@
 [![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 <a href="https://mathjs.org/"><img src="https://mathjs.org/css/img/mathjs.svg" style="width: 66px; height: 20px"></a>
 <a href="https://wavesurfer.xyz/"><img src="https://wavesurfer.xyz/logo-small.png" style="width: 20px; height: 20px"></a>
-
+<a href="https://v2.tauri.app/"><img src="https://v2.tauri.app/_astro/logo.BQPqkdSq.svg" style="width: 66px; height: 20px"></a>
 原生 DOM / FileReader / Blob API
 
 # 安装依赖
@@ -96,6 +96,10 @@ npm install
 - `@vitejs/plugin-vue`
 - `mathjs`
 - `wavesurfer.js`
+- `terser`
+- `tauri`
+- `@tauri-apps/cli`
+- `@tauri-apps/plugin-clipboard-manager`
 
 建议使用较新的 Node.js 版本运行，以保证与当前 Vite 版本兼容。
 
