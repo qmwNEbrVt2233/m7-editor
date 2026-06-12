@@ -346,7 +346,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useEditorStore } from '@/store/editor'
 import { parseInput, applyOperation, formatInputDisplay, parseColorWithAlpha, blendColor } from '@/utils/parser'
 import type { ParseResult } from '@/utils/parser'
-import { validateField, normalizeColor, validateRange, M7_RULES } from '@/utils/validation'
+import { validateField, roundToInteger, roundOpacityValue, normalizeAngle, normalizeColor, validateRange, M7_RULES } from '@/utils/validation'
 import { formatTime } from '@/utils/time'
 
 type FontOption = {
@@ -818,20 +818,16 @@ function isOpacityPath(path: string): boolean {
   return path === 'opacity.from' || path === 'opacity.to'
 }
 
+function isRotatePath(path: string): boolean {
+  return path === 'transform.zRotate' || path === 'transform.yRotate'
+}
+
 function getValidationFieldName(path: string): string {
   if (isOpacityPath(path)) {
     return 'opacity'
   }
 
   return path.split('.').pop() || ''
-}
-
-function roundIntegerValue(value: number): number {
-  return Math.round(value)
-}
-
-function roundOpacityValue(value: number): number {
-  return Number(value.toFixed(2))
 }
 
 function parseOpacityInput(input: string): ParseResult | { error: string } {
@@ -913,6 +909,24 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
     return
   }
 
+  if (isRotatePath(path)) {
+    selectedDanmakus.value.forEach((d) => {
+      const currentValue = d.transform?.[path.endsWith('zRotate') ? 'zRotate' : 'yRotate'] || 0
+      const operation = parseInput(String(inputValue), false)
+      if (operation.error) {
+        console.warn(`字段 ${path} 验证失败: ${operation.error}`)
+        return
+      }
+
+      const baseValue = operation.mode === 'set' ? 0 : currentValue
+      const updatedValue = applyOperation(baseValue, operation)
+      const normalizedValue = normalizeAngle(updatedValue)
+      store.updateDanmaku(d.id, { [path]: normalizedValue })
+    })
+    delete editCache.value[path]
+    return
+  }
+
   const bypassValidationFields = [
     'content.text',
     'content.font',
@@ -974,14 +988,14 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
     newValue = applyOperation(fieldValues[0], parseResult)
   }
 
-  newValue = roundIntegerValue(newValue)
+  newValue = roundToInteger(newValue)
 
   const validation = validateField(getValidationFieldName(path), newValue)
   if (!validation.valid) {
     console.warn(validation.message)
     const rule = M7_RULES[getValidationFieldName(path) as keyof typeof M7_RULES]
     if (rule) {
-      newValue = roundIntegerValue(validateRange(newValue, rule.min, rule.max))
+      newValue = roundToInteger(validateRange(newValue, rule.min, rule.max))
     }
   }
 
@@ -989,9 +1003,9 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
     selectedDanmakus.value.forEach((d, idx) => {
       const originalValue = fieldValues[idx]
       if (typeof originalValue !== 'number') return
-      const updatedValue = roundIntegerValue(applyOperation(originalValue, parseResult))
+      const updatedValue = roundToInteger(applyOperation(originalValue, parseResult))
       const rule = M7_RULES[getValidationFieldName(path) as keyof typeof M7_RULES]
-      const validated = roundIntegerValue(validateRange(updatedValue, rule?.min || 0, rule?.max || Infinity))
+      const validated = roundToInteger(validateRange(updatedValue, rule?.min || 0, rule?.max || Infinity))
       store.updateDanmaku(d.id, { [path]: validated })
     })
   } else {

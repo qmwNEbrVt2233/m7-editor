@@ -1,6 +1,6 @@
 import type { DanmakuItem } from '@/core/danmaku'
 import { applyOperation, blendColor, parseColorWithAlpha, parseInput } from '@/utils/parser'
-import { M7_RULES, normalizeColor, validateRange } from '@/utils/validation'
+import { M7_RULES, normalizeAngle, normalizeColor, validateRange } from '@/utils/validation'
 import { compileDependencies, create } from 'mathjs/number'
 
 const math = create(compileDependencies)
@@ -296,8 +296,8 @@ export function normalizeGeneratedDraft(draft: DanmakuDraft): Omit<DanmakuItem, 
         x: roundInteger(draft.transform?.end?.x),
         y: roundInteger(draft.transform?.end?.y)
       },
-      zRotate: clampIntegerByRule(draft.transform?.zRotate, M7_RULES.rotate),
-      yRotate: clampIntegerByRule(draft.transform?.yRotate, M7_RULES.rotate)
+      zRotate: normalizeAngle(clampIntegerByRule(draft.transform?.zRotate, M7_RULES.rotate)),
+      yRotate: normalizeAngle(clampIntegerByRule(draft.transform?.yRotate, M7_RULES.rotate))
     },
     opacity: {
       from: clampOpacity(draft.opacity?.from),
@@ -641,7 +641,7 @@ function applyOpacityOperation(
 
 function roundInteger(value: unknown): number {
   const parsed = Number(value)
-  return Number.isFinite(parsed) ? Math.round(parsed) : 0
+  return Number.isFinite(parsed) ? Math.round(Math.max(0, parsed)) : 0
 }
 
 function clampNonNegativeInteger(value: unknown): number {

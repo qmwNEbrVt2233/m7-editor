@@ -19,6 +19,7 @@ const DEFAULT_SCREEN_WIDTH = 800
 const DEFAULT_SCREEN_HEIGHT = 450
 const DEFAULT_MAX_LAYERS = 100
 const MIN_IMPORTED_DURATION_MS = 10
+const MIN_SIZE = 10
 
 /**
  * XML 导出配置
@@ -439,7 +440,7 @@ function createDanmakuFromXmlNode(
     content: {
       text: String(body[4] ?? ''),
       font: normalizeFontFromXml(body[12]),
-      size: Math.max(1, Math.round(toSafeNumber(p[2], DEFAULT_SIZE))),
+      size: Math.max(MIN_SIZE, Math.round(toSafeNumber(p[2], DEFAULT_SIZE))),
       color: decimalToColor(p[3]),
       stroke: toSafeNumber(body[11], 0) !== 0
     },
@@ -484,7 +485,7 @@ function buildXmlDanmakuTag(
   const p = [
     (danmaku.startTime / 1000).toFixed(5),
     7,
-    Math.max(1, Math.round(toSafeNumber(danmaku.content.size, DEFAULT_SIZE))),
+    Math.max(MIN_SIZE, Math.round(toSafeNumber(danmaku.content.size, DEFAULT_SIZE))),
     colorToDecimal(danmaku.content.color),
     sendTime,
     0,

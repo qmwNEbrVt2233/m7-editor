@@ -14,6 +14,28 @@ export function validateRange(value: number, min: number, max: number): number {
 }
 
 /**
+ * 普通数值规范化
+ */
+export function roundToInteger(value: number): number {
+  return Math.round(Math.max(0, value))
+}
+
+/**
+ * 透明度规范化，保留两位小数
+ */
+export function roundOpacityValue(value: number): number {
+  return Number(value.toFixed(2))
+}
+
+/**
+ * 将角度规范化到0-360度范围内
+ */
+export function normalizeAngle(value: number): number {
+  const normalized = value % 360
+  return normalized < 0 ? normalized + 360 : normalized
+}
+
+/**
  * M7弹幕规范验证
  */
 export const M7_RULES = {

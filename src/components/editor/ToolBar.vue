@@ -286,7 +286,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { DanmakuItem } from '@/core/danmaku'
 import { historyManager } from '@/core/history'
 import { useEditorStore } from '@/store/editor'
-import { normalizeColor } from '@/utils/validation'
+import { roundToInteger, roundOpacityValue, normalizeAngle, normalizeColor } from '@/utils/validation'
 
 /**
  * 工具栏作用范围模式：
@@ -458,15 +458,6 @@ function getScopeTargets(): TransformTarget[] {
   return ['start', 'end']
 }
 
-function roundToInteger(value: number): number {
-  return Math.round(value)
-}
-
-function normalizeAngle(value: number): number {
-  const normalized = value % 360
-  return normalized < 0 ? normalized + 360 : normalized
-}
-
 function cloneDanmaku(danmaku: DanmakuItem): DanmakuItem {
   return JSON.parse(JSON.stringify(danmaku)) as DanmakuItem
 }
@@ -523,10 +514,6 @@ function clampToCoordinateRange(value: number): number {
   }
 
   return Math.max(0, Math.min(10000, value))
-}
-
-function roundOpacityValue(value: number): number {
-  return Number(value.toFixed(2))
 }
 
 // 计算四个角旋转后的包围盒，用于居中计算时考虑旋转对宽高的影响
