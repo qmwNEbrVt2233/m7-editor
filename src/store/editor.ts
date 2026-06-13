@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager'
 import type { DanmakuItem } from '@/core/danmaku.ts'
 import { saveProject, loadProject, clearProject } from '../localStorage/projectStorage'
 import { historyManager } from '@/core/history'
@@ -947,9 +948,53 @@ export const useEditorStore = defineStore('editor', {
     },
 
     /**
+     * 写入数据到剪贴板
+     * 尝试使用Tauri剪贴板插件，回退到浏览器API
+     */
+    async _writeToClipboard(data: string): Promise<void> {
+      try {
+        // 尝试使用Tauri2剪贴板插件
+        await writeText(data)
+        console.log('[剪贴板] 已通过Tauri插件写入')
+      } catch (error) {
+        console.warn('[剪贴板] Tauri剪贴板插件不可用，回退到浏览器API', error)
+        try {
+          await navigator.clipboard.writeText(data)
+          console.log('[剪贴板] 已通过浏览器API写入')
+        } catch (fallbackError) {
+          console.error('[剪贴板] 两种方法均失败', fallbackError)
+          throw new Error('复制到剪贴板失败')
+        }
+      }
+    },
+
+    /**
+     * 从剪贴板读取数据
+     * 尝试使用Tauri剪贴板插件，回退到浏览器API
+     */
+    async _readFromClipboard(): Promise<string> {
+      try {
+        // 尝试使用Tauri2剪贴板插件
+        const data = await readText()
+        console.log('[剪贴板] 已通过Tauri插件读取')
+        return data
+      } catch (error) {
+        console.warn('[剪贴板] Tauri剪贴板插件不可用，回退到浏览器API', error)
+        try {
+          const data = await navigator.clipboard.readText()
+          console.log('[剪贴板] 已通过浏览器API读取')
+          return data
+        } catch (fallbackError) {
+          console.error('[剪贴板] 两种方法均失败', fallbackError)
+          throw new Error('从剪贴板读取失败')
+        }
+      }
+    },
+
+    /**
      * 复制当前帧弹幕
      */
-    copyCurrentFrameDanmakus(): void {
+    async copyCurrentFrameDanmakus(): Promise<void> {
       const time = this.currentTime
 
       // 获取当前可见的弹幕（在当前时间区间内）
@@ -1044,17 +1089,18 @@ export const useEditorStore = defineStore('editor', {
       })
 
       const data = JSON.stringify(copiedDanmakus)
-      navigator.clipboard.writeText(data).catch(() => {
-        console.error('[操作] 复制到剪贴板失败')
-      })
-
-      console.log('[操作] 复制当前帧弹幕:', copiedDanmakus.length, '条')
+      try {
+        await this._writeToClipboard(data)
+        console.log('[操作] 复制当前帧弹幕:', copiedDanmakus.length, '条')
+      } catch (error) {
+        console.error('[操作] 复制到剪贴板失败:', error)
+      }
     },
 
     /**
      * 复制选中的弹幕数据到剪贴板
      */
-    copySelectedDanmakus(): void {
+    async copySelectedDanmakus(): Promise<void> {
       const selectedDanmakus = this.getSelectedDanmakus
       if (selectedDanmakus.length === 0) {
         console.warn('[操作] 没有选中的弹幕')
@@ -1062,11 +1108,12 @@ export const useEditorStore = defineStore('editor', {
       }
 
       const data = JSON.stringify(selectedDanmakus)
-      navigator.clipboard.writeText(data).catch(() => {
-        console.error('[操作] 复制到剪贴板失败')
-      })
-
-      console.log('[操作] 复制弹幕:', selectedDanmakus.length, '条')
+      try {
+        await this._writeToClipboard(data)
+        console.log('[操作] 复制弹幕:', selectedDanmakus.length, '条')
+      } catch (error) {
+        console.error('[操作] 复制到剪贴板失败:', error)
+      }
     },
 
     /**
@@ -1076,7 +1123,7 @@ export const useEditorStore = defineStore('editor', {
      */
     async pasteDanmakus(): Promise<void> {
       try {
-        const text = await navigator.clipboard.readText()
+        const text = await this._readFromClipboard()
         const danmakusToAdd = parsePastedDanmakusText(text)
 
         if (!Array.isArray(danmakusToAdd)) {
