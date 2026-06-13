@@ -181,6 +181,17 @@
         <label class="config-group checkbox-group">
           <input
             type="checkbox"
+            v-model="allowNegativeValues"
+            @change="onAllowNegativeValuesChange"
+          />
+          <span>允许负值</span>
+        </label>
+
+        <div class="divider"></div>
+
+        <label class="config-group checkbox-group">
+          <input
+            type="checkbox"
             v-model="exportXmlAsRatio"
             @change="onExportRatioChange"
           />
@@ -316,6 +327,7 @@ const danmakuDurationInput = ref(
 const screenWidthInput = ref(String(store.screenWidth))
 const screenHeightInput = ref(String(store.screenHeight))
 const maxLayersInput = ref(String(store.maxLayers))
+const allowNegativeValues = ref(store.allowNegativeValues)
 const exportXmlAsRatio = ref(store.exportXmlAsRatio)
 const importXmlDurationOffsetEnabled = ref(store.importXmlDurationOffsetEnabled)
 const exportXmlDurationOffsetEnabled = ref(store.exportXmlDurationOffsetEnabled)
@@ -400,6 +412,10 @@ function onScreenSizeChange() {
 
 function onExportRatioChange() {
   store.setExportXmlAsRatio(exportXmlAsRatio.value)
+}
+
+function onAllowNegativeValuesChange() {
+  store.setAllowNegativeValues(allowNegativeValues.value)
 }
 
 function onImportDurationOffsetChange() {

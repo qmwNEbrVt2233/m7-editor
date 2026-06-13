@@ -497,10 +497,11 @@ function createIdAllocator() {
 
 // 将坐标值四舍五入并钳制到 0 以上，同时返回是否发生了钳制
 function clampCoordinate(value: number) {
-  const roundedValue = roundToInteger(value)
+  const rounded = Math.round(value)
+  const roundedValue = store.allowNegativeValues ? rounded : Math.max(0, rounded)
   return {
-    value: Math.max(0, roundedValue),
-    clamped: roundedValue < 0
+    value: roundedValue,
+    clamped: rounded < 0 && !store.allowNegativeValues
   }
 }
 
@@ -1066,8 +1067,8 @@ function projectEndPointWithLockedAngle(
   }
 
   return {
-    x: roundToInteger(clampedX),
-    y: roundToInteger(clampedY),
+    x: roundToInteger(clampedX, store.allowNegativeValues),
+    y: roundToInteger(clampedY, store.allowNegativeValues),
     clamped:
       clampedX !== nextX ||
       clampedY !== nextY ||
@@ -1078,8 +1079,8 @@ function projectEndPointWithLockedAngle(
 
 // 根据当前 S/E/B 模式，将指定的 x, y 写入弹幕的对应坐标（起始/结束/两者）
 function applyScopedPosition(danmaku: DanmakuItem, x: number, y: number) {
-  const roundedX = roundToInteger(x)
-  const roundedY = roundToInteger(y)
+  const roundedX = roundToInteger(x, store.allowNegativeValues)
+  const roundedY = roundToInteger(y, store.allowNegativeValues)
 
   getScopeTargets().forEach((target) => {
     danmaku.transform[target].x = roundedX
@@ -1088,7 +1089,7 @@ function applyScopedPosition(danmaku: DanmakuItem, x: number, y: number) {
 }
 
 function applyScopedAxis(danmaku: DanmakuItem, axis: Axis, value: number) {
-  const roundedValue = roundToInteger(value)
+  const roundedValue = roundToInteger(value, store.allowNegativeValues)
 
   getScopeTargets().forEach((target) => {
     danmaku.transform[target][axis] = roundedValue
@@ -1157,7 +1158,7 @@ function normalizeStrokeWidth(): number | null {
     return null
   }
 
-  const width = Math.max(1, roundToInteger(parsedWidth))
+  const width = Math.max(1, roundToInteger(parsedWidth, store.allowNegativeValues))
   strokeWidthInput.value = String(width)
   return width
 }
@@ -1181,7 +1182,7 @@ function assignSequentialLayersForGroup(group: DanmakuItem[], occupiedDanmakus: 
   const maxLayer = Math.max(0, store.maxLayers - 1)
 
   group.forEach((candidate) => {
-    let layer = Math.max(0, roundToInteger(candidate.layer))
+    let layer = Math.max(0, roundToInteger(candidate.layer, store.allowNegativeValues))
 
     while (layer < store.maxLayers && hasLayerConflict(candidate, layer, occupiedDanmakus)) {
       layer++
@@ -1313,7 +1314,7 @@ function handleCommandSubmit() {
         const result = evaluateCommandExpression(rule.expression, baseVariables)
         const normalizedValue = definition.kind === 'opacity'
           ? roundOpacityValue(result)
-          : roundToInteger(result)
+          : roundToInteger(result, store.allowNegativeValues)
 
         pendingAssignments.set(rule.target, normalizedValue)
       })
@@ -1367,7 +1368,7 @@ function handleCalculateZRotation() {
     const dx = danmaku.transform.end.x - danmaku.transform.start.x
     const dy = danmaku.transform.end.y - danmaku.transform.start.y
     const angle = normalizeAngle(Math.atan2(dy, dx) * (180 / Math.PI))
-    const roundedAngle = roundToInteger(angle)
+    const roundedAngle = roundToInteger(angle, store.allowNegativeValues)
 
     if (danmaku.transform.zRotate !== roundedAngle) {
       danmaku.transform.zRotate = roundedAngle
@@ -1406,8 +1407,8 @@ function handleApplyLength() {
     const nextEndY = danmaku.transform.start.y + length * Math.sin(radian)
     const clampedEndX = clampToCoordinateRange(nextEndX)
     const clampedEndY = clampToCoordinateRange(nextEndY)
-    const roundedEndX = roundToInteger(clampedEndX)
-    const roundedEndY = roundToInteger(clampedEndY)
+    const roundedEndX = roundToInteger(clampedEndX, store.allowNegativeValues)
+    const roundedEndY = roundToInteger(clampedEndY, store.allowNegativeValues)
 
     if (clampedEndX !== nextEndX || clampedEndY !== nextEndY) {
       hasClampWarning = true
@@ -1521,8 +1522,8 @@ function handlePickTool() {
 
         // 计算相对于 .screen 左上角的坐标
         const rect = screenElement.getBoundingClientRect()
-        const x = roundToInteger(event.clientX - rect.left)
-        const y = roundToInteger(event.clientY - rect.top)
+        const x = roundToInteger(event.clientX - rect.left, store.allowNegativeValues)
+        const y = roundToInteger(event.clientY - rect.top, store.allowNegativeValues)
 
         selectedDanmakus.value.forEach((danmaku) => {
           applyScopedPosition(danmaku, x, y)
@@ -1647,8 +1648,8 @@ function handleCopyStartToEnd() {
   }
 
   selectedDanmakus.value.forEach((danmaku) => {
-    danmaku.transform.end.x = roundToInteger(danmaku.transform.start.x)
-    danmaku.transform.end.y = roundToInteger(danmaku.transform.start.y)
+    danmaku.transform.end.x = roundToInteger(danmaku.transform.start.x, store.allowNegativeValues)
+    danmaku.transform.end.y = roundToInteger(danmaku.transform.start.y, store.allowNegativeValues)
   })
 
   finishToolbarOperation('工具栏：起始坐标应用至结束坐标')
@@ -1661,8 +1662,8 @@ function handleCopyEndToStart() {
   }
 
   selectedDanmakus.value.forEach((danmaku) => {
-    danmaku.transform.start.x = roundToInteger(danmaku.transform.end.x)
-    danmaku.transform.start.y = roundToInteger(danmaku.transform.end.y)
+    danmaku.transform.start.x = roundToInteger(danmaku.transform.end.x, store.allowNegativeValues)
+    danmaku.transform.start.y = roundToInteger(danmaku.transform.end.y, store.allowNegativeValues)
   })
 
   finishToolbarOperation('工具栏：结束坐标应用至起始坐标')
@@ -1675,10 +1676,10 @@ function handleSwapStartAndEnd() {
   }
 
   selectedDanmakus.value.forEach((danmaku) => {
-    const startX = roundToInteger(danmaku.transform.start.x)
-    const startY = roundToInteger(danmaku.transform.start.y)
-    const endX = roundToInteger(danmaku.transform.end.x)
-    const endY = roundToInteger(danmaku.transform.end.y)
+    const startX = roundToInteger(danmaku.transform.start.x, store.allowNegativeValues)
+    const startY = roundToInteger(danmaku.transform.start.y, store.allowNegativeValues)
+    const endX = roundToInteger(danmaku.transform.end.x, store.allowNegativeValues)
+    const endY = roundToInteger(danmaku.transform.end.y, store.allowNegativeValues)
 
     danmaku.transform.start.x = endX
     danmaku.transform.start.y = endY
@@ -1690,7 +1691,7 @@ function handleSwapStartAndEnd() {
 }
 
 function mirrorCoordinate(value: number, axisSize: number): number {
-  return roundToInteger(axisSize - value)
+  return roundToInteger(axisSize - value, store.allowNegativeValues)
 }
 
 function createMeasureDanmaku(danmaku: DanmakuItem, id: string, text: string): DanmakuItem {

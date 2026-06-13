@@ -184,8 +184,9 @@ const NUMERIC_FIELD_PATHS: NumericFieldPath[] = [
 ]
 
 export function writeGeneratedDanmakusToPreview(request: ToolWriteRequest): GeneratedPreviewResult {
+  const store = useEditorStore()
   const generatedDanmakus = generateDanmakuDraftsFromRules(request).map((draft) => {
-    return normalizeGeneratedDraft(draft)
+    return normalizeGeneratedDraft(draft, store.allowNegativeValues)
   })
   const nextDanmakus = request.writeMode === 'append'
     ? [...parsePreviewDanmakus(request.previewText), ...generatedDanmakus]
@@ -274,14 +275,14 @@ export function parsePreviewDanmakus(text: string): DanmakuDraft[] {
   return drafts
 }
 
-export function normalizeGeneratedDraft(draft: DanmakuDraft): Omit<DanmakuItem, 'id'> {
+export function normalizeGeneratedDraft(draft: DanmakuDraft, allowNegativeValues: boolean = false): Omit<DanmakuItem, 'id'> {
   const normalizedColorValue = normalizeColor(String(draft.content?.color ?? '#FFFFFF')) || '#FFFFFF'
   const easingValue = normalizeEasingValue(draft.animation?.easing)
   const strokeValue = normalizeStrokeValue(draft.content?.stroke)
 
   return {
     layer: clampIntegerByRule(draft.layer, M7_RULES.layer),
-    startTime: clampNonNegativeInteger(draft.startTime),
+    startTime: clampNonNegativeInteger(draft.startTime, allowNegativeValues),
     content: {
       text: String(draft.content?.text ?? ''),
       font: String(draft.content?.font ?? 'Microsoft YaHei'),
@@ -291,15 +292,15 @@ export function normalizeGeneratedDraft(draft: DanmakuDraft): Omit<DanmakuItem, 
     },
     transform: {
       start: {
-        x: roundInteger(draft.transform?.start?.x),
-        y: roundInteger(draft.transform?.start?.y)
+        x: roundInteger(draft.transform?.start?.x, allowNegativeValues),
+        y: roundInteger(draft.transform?.start?.y, allowNegativeValues)
       },
       end: {
-        x: roundInteger(draft.transform?.end?.x),
-        y: roundInteger(draft.transform?.end?.y)
+        x: roundInteger(draft.transform?.end?.x, allowNegativeValues),
+        y: roundInteger(draft.transform?.end?.y, allowNegativeValues)
       },
-      zRotate: normalizeAngle(clampIntegerByRule(draft.transform?.zRotate, M7_RULES.rotate)),
-      yRotate: normalizeAngle(clampIntegerByRule(draft.transform?.yRotate, M7_RULES.rotate))
+      zRotate: clampIntegerByRule(normalizeAngle(draft.transform?.zRotate), M7_RULES.rotate),
+      yRotate: clampIntegerByRule(normalizeAngle(draft.transform?.yRotate), M7_RULES.rotate)
     },
     opacity: {
       from: clampOpacity(draft.opacity?.from),
@@ -307,8 +308,8 @@ export function normalizeGeneratedDraft(draft: DanmakuDraft): Omit<DanmakuItem, 
     },
     animation: {
       duration: clampIntegerByRule(draft.animation?.duration, M7_RULES.duration),
-      moveDuration: clampNonNegativeInteger(draft.animation?.moveDuration),
-      delay: clampNonNegativeInteger(draft.animation?.delay),
+      moveDuration: clampNonNegativeInteger(draft.animation?.moveDuration, allowNegativeValues),
+      delay: clampNonNegativeInteger(draft.animation?.delay, allowNegativeValues),
       easing: easingValue
     }
   }
@@ -641,13 +642,17 @@ function applyOpacityOperation(
   }
 }
 
-function roundInteger(value: unknown): number {
+function roundInteger(value: unknown, allowNegative: boolean = false): number {
   const parsed = Number(value)
-  return Number.isFinite(parsed) ? Math.round(Math.max(0, parsed)) : 0
+  return Number.isFinite(parsed) ? Math.round(allowNegative ? parsed : Math.max(0, parsed)) : (allowNegative ? 0 : 0)
 }
 
-function clampNonNegativeInteger(value: unknown): number {
-  return Math.max(0, roundInteger(value))
+function clampNonNegativeInteger(value: unknown, allowNegative: boolean = false): number {
+  if (allowNegative) {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? Math.round(parsed) : 0
+  }
+  return Math.max(0, roundInteger(value, false))
 }
 
 function clampIntegerByRule(

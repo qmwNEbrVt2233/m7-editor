@@ -988,14 +988,14 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
     newValue = applyOperation(fieldValues[0], parseResult)
   }
 
-  newValue = roundToInteger(newValue)
+  newValue = roundToInteger(newValue, store.allowNegativeValues)
 
   const validation = validateField(getValidationFieldName(path), newValue)
   if (!validation.valid) {
     console.warn(validation.message)
     const rule = M7_RULES[getValidationFieldName(path) as keyof typeof M7_RULES]
     if (rule) {
-      newValue = roundToInteger(validateRange(newValue, rule.min, rule.max))
+      newValue = roundToInteger(validateRange(newValue, rule.min, rule.max), store.allowNegativeValues)
     }
   }
 
@@ -1003,9 +1003,9 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
     selectedDanmakus.value.forEach((d, idx) => {
       const originalValue = fieldValues[idx]
       if (typeof originalValue !== 'number') return
-      const updatedValue = roundToInteger(applyOperation(originalValue, parseResult))
+      const updatedValue = roundToInteger(applyOperation(originalValue, parseResult), store.allowNegativeValues)
       const rule = M7_RULES[getValidationFieldName(path) as keyof typeof M7_RULES]
-      const validated = roundToInteger(validateRange(updatedValue, rule?.min || 0, rule?.max || Infinity))
+      const validated = roundToInteger(validateRange(updatedValue, rule?.min || 0, rule?.max || Infinity), store.allowNegativeValues)
       store.updateDanmaku(d.id, { [path]: validated })
     })
   } else {

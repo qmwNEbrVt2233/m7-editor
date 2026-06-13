@@ -228,6 +228,7 @@ export const useEditorStore = defineStore('editor', {
       exportXmlAsRatio: false,
       importXmlDurationOffsetEnabled: true,
       exportXmlDurationOffsetEnabled: true,
+      allowNegativeValues: saved?.preprocess?.allowNegativeValues || false,
       showCreationTools: false,
       showSpectrogram: saved?.timeline?.showSpectrogram || false,
       spectrogramColorScheme: saved?.timeline?.spectrogramColorScheme || 'default',
@@ -703,6 +704,9 @@ export const useEditorStore = defineStore('editor', {
       if (typeof project.player?.maxLayers === 'number') {
         this.setMaxLayers(project.player.maxLayers)
       }
+      if (typeof project.preprocess?.allowNegativeValues === 'boolean') {
+        this.allowNegativeValues = project.preprocess.allowNegativeValues
+      }
       if (typeof project.timeline?.showSpectrogram === 'boolean') {
         this.showSpectrogram = project.timeline.showSpectrogram
       }
@@ -750,6 +754,9 @@ export const useEditorStore = defineStore('editor', {
           screenHeight: this.screenHeight,
           maxLayers: this.maxLayers
         },
+        preprocess: {
+          allowNegativeValues: this.allowNegativeValues
+        },
         danmakus: this.danmakus
       }
     },
@@ -775,6 +782,10 @@ export const useEditorStore = defineStore('editor', {
 
     setExportXmlDurationOffsetEnabled(enabled: boolean) {
       this.exportXmlDurationOffsetEnabled = enabled
+    },
+
+    setAllowNegativeValues(enabled: boolean) {
+      this.allowNegativeValues = enabled
     },
 
     setMaxLayers(value: number) {

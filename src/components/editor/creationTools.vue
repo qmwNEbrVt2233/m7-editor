@@ -937,7 +937,7 @@ function handleCreate() {
 
     const nextId = createIdAllocator()
     const createdDanmakus = drafts.map((draft) => {
-      const normalized = normalizeGeneratedDraft(draft)
+      const normalized = normalizeGeneratedDraft(draft, store.allowNegativeValues)
       return {
         ...normalized,
         id: nextId()

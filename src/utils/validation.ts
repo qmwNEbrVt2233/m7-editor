@@ -16,8 +16,8 @@ export function validateRange(value: number, min: number, max: number): number {
 /**
  * 普通数值规范化
  */
-export function roundToInteger(value: number): number {
-  return Math.round(Math.max(0, value))
+export function roundToInteger(value: number, allowNegative: boolean = false): number {
+  return allowNegative ? Math.round(value) : Math.round(Math.max(0, value))
 }
 
 /**
