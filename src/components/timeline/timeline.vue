@@ -35,7 +35,7 @@
     ></canvas>
 
     <!-- 弹幕块 -->
-    <div class="tracks  have-scrollbar" ref="tracksRef" @scroll="onTracksScroll">
+    <div class="tracks  have-scrollbar" ref="tracksRef" @scroll="onTracksScroll" :style="{ opacity: tracksOpacity, display: tracksHidden ? 'none' : 'block' }">
       <div
         v-for="layer in visibleLayers"
         :key="layer"
@@ -94,6 +94,12 @@ import SpectrogramPlugin from 'wavesurfer.js/dist/plugins/spectrogram.esm.js'
 const store = useEditorStore()
 const timelineRef = ref<HTMLElement | null>(null)
 const tracksRef = ref<HTMLElement | null>(null)
+
+// tracks样式控制
+const tracksOpacityLevels = [0.7, 0.8, 0.9, 1]
+const tracksOpacityIndex = ref(3) // 默认为1
+const tracksOpacity = computed(() => tracksOpacityLevels[tracksOpacityIndex.value])
+const tracksHidden = ref(false)
 
 // 时间轴核心参数
 const scale = ref(store.timelineScale) // 1ms = 0.1px
@@ -918,6 +924,24 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
     return
   }
 
+  // ====== tracks样式操作 ======
+  
+  // `o` 切换tracks透明度
+  if (e.key === 'o' && !isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    tracksOpacityIndex.value = (tracksOpacityIndex.value + 1) % tracksOpacityLevels.length
+    const currentOpacity = tracksOpacity.value
+    console.log(`[快捷键] 切换tracks透明度: ${(currentOpacity * 100).toFixed(0)}%`)
+    return
+  }
+  
+  // `p` 按住隐藏tracks，松开恢复
+  if (e.key === 'p' && !isCtrl && !isAlt && !isShift && !e.repeat) {
+    e.preventDefault()
+    tracksHidden.value = true
+    console.log(`[快捷键] 隐藏tracks`)
+  }
+
   if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !isCtrl && !isAlt && !isShift) {
     if (store.selectedIds.length > 0) {
       e.preventDefault()
@@ -1067,11 +1091,20 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   }
 }
 
+function handleKeyboardUp(e: KeyboardEvent) {
+  // `p` 松开恢复tracks
+  if (e.key === 'p') {
+    tracksHidden.value = false
+    console.log(`[快捷键] 恢复tracks`)
+  }
+}
+
 onMounted(() => {
   initContainerWidth()
   updateTracksViewHeight()
   initSpectrogram()
   window.addEventListener('keydown', handleKeyboardShortcuts)
+  window.addEventListener('keyup', handleKeyboardUp)
   window.addEventListener('resize', handleWindowResize)
   // 初始化时确保第一次垂直范围正确
   if (tracksRef.value) {
@@ -1090,6 +1123,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyboardShortcuts)
+  window.removeEventListener('keyup', handleKeyboardUp)
   window.removeEventListener('resize', handleWindowResize)
   destroySpectrogramWaveSurfer()
   resetSpectrogramData()
@@ -1960,6 +1994,7 @@ function onMouseUp(e?: MouseEvent) {
   overflow-x: hidden;
   scrollbar-gutter: stable;
   scroll-behavior: smooth;
+  z-index: 2;
 }
 
 .block {
