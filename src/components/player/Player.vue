@@ -1,6 +1,6 @@
 <template>
   <div class="player no-select">
-    <div class="controls">
+    <div v-if="!store.screenRecordingMode" class="controls">
       <div class="logo-container" @mouseenter="showShortcutsNow" @mouseleave="hideShortcutsWithDelay">
         <a href="https://github.com/qmwNEbrVt2233/m7-editor" target="_blank"><img src="/favicon.svg" width="35" height="35" alt="logo"></a>
       </div>
@@ -18,6 +18,8 @@
                   <tr><td>Ctrl + Delete</td><td>清空本地缓存工程</td></tr>
                   <tr><td>Ctrl + Shift + Delete</td><td>清空所有缓存</td></tr>
                   <tr><td>Shift + Tab</td><td>手动重构缓存池</td></tr>
+                  <tr><td>Ctrl + Space</td><td>开启录屏模式</td></tr>
+                  <tr><td>Escape</td><td>关闭录屏模式</td></tr>
                 </tbody>
               </table>
             </div>
@@ -28,7 +30,7 @@
                 <tbody>
                   <tr><td>;</td><td>在当前播放头创建一条新弹幕</td></tr>
                   <tr><td>Ctrl + ;</td><td>唤出高级创建工具</td></tr>
-                  <tr><td>Delete</td><td>删除当前选中的弹幕</td></tr>
+                  <tr><td>Delete</td><td>删除当前选中的 弹幕 / 预设</td></tr>
                   <tr><td>Ctrl + C</td><td>复制选中的弹幕</td></tr>
                   <tr><td>Ctrl + Alt + C</td><td>复制当前帧的弹幕，保留当前状态</td></tr>
                   <tr><td>Ctrl + V</td><td>粘贴弹幕</td></tr>
@@ -62,6 +64,7 @@
               <h4>时间轴与播放头</h4>
               <table class="shortcuts-table">
                 <tbody>
+                  <tr><td>Ctrl + Drag / Click</td><td>多选弹幕</td></tr>
                   <tr><td>ArrowLeft</td><td>按步长向左移动播放头</td></tr>
                   <tr><td>ArrowRight</td><td>按步长向右移动播放头</td></tr>
                   <tr><td>ArrowUp</td><td>向上移动视图，若有选中的弹幕则将其layer-1（向上移动）</td></tr>
@@ -72,6 +75,8 @@
                   <tr><td>Ctrl + Alt + ArrowRight</td><td>向右平移时间轴 30 秒</td></tr>
                   <tr><td>Ctrl + -</td><td>缩小时间轴视图</td></tr>
                   <tr><td>Ctrl + =</td><td>放大时间轴视图</td></tr>
+                  <tr><td>O</td><td>切换时间轴轨道透明度</td></tr>
+                  <tr><td>P</td><td>按下时隐藏轨道</td></tr>
                 </tbody>
               </table>
             </div>
@@ -175,6 +180,17 @@
             type="number"
             v-model="screenHeightInput"
             @change="onScreenSizeChange"
+            min="1"
+            class="dark-input"
+          />
+        </div>
+
+        <div class="config-group">
+          <span>缩放:</span>
+          <input
+            type="number"
+            v-model.lazy="screenScaleInput"
+            @change="onScreenScaleChange"
             min="1"
             class="dark-input"
           />
@@ -301,11 +317,11 @@
       <DanmakuLayer />
     </div>
 
-    <div v-if="store.videoUrl && store.playing" class="video-info" :style="videoInfoStyle">
+    <div v-if="!store.screenRecordingMode && store.videoUrl && store.playing" class="video-info" :style="videoInfoStyle">
       媒体时长: {{ formatTime(store.videoDuration) }}
     </div>
 
-    <div v-if="!store.playing" class="video-info" :style="videoInfoStyle">
+    <div v-if="!store.screenRecordingMode && !store.playing" class="video-info" :style="videoInfoStyle">
       当前时间: {{ Math.round(store.currentTime) }}
     </div>
   </div>
@@ -345,6 +361,7 @@ const danmakuDurationInput = ref(
 
 const screenWidthInput = ref(String(store.screenWidth))
 const screenHeightInput = ref(String(store.screenHeight))
+const screenScaleInput = ref(store.screenScale)
 const maxLayersInput = ref(String(store.maxLayers))
 const allowNegativeValues = ref(store.allowNegativeValues)
 const exportXmlAsRatio = ref(store.exportXmlAsRatio)
@@ -357,11 +374,15 @@ const spectrogramCustomColor = ref(store.spectrogramCustomColor)
 
 const screenStyle = computed(() => ({
   width: `${store.screenWidth}px`,
-  height: `${store.screenHeight}px`
+  height: `${store.screenHeight}px`,
+  transformOrigin: `top left`,
+  transform: `scale(${screenScaleInput.value / 100})`,
+  left: store.screenRecordingMode ? '0' : undefined,
+  top: store.screenRecordingMode ? '0' : '60px'
 }))
 
 const videoInfoStyle = computed(() => ({
-  top: `${store.screenHeight + 60}px`
+  top: `${store.screenHeight * screenScaleInput.value / 100 + 60}px`
 }))
 
 // 处理播放头步长输入变化
@@ -426,6 +447,14 @@ function onScreenSizeChange() {
     store.setScreenSize(width, height)
     screenWidthInput.value = String(store.screenWidth)
     screenHeightInput.value = String(store.screenHeight)
+  }
+}
+
+function onScreenScaleChange() {
+  const scale = parseInt(screenScaleInput.value, 10)
+  if (scale > 0) {
+    store.setScreenScale(scale)
+    screenScaleInput.value = String(store.screenScale)
   }
 }
 
@@ -505,6 +534,13 @@ watch(
   () => store.screenHeight,
   (height) => {
     screenHeightInput.value = String(height)
+  }
+)
+
+watch(
+  () => store.screenScale,
+  (scale) => {
+    screenScaleInput.value = String(scale)
   }
 )
 
@@ -955,7 +991,6 @@ function formatTime(ms: number) {
   position: relative;
   overflow: hidden;
   position: fixed;
-  top: 60px;
   z-index: 0
 }
 

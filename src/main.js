@@ -9,3 +9,7 @@ const pinia = createPinia()
 app.use(pinia)
 
 app.mount('#app')
+
+window.addEventListener('contextmenu', (e) => {
+  e.preventDefault()
+}, false)

@@ -4,14 +4,15 @@
       <div class="player-section">
         <Player />
       </div>
-      <div class="toolbar-section">
+      <div v-if="!store.screenRecordingMode" class="toolbar-section">
         <ToolBar/>
       </div>
-      <div class="editor-section">
+      <div v-if="!store.screenRecordingMode" class="editor-section">
         <EditorPanel />
       </div>
     </div>
     <div 
+      v-if="!store.screenRecordingMode"
       class="timeline-container"
       :style="{ height: timelineHeight + 'px' }"
       @mousedown="onTimelineDragStart"
@@ -21,7 +22,7 @@
     </div>
 
     <CreationTools
-      :visible="store.showCreationTools"
+      :visible="store.showCreationTools && !store.screenRecordingMode"
       @update:visible="store.showCreationTools = $event"
     />
   </div>
@@ -37,7 +38,8 @@ import ToolBar from './components/editor/ToolBar.vue'
 import CreationTools from './components/editor/creationTools.vue'
 
 const store = useEditorStore()
-const timelineHeight = ref(window.innerHeight - store.screenHeight - 80)
+const timelineHeight = ref(window.innerHeight - store.screenHeight * store.screenScale / 100 - 80)
+const scaleBeforeRecording = ref(store.screenScale)
 
 function isTextEditingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -83,7 +85,7 @@ function handleKeyDown(e: KeyboardEvent) {
   }
 
   // 空格播放/暂停
-  if (e.code === 'Space') {
+  if (e.code === 'Space' && !isCtrl && !isAlt && !isShift) {
     e.preventDefault()
     if (store.showCreationTools === true) {
       return
@@ -125,6 +127,30 @@ function handleKeyDown(e: KeyboardEvent) {
       console.log('[快捷键] 清空所有缓存')
     }
     return
+  }
+
+  if (e.code === 'Space' && isCtrl && isAlt && !isShift) {
+    e.preventDefault()
+    if (!store.screenRecordingMode) {
+      scaleBeforeRecording.value = store.screenScale
+      store.showCreationTools = false
+      store.screenRecordingMode = true
+      store.aggressiveOptimization = true
+      store.currentTime = 0
+      store.screenScale = Math.min(Math.round(window.innerHeight / store.screenHeight * 1 * 100), Math.round(window.innerWidth / store.screenWidth * 1 * 100))
+    } else {
+      store.currentTime = 0
+      store.screenScale = Math.min(Math.round(window.innerHeight / store.screenHeight * 1 * 100), Math.round(window.innerWidth / store.screenWidth * 1 * 100))
+    }
+  }
+
+  if (e.key === 'Escape' && store.screenRecordingMode) {
+    e.preventDefault()
+    if (window.confirm('确定要退出屏幕录制模式吗？')) {
+      store.screenRecordingMode = false
+      store.aggressiveOptimization = false
+      store.screenScale = scaleBeforeRecording.value
+    }
   }
 }
 

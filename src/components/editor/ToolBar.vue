@@ -1522,8 +1522,10 @@ function handlePickTool() {
 
         // 计算相对于 .screen 左上角的坐标
         const rect = screenElement.getBoundingClientRect()
-        const x = roundToInteger(event.clientX - rect.left, store.allowNegativeValues)
-        const y = roundToInteger(event.clientY - rect.top, store.allowNegativeValues)
+        // 考虑 screenScale 缩放：屏幕被 transform: scale 缩放，需要除以缩放比例得到实际画布坐标
+        const scaleRatio = store.screenScale / 100
+        const x = roundToInteger((event.clientX - rect.left) / scaleRatio, store.allowNegativeValues)
+        const y = roundToInteger((event.clientY - rect.top) / scaleRatio, store.allowNegativeValues)
 
         selectedDanmakus.value.forEach((danmaku) => {
           applyScopedPosition(danmaku, x, y)
@@ -2355,7 +2357,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   background-color: #1e1e1e;
   width: max-content;
   box-sizing: border-box;
@@ -2403,7 +2405,7 @@ onBeforeUnmount(() => {
   padding: 4px;
   background-color: #252525;
   gap: 4px;
-  margin-top: 10px;
+  margin-top: 2px;
 }
 
 .mode-selector {

@@ -215,6 +215,8 @@ export const useEditorStore = defineStore('editor', {
       timelineScrollTop: saved?.timeline?.scrollTop || 0,
       playing: false,
       aggressiveOptimization: false,
+      // 屏幕录制模式
+      screenRecordingMode: false,
       // 快捷键配置：播放头移动的步长（毫秒）
       playheadStepMs: 16.666667,  // 默认60fps对应的毫秒值
       // 弹幕生存时间配置
@@ -225,6 +227,7 @@ export const useEditorStore = defineStore('editor', {
       // 播放器与 XML 导出设置
       screenWidth: saved?.player?.screenWidth || 800,
       screenHeight: saved?.player?.screenHeight || 450,
+      screenScale: saved?.player?.screenScale || Math.round(window.innerHeight / (saved?.player?.screenHeight || 450) * 100 * 0.55),
       maxLayers: saved?.player?.maxLayers || 100,
       exportXmlAsRatio: false,
       importXmlDurationOffsetEnabled: true,
@@ -702,6 +705,9 @@ export const useEditorStore = defineStore('editor', {
       if (typeof project.player?.screenHeight === 'number') {
         this.screenHeight = project.player.screenHeight
       }
+      if (typeof project.player?.screenScale === 'number') {
+        this.screenScale = project.player.screenScale
+      }
       if (typeof project.player?.maxLayers === 'number') {
         this.setMaxLayers(project.player.maxLayers)
       }
@@ -733,7 +739,7 @@ export const useEditorStore = defineStore('editor', {
     exportProject() {
       return {
         meta: {
-          version: '1.4.1',
+          version: '1.5.0',
           createdAt: Date.now()
         },
         timeline: {
@@ -753,6 +759,7 @@ export const useEditorStore = defineStore('editor', {
         player: {
           screenWidth: this.screenWidth,
           screenHeight: this.screenHeight,
+          screenScale: this.screenScale,
           maxLayers: this.maxLayers
         },
         preprocess: {
@@ -768,6 +775,10 @@ export const useEditorStore = defineStore('editor', {
     setScreenSize(width: number, height: number) {
       this.screenWidth = Math.max(1, Math.round(width))
       this.screenHeight = Math.max(1, Math.round(height))
+    },
+
+    setScreenScale(scale: number) {
+      this.screenScale = Math.max(1, Math.round(scale))
     },
 
     /**
