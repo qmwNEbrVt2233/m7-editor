@@ -16,7 +16,8 @@
                   <tr><td>Ctrl + S</td><td>导出工程 JSON</td></tr>
                   <tr><td>Ctrl + D</td><td>保存工程到本地缓存</td></tr>
                   <tr><td>Ctrl + Delete</td><td>清空本地缓存工程</td></tr>
-                  <tr><td>Tab</td><td>手动重构缓存池</td></tr>
+                  <tr><td>Ctrl + Shift + Delete</td><td>清空所有缓存</td></tr>
+                  <tr><td>Shift + Tab</td><td>手动重构缓存池</td></tr>
                 </tbody>
               </table>
             </div>
@@ -39,6 +40,20 @@
                   <tr><td>]</td><td>将播放头移动到弹幕的结束位置</td></tr>
                   <tr><td>Shift + Enter</td><td>编辑文本字段时换行</td></tr>
                   <tr><td>Enter</td><td>将弹幕数据写入</td></tr>
+                  <tr><td>0</td><td>切换SEB应用范围</td></tr>
+                  <tr><td>1</td><td>拾取定位工具</td></tr>
+                  <tr><td>2</td><td>垂直居中工具</td></tr>
+                  <tr><td>3</td><td>水平居中工具</td></tr>
+                  <tr><td>4</td><td>垂直镜像工具</td></tr>
+                  <tr><td>5</td><td>水平镜像工具</td></tr>
+                  <tr><td>6</td><td>互换结束与起始坐标工具</td></tr>
+                  <tr><td>7</td><td>z轴旋转计算工具</td></tr>
+                  <tr><td>8</td><td>行分隔工具</td></tr>
+                  <tr><td>9</td><td>字分隔工具</td></tr>
+                  <tr><td>\</td><td>时间分割工具</td></tr>
+                  <tr><td>Ctrl + /</td><td>展开高级工具面板</td></tr>
+                  <tr><td>Ctrl + ArrowUp</td><td>将结束坐标应用至起始坐标</td></tr>
+                  <tr><td>Ctrl + ArrowDown</td><td>将起始坐标应用至结束坐标</td></tr>
                 </tbody>
               </table>
             </div>
@@ -286,8 +301,12 @@
       <DanmakuLayer />
     </div>
 
-    <div v-if="store.videoUrl" class="video-info" :style="videoInfoStyle">
+    <div v-if="store.videoUrl && store.playing" class="video-info" :style="videoInfoStyle">
       媒体时长: {{ formatTime(store.videoDuration) }}
+    </div>
+
+    <div v-if="!store.playing" class="video-info" :style="videoInfoStyle">
+      当前时间: {{ Math.round(store.currentTime) }}
     </div>
   </div>
 </template>

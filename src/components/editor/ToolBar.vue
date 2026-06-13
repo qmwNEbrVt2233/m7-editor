@@ -162,18 +162,18 @@
         <button
           class="tool-btn"
           :disabled="!hasSelection"
-          title="水平居中"
-          @click="handleHorizontalCenter"
+          title="垂直居中"
+          @click="handleVerticalCenter"
         >
-          <img src="/src/icon/vertical_centering.svg" alt="水平居中" />
+          <img src="/src/icon/horizontal_centering.svg" alt="水平居中" />
         </button>
         <button
           class="tool-btn"
           :disabled="!hasSelection"
-          title="垂直居中"
-          @click="handleVerticalCenter"
+          title="水平居中"
+          @click="handleHorizontalCenter"
         >
-          <img src="/src/icon/horizontal_centering.svg" alt="垂直居中" />
+          <img src="/src/icon/vertical_centering.svg" alt="垂直居中" />
         </button>
       </div>
     </div>
@@ -282,7 +282,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, onMounted, onUnmounted, watch } from 'vue'
 import type { DanmakuItem } from '@/core/danmaku'
 import { historyManager } from '@/core/history'
 import { useEditorStore } from '@/store/editor'
@@ -1633,12 +1633,12 @@ async function handleCenterByAxis(axis: Axis) {
 
 // 水平居中工具
 function handleHorizontalCenter() {
-  void handleCenterByAxis('x')
+  void handleCenterByAxis('y')
 }
 
 // 垂直居中工具
 function handleVerticalCenter() {
-  void handleCenterByAxis('y')
+  void handleCenterByAxis('x')
 }
 
 // 将起始坐标复制到结束坐标
@@ -2084,6 +2084,90 @@ watch(selectedCoordinateSnapshot, (nextSnapshot, previousSnapshot) => {
 
   handleLockedAngleUpdate(xChanged ? 'x' : 'y')
 }, { deep: true })
+
+function handleshortcuts(e: KeyboardEvent) {
+  
+  const isCtrl = e.ctrlKey || e.metaKey
+  
+  if (store.showCreationTools === true) {
+    return
+  }
+
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+    return
+  }
+
+  if (e.key === '0' ) {
+    if (scopeMode.value === 'S') {
+      scopeMode.value = 'E'
+    } else if (scopeMode.value === 'E') {
+      scopeMode.value = 'B'
+    } else {
+      scopeMode.value = 'S'
+    }
+    console.log('[工具栏] 快捷键：切换应用范围')
+  }
+
+  if (e.key === '1' ) {
+    handlePickTool()
+  }
+
+  if (e.key === '2' ) {
+    handleVerticalCenter()
+  }
+
+  if (e.key === '3' ) {
+    handleHorizontalCenter()
+  }
+
+  if (e.key === '4' ) {
+    handleHorizontalMirror()
+  }
+
+  if (e.key === '5' ) {
+    handleVerticalMirror()
+  }
+
+  if (e.key === '6' ) {
+    handleSwapStartAndEnd()
+  }
+
+  if (e.key === '7' ) {
+    handleCalculateZRotation()
+  }
+
+  if (e.key === '8' ) {
+    handleLineSplit()
+  }
+
+  if (e.key === '9' ) {
+    handleLetterSplit()
+  }
+
+  if (e.key === '\\' && isCtrl) {
+    handleTimeSplit()
+  }
+
+  if (e.key === 'ArrowDown' && isCtrl ) {
+    handleCopyStartToEnd()
+  }
+
+  if (e.key === 'ArrowUp' && isCtrl ) {
+    handleCopyEndToStart()
+  }
+
+  if (e.key === '/' && isCtrl ) {
+    toggleAdvancedTools()
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleshortcuts)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleshortcuts)
+})
 
 // 组件卸载时，移除可能残留的拾取定位监听器
 onBeforeUnmount(() => {

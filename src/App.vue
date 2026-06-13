@@ -116,6 +116,16 @@ function handleKeyDown(e: KeyboardEvent) {
     console.log('[快捷键] 清空缓存工程')
     return
   }
+
+  // `ctrl+shift+del` 清空所有缓存
+  if (e.key === 'Delete' && isCtrl && !isAlt && isShift) {
+    e.preventDefault()
+    if (window.confirm('确定要清空所有缓存吗？这将删除所有未保存的工程数据和预设，此操作不可撤销')) {
+      localStorage.clear()
+      console.log('[快捷键] 清空所有缓存')
+    }
+    return
+  }
 }
 
 onMounted(() => {

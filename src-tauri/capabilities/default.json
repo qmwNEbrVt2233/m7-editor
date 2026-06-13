@@ -14,6 +14,7 @@
     "core:window:allow-unminimize",
     "core:window:allow-is-minimized",
     "clipboard-manager:allow-read-text",
-    "clipboard-manager:allow-write-text"
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-clear"
   ]
 }

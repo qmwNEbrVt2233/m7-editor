@@ -559,10 +559,10 @@ function handleTabKeyPress(event: KeyboardEvent) {
     return
   }
 
-  if (event.key === 'Tab') {
+  if (event.key === 'Tab' && event.shiftKey) {
     event.preventDefault()
     updateBuffer(store.currentTime)
-    console.log('[DanmakuLayer] TAB 快捷键：手动触发缓冲池重构')
+    console.log('[DanmakuLayer] 快捷键：手动触发缓冲池重构')
   }
 }
 
