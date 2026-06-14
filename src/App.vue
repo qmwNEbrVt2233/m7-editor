@@ -87,7 +87,7 @@ function handleKeyDown(e: KeyboardEvent) {
   // 空格播放/暂停
   if (e.code === 'Space' && !isCtrl && !isAlt && !isShift) {
     e.preventDefault()
-    if (store.showCreationTools === true) {
+    if (store.showCreationTools) {
       return
     }
     if (store.playing) {
@@ -144,12 +144,13 @@ function handleKeyDown(e: KeyboardEvent) {
     }
   }
 
-  if (e.key === 'Escape' && store.screenRecordingMode) {
+  if (((e.key === 'Enter' && isCtrl) || e.key === 'Escape') && store.screenRecordingMode) {
     e.preventDefault()
     if (window.confirm('确定要退出屏幕录制模式吗？')) {
       store.screenRecordingMode = false
       store.aggressiveOptimization = false
       store.screenScale = scaleBeforeRecording.value
+      store.timelineOffset = store.currentTime
     }
   }
 }

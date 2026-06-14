@@ -18,8 +18,8 @@
                   <tr><td>Ctrl + Delete</td><td>清空本地缓存工程</td></tr>
                   <tr><td>Ctrl + Shift + Delete</td><td>清空所有缓存</td></tr>
                   <tr><td>Shift + Tab</td><td>手动重构缓存池</td></tr>
-                  <tr><td>Ctrl + Space</td><td>开启录屏模式</td></tr>
-                  <tr><td>Escape</td><td>关闭录屏模式</td></tr>
+                  <tr><td>Ctrl + Alt + Space</td><td>开启录屏模式</td></tr>
+                  <tr><td>Escape / Ctrl + Enter</td><td>关闭录屏模式</td></tr>
                 </tbody>
               </table>
             </div>
@@ -36,6 +36,7 @@
                   <tr><td>Ctrl + V</td><td>粘贴弹幕</td></tr>
                   <tr><td>Ctrl + A</td><td>全选弹幕</td></tr>
                   <tr><td>Ctrl + R</td><td>反选弹幕</td></tr>
+                  <tr><td>Ctrl + Backspace</td><td>清空选择状态</td></tr>
                   <tr><td>Ctrl + Z</td><td>撤销</td></tr>
                   <tr><td>Ctrl + Y</td><td>重做</td></tr>
                   <tr><td>[</td><td>将播放头移动到弹幕的开始位置</td></tr>
@@ -53,9 +54,9 @@
                   <tr><td>8</td><td>行分隔工具</td></tr>
                   <tr><td>9</td><td>字分隔工具</td></tr>
                   <tr><td>\</td><td>时间分割工具</td></tr>
-                  <tr><td>Ctrl + /</td><td>展开高级工具面板</td></tr>
-                  <tr><td>Ctrl + ArrowUp</td><td>将结束坐标应用至起始坐标</td></tr>
+                  <tr><td>/</td><td>展开高级工具面板</td></tr>
                   <tr><td>Ctrl + ArrowDown</td><td>将起始坐标应用至结束坐标</td></tr>
+                  <tr><td>Ctrl + ArrowUp</td><td>将结束坐标应用至起始坐标</td></tr>
                 </tbody>
               </table>
             </div>

@@ -2091,7 +2091,7 @@ function handleshortcuts(e: KeyboardEvent) {
   
   const isCtrl = e.ctrlKey || e.metaKey
   
-  if (store.showCreationTools === true) {
+  if (store.showCreationTools || store.screenRecordingMode) {
     return
   }
 
@@ -2146,7 +2146,7 @@ function handleshortcuts(e: KeyboardEvent) {
     handleLetterSplit()
   }
 
-  if (e.key === '\\' && isCtrl) {
+  if (e.key === '\\') {
     handleTimeSplit()
   }
 
@@ -2158,7 +2158,7 @@ function handleshortcuts(e: KeyboardEvent) {
     handleCopyEndToStart()
   }
 
-  if (e.key === '/' && isCtrl ) {
+  if (e.key === '/' ) {
     toggleAdvancedTools()
   }
 }
@@ -2357,7 +2357,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 2%;
   background-color: #1e1e1e;
   width: max-content;
   box-sizing: border-box;
@@ -2405,7 +2405,6 @@ onBeforeUnmount(() => {
   padding: 4px;
   background-color: #252525;
   gap: 4px;
-  margin-top: 2px;
 }
 
 .mode-selector {

@@ -916,7 +916,7 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   const isAlt = e.altKey
   const isShift = e.shiftKey
   
-  if (store.showCreationTools === true) {
+  if (store.showCreationTools || store.screenRecordingMode) {
     return
   }
 
@@ -997,7 +997,7 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
     return
   }
   
-  // ====== 全选弹幕 ======
+  // ====== 弹幕选中相关操作 ======
   
   // `ctrl+a` 全选弹幕
   if (e.key === 'a' && isCtrl && !isAlt && !isShift) {
@@ -1024,6 +1024,12 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
     store.selectedIds = result
     console.log('[快捷键] 反选弹幕')
     return
+  }
+
+  // `ctrl + Backspace` 清空选择
+  if (e.key === `Backspace` && isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    store.clearSelection()
   }
   
   // ====== 回滚/重做 ======
