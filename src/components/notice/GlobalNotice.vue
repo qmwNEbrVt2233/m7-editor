@@ -1,17 +1,21 @@
 <template>
-  <div class="log">{{ store.logMessage }}</div>
+  <div 
+      v-if="!store.screenRecordingMode" 
+      class="log">{{ notice.logMessage }}
+  </div>
+  
   <Transition name="fade">
-    <div v-if="store.isVisible" class="custom-modal-mask">
-      <div class="custom-modal-container" :class="store.type">
+    <div v-if="notice.isVisible" class="custom-modal-mask">
+      <div class="custom-modal-container" :class="notice.type">
         <div class="modal-header">
-          <h3>{{ store.title }}</h3>
+          <h3>{{ notice.title }}</h3>
         </div>
         <div class="modal-body">
-          <p>{{ store.popMessage }}</p>
+          <p>{{ notice.popMessage }}</p>
         </div>
         <div class="modal-footer">
-          <button v-if="store.isConfirm" class="btn-cancel" @click="store.handleAction(false)">取消</button>
-          <button class="btn-confirm" @click="store.handleAction(true)">确定</button>
+          <button v-if="notice.isConfirm" class="btn-cancel" @click="notice.handleAction(false)">取消</button>
+          <button class="btn-confirm" @click="notice.handleAction(true)">确定</button>
         </div>
       </div>
     </div>
@@ -19,8 +23,10 @@
 </template>
 
 <script setup lang="ts">
+import { useEditorStore } from '@/store/editor';
 import { useNoticeStore } from '../../store/notice'
-const store = useNoticeStore()
+const store = useEditorStore()
+const notice = useNoticeStore()
 </script>
 
 <style scoped>

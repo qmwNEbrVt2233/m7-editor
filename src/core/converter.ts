@@ -1,4 +1,5 @@
 import type { DanmakuItem } from './danmaku'
+import { useNoticeStore } from '@/store/notice'
 
 /**
  * XML 导入导出模块
@@ -556,6 +557,7 @@ function buildXmlDanmakuTag(
  * 5. 若比例导出时有坐标超过屏幕，则修正为 0.999 并弹出一次性提示
  */
 export function toXML(list: DanmakuItem[], options: XmlExportOptions = {}): string {
+  const notice = useNoticeStore()
   const normalizedOptions: Required<XmlExportOptions> = {
     useRatioPosition: options.useRatioPosition ?? false,
     screenWidth: normalizeScreenWidth(options.screenWidth),
@@ -579,7 +581,7 @@ export function toXML(list: DanmakuItem[], options: XmlExportOptions = {}): stri
   }).join('\n')
 
   if (anyExceeded) {
-    alert('您的工程内有超过屏幕大小的弹幕，导出后坐标会被修正至0.999，这会导致您的弹幕导出后显示与预期不符')
+    notice.alert('您的工程内有超过屏幕大小的弹幕，导出后坐标会被修正至0.999，这会导致您的弹幕导出后显示与预期不符')
   }
 
   const xmlParts = [

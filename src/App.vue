@@ -83,6 +83,10 @@ async function handleKeyDown(e: KeyboardEvent) {
     return
   }
 
+  if (notice.isVisible) {
+    return
+  }
+
   // 避免在输入框中触发快捷键
   if (isTextEditingTarget(e.target)) {
     return
@@ -111,7 +115,7 @@ async function handleKeyDown(e: KeyboardEvent) {
   if (e.key === 'd' && isCtrl && !isAlt && !isShift) {
     e.preventDefault()
     store.saveToLocal()
-    console.log('[快捷键] 保存工程')
+    notice.log('[快捷键] 保存工程')
     return
   }
   
@@ -119,7 +123,6 @@ async function handleKeyDown(e: KeyboardEvent) {
   if (e.key === 'Delete' && isCtrl && !isAlt && !isShift) {
     e.preventDefault()
     store.clearCache()
-    console.log('[快捷键] 清空缓存工程')
     return
   }
 
@@ -129,7 +132,7 @@ async function handleKeyDown(e: KeyboardEvent) {
     const confirmed = await notice.confirm('确定要清空所有缓存吗？这将删除所有未保存的工程数据和预设，此操作不可撤销')
     if (confirmed) {
       localStorage.clear()
-      console.log('[快捷键] 清空所有缓存')
+      notice.log('[快捷键] 清空所有缓存')
     }
     return
   }
@@ -151,15 +154,13 @@ async function handleKeyDown(e: KeyboardEvent) {
 
   if (((e.key === 'Enter' && isCtrl) || e.key === 'Escape') && store.screenRecordingMode) {
     e.preventDefault()
-
     const confirmed = await notice.confirm('确定要退出屏幕录制模式吗？')
-
     if (confirmed) {
       store.screenRecordingMode = false
       store.aggressiveOptimization = false
       store.screenScale = scaleBeforeRecording.value
       store.timelineOffset = store.currentTime
-      notice.alert('已退出录屏模式')
+      notice.log('已退出录屏模式')
     }
   }
 }

@@ -286,6 +286,7 @@ import { computed, onBeforeUnmount, ref, onMounted, onUnmounted, watch } from 'v
 import type { DanmakuItem } from '@/core/danmaku'
 import { historyManager } from '@/core/history'
 import { useEditorStore } from '@/store/editor'
+import { useNoticeStore } from '@/store/notice'
 import { roundToInteger, roundOpacityValue, normalizeAngle, normalizeColor } from '@/utils/validation'
 
 /**
@@ -415,6 +416,7 @@ const SELECTION_FIELD_DEFINITIONS: Record<string, SelectionFieldDefinition> = {
 }
 
 const store = useEditorStore()
+const notice = useNoticeStore()
 
 const scopeMode = ref<ScopeMode>('B')
 const isPicking = ref(false)
@@ -511,7 +513,7 @@ function clampToCoordinateRange(value: number): number {
   }
 
   if (!Number.isFinite(value)) {
-    return value > 0 ? 10000 : 0
+    return value > 0 ? Math.max(10000, store.screenHeight, store.screenWidth) : 0
   }
 
   return Math.max(0, Math.min(10000, value))
@@ -992,7 +994,7 @@ function resolveAngleForDanmaku(danmaku: DanmakuItem): number | null {
   const parsed = parseAngleMode(calculatorAngleInput.value)
 
   if (parsed.mode === 'invalid') {
-    window.alert(parsed.message)
+    notice.alert(parsed.message, 'warn')
     return null
   }
 
@@ -1011,7 +1013,7 @@ function resolveAngleForDanmaku(danmaku: DanmakuItem): number | null {
 function parseLengthInput(): number | null {
   const rawValue = String(calculatorLengthInput.value ?? '').trim()
   if (!rawValue) {
-    window.alert('请输入长度')
+    notice.alert('请输入长度')
     return null
   }
 
@@ -1141,7 +1143,7 @@ function handleStrokeColorPickerInput() {
 function handleStrokeColorTextChange() {
   const normalizedColor = normalizeColor(strokeColorText.value)
   if (!normalizedColor) {
-    window.alert('描边颜色格式无效，请输入 #RRGGBB 或 rgb(...)。')
+    notice.alert('描边颜色格式无效，请输入 #RRGGBB 或 rgb(...)。', 'warn')
     strokeColorText.value = strokeColorPicker.value
     return
   }
@@ -1154,7 +1156,7 @@ function handleStrokeColorTextChange() {
 function normalizeStrokeWidth(): number | null {
   const parsedWidth = Number(strokeWidthInput.value)
   if (!Number.isFinite(parsedWidth) || parsedWidth <= 0) {
-    window.alert('描边宽度必须是大于 0 的数字。')
+    notice.alert('描边宽度必须是大于 0 的数字。', 'warn')
     return null
   }
 
@@ -1206,7 +1208,7 @@ function handleApplyStroke() {
 
   const normalizedColor = normalizeColor(strokeColorText.value)
   if (!normalizedColor) {
-    window.alert('描边颜色格式无效，请输入 #RRGGBB 或 rgb(...)。')
+    notice.alert('描边颜色格式无效，请输入 #RRGGBB 或 rgb(...)。', 'warn')
     return
   }
 
@@ -1270,7 +1272,7 @@ function handleApplyStroke() {
   finishToolbarOperation('工具栏：高级工具描边', nextSelectedIds)
 
   if (hasClampWarning) {
-    window.alert('部分描边弹幕坐标小于 0，已自动修正为 0。')
+    notice.alert('部分描边弹幕坐标小于 0，已自动修正为 0。')
   }
 }
 
@@ -1431,7 +1433,7 @@ function handleApplyLength() {
   finishToolbarOperation('工具栏：长度输入')
 
   if (hasClampWarning) {
-    window.alert('部分长度计算结果超出坐标范围，已自动限制在 0 到 10000 之间。')
+    notice.alert('部分长度计算结果超出坐标范围，已自动限制在 0 到 10000 之间。')
   }
 }
 
@@ -1486,7 +1488,7 @@ function handleLockedAngleUpdate(changedAxis: Axis) {
   finishToolbarOperation('工具栏：锁定角度')
 
   if (hasClampWarning) {
-    window.alert('部分锁定角度结果超出坐标范围，已自动限制在 0 到 10000 之间。')
+    notice.alert('部分锁定角度结果超出坐标范围，已自动限制在 0 到 10000 之间。')
   }
 }
 
@@ -1626,10 +1628,10 @@ async function handleCenterByAxis(axis: Axis) {
     finishToolbarOperation(axis === 'x' ? '工具栏：水平居中' : '工具栏：垂直居中')
 
     if (hasClampWarning) {
-      window.alert('部分弹幕居中后坐标小于 0，已自动修正为 0。')
+      notice.alert('部分弹幕居中后坐标小于 0，已自动修正为 0。', 'warn')
     }
   } catch (error) {
-    console.warn('[ToolBar] 居中计算失败:', error)
+    notice.alert('居中计算失败:', 'error', '工具栏错误', `${error}`)
   }
 }
 
@@ -1796,7 +1798,7 @@ function handleHorizontalMirror() {
   finishToolbarOperation('工具栏：水平镜像')
 
   if (hasClampWarning) {
-    window.alert('部分水平镜像后的坐标小于 0，已自动修正为 0。')
+    notice.alert('部分水平镜像后的坐标小于 0，已自动修正为 0。')
   }
 }
 
@@ -1831,7 +1833,7 @@ function handleVerticalMirror() {
   finishToolbarOperation('工具栏：垂直镜像')
 
   if (hasClampWarning) {
-    window.alert('部分垂直镜像后的坐标小于 0，已自动修正为 0。')
+    notice.alert('部分垂直镜像后的坐标小于 0，已自动修正为 0。')
   }
 }
 
@@ -1866,7 +1868,7 @@ function handleLineSplit() {
   finishToolbarOperation('工具栏：行分隔', nextSelectedIds)
 
   if (hasClampWarning) {
-    window.alert('部分行分隔后的坐标小于 0，已自动修正为 0。')
+    notice.alert('部分行分隔后的坐标小于 0，已自动修正为 0。')
   }
 }
 
@@ -1917,7 +1919,7 @@ async function handleLetterSplit() {
         }
       })
     } catch (error) {
-      console.warn('[ToolBar] 字分隔测量失败:', error)
+      notice.alert('字分隔测量失败:', 'error', '工具栏错误', error)
       return
     }
   }
@@ -1971,7 +1973,7 @@ async function handleLetterSplit() {
   finishToolbarOperation('工具栏：字分隔', nextSelectedIds)
 
   if (hasClampWarning) {
-    window.alert('部分字分隔后的坐标小于 0，已自动修正为 0。')
+    notice.alert('部分字分隔后的坐标小于 0，已自动修正为 0。')
   }
 }
 
@@ -2091,7 +2093,7 @@ function handleshortcuts(e: KeyboardEvent) {
   
   const isCtrl = e.ctrlKey || e.metaKey
   
-  if (store.showCreationTools || store.screenRecordingMode) {
+  if (store.showCreationTools || store.screenRecordingMode || notice.isVisible) {
     return
   }
 

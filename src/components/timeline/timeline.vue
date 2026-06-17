@@ -86,12 +86,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useEditorStore } from '../../store/editor'
+import { useNoticeStore } from '@/store/notice'
 import { historyManager } from '../../core/history'
 import { isValidHex , normalizeColor } from '@/utils/validation'
 import WaveSurfer from 'wavesurfer.js'
 import SpectrogramPlugin from 'wavesurfer.js/dist/plugins/spectrogram.esm.js'
 
 const store = useEditorStore()
+const notice = useNoticeStore()
 const timelineRef = ref<HTMLElement | null>(null)
 const tracksRef = ref<HTMLElement | null>(null)
 
@@ -306,12 +308,12 @@ function initSpectrogram() {
 
       decodedAudioBuffer = decodedData
       totalDurationMs = ws.getDuration() * 1000
-      console.log(`[频谱] 音频总时长: ${totalDurationMs}ms, 当前精度档位: ${currentLevel.value}`)
+      notice.log(`[频谱] 音频总时长: ${totalDurationMs}ms, 当前精度档位: ${currentLevel.value}`)
 
       tileCache.clear()
       renderSpectrogram()
     } catch (error) {
-      console.error('[频谱] 生成频谱失败:', error)
+      notice.alert('生成频谱失败:', 'error', '频谱错误',error)
       resetSpectrogramData()
     }
   })
@@ -455,7 +457,7 @@ async function getFrequenciesChunk(level: PrecisionLevel, chunkIndex: number) {
       if (requestCache.get(chunkIndex) === request) {
         requestCache.delete(chunkIndex)
       }
-      console.error('[频谱] 分段解算失败:', error)
+      notice.alert('分段解算失败:', 'error', '频谱错误', error)
       return null
     })
 
@@ -916,7 +918,7 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   const isAlt = e.altKey
   const isShift = e.shiftKey
   
-  if (store.showCreationTools || store.screenRecordingMode) {
+  if (store.showCreationTools || store.screenRecordingMode || notice.isVisible) {
     return
   }
 

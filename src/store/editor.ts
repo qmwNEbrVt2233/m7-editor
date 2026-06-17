@@ -65,7 +65,7 @@ async function saveBlobWithFallback(
       return
     }
 
-    notice.alert(`'[保存] File System Access API 保存失败，回退到 Blob 下载' + ${error}`, 'warn')
+    notice.log(`'[保存] File System Access API 保存失败，回退到 Blob 下载'`, error)
     triggerBlobDownload(blob, filename)
   }
 }
@@ -632,6 +632,7 @@ export const useEditorStore = defineStore('editor', {
     },
 
     async resolveVideoPath(path?: string) {
+      const notice = useNoticeStore()
       path = path ?? this.videoFilePath
       if (!path) return
 
@@ -649,7 +650,7 @@ export const useEditorStore = defineStore('editor', {
         this.videoFilePath = media.path
         this.videoUrl = media.url
       } catch (error) {
-        console.error('[媒体] 无法读取工程中的媒体文件:', path, error)
+        notice.alert('无法读取工程中的媒体文件:', 'error', '错误', path + error)
         this.videoUrl = ''
       }
     },
@@ -943,7 +944,7 @@ export const useEditorStore = defineStore('editor', {
       // 记录历史
       historyManager.recordSnapshot(this.danmakus, '创建弹幕')
 
-      console.log('[操作] 创建单条弹幕:', newDanmaku.id)
+      console.log('创建单条弹幕:', newDanmaku.id)
     },
 
     /**
@@ -957,7 +958,7 @@ export const useEditorStore = defineStore('editor', {
       // 记录历史
       historyManager.recordSnapshot(this.danmakus, `删除${idsToDelete.length}条弹幕`)
 
-      console.log('[操作] 删除弹幕:', idsToDelete)
+      console.log('删除弹幕:', idsToDelete)
     },
 
     /**
@@ -965,6 +966,7 @@ export const useEditorStore = defineStore('editor', {
      * 尝试使用Tauri剪贴板插件，回退到浏览器API
      */
     async _writeToClipboard(data: string): Promise<void> {
+      const notice = useNoticeStore()
       try {
         // 尝试使用Tauri2剪贴板插件
         await writeText(data)
@@ -975,7 +977,7 @@ export const useEditorStore = defineStore('editor', {
           await navigator.clipboard.writeText(data)
           console.log('[剪贴板] 已通过浏览器API写入')
         } catch (fallbackError) {
-          console.error('[剪贴板] 两种方法均失败', fallbackError)
+          notice.alert('写入剪贴板的两种方法均失败，粘贴弹幕功能不可用', 'error', '剪贴板错误', `${fallbackError}`)
           throw new Error('复制到剪贴板失败')
         }
       }
@@ -986,6 +988,7 @@ export const useEditorStore = defineStore('editor', {
      * 尝试使用Tauri剪贴板插件，回退到浏览器API
      */
     async _readFromClipboard(): Promise<string> {
+      const notice = useNoticeStore()
       try {
         // 尝试使用Tauri2剪贴板插件
         const data = await readText()
@@ -998,7 +1001,7 @@ export const useEditorStore = defineStore('editor', {
           console.log('[剪贴板] 已通过浏览器API读取')
           return data
         } catch (fallbackError) {
-          console.error('[剪贴板] 两种方法均失败', fallbackError)
+          notice.alert('[剪贴板] 读取剪贴板的两种方法均失败，粘贴弹幕功能不可用', 'error', '剪贴板错误', `${fallbackError}`)
           throw new Error('从剪贴板读取失败')
         }
       }
@@ -1008,6 +1011,7 @@ export const useEditorStore = defineStore('editor', {
      * 复制当前帧弹幕
      */
     async copyCurrentFrameDanmakus(): Promise<void> {
+      const notice = useNoticeStore()
       const time = this.currentTime
 
       // 获取当前可见的弹幕（在当前时间区间内）
@@ -1023,7 +1027,7 @@ export const useEditorStore = defineStore('editor', {
       }
 
       if (visibleDanmakus.length === 0) {
-        console.warn('[操作] 当前帧没有可复制的弹幕')
+        notice.log('当前帧没有可复制的弹幕')
         return
       }
 
@@ -1104,9 +1108,9 @@ export const useEditorStore = defineStore('editor', {
       const data = JSON.stringify(copiedDanmakus)
       try {
         await this._writeToClipboard(data)
-        console.log('[操作] 复制当前帧弹幕:', copiedDanmakus.length, '条')
+        notice.log('复制当前帧弹幕:' + copiedDanmakus.length + '条')
       } catch (error) {
-        console.error('[操作] 复制到剪贴板失败:', error)
+        notice.alert('复制到剪贴板失败:', 'error', '剪贴板错误', error)
       }
     },
 
@@ -1114,18 +1118,19 @@ export const useEditorStore = defineStore('editor', {
      * 复制选中的弹幕数据到剪贴板
      */
     async copySelectedDanmakus(): Promise<void> {
+      const notice = useNoticeStore()
       const selectedDanmakus = this.getSelectedDanmakus
       if (selectedDanmakus.length === 0) {
-        console.warn('[操作] 没有选中的弹幕')
+        notice.alert('没有选中的弹幕', 'error')
         return
       }
 
       const data = JSON.stringify(selectedDanmakus)
       try {
         await this._writeToClipboard(data)
-        console.log('[操作] 复制弹幕:', selectedDanmakus.length, '条')
+        notice.log('复制弹幕:' + selectedDanmakus.length + '条')
       } catch (error) {
-        console.error('[操作] 复制到剪贴板失败:', error)
+        notice.alert('复制到剪贴板失败:', 'error', '剪贴板错误', `${error}`)
       }
     },
 
@@ -1135,12 +1140,13 @@ export const useEditorStore = defineStore('editor', {
      * 依次逐个分配ID和layer
      */
     async pasteDanmakus(): Promise<void> {
+      const notice = useNoticeStore()
       try {
         const text = await this._readFromClipboard()
         const danmakusToAdd = parsePastedDanmakusText(text)
 
         if (!Array.isArray(danmakusToAdd)) {
-          console.error('[操作] 粘贴数据格式错误: 未解析出弹幕数组')
+          notice.alert('粘贴数据格式错误: 未解析出弹幕数组', 'error', '剪贴板错误')
           return
         }
 
@@ -1175,9 +1181,9 @@ export const useEditorStore = defineStore('editor', {
         // 记录历史
         historyManager.recordSnapshot(this.danmakus, `粘贴${danmakusToAdd.length}条弹幕`)
 
-        console.log('[操作] 粘贴弹幕:', danmakusToAdd.length, '条')
+        notice.log('粘贴弹幕:' + danmakusToAdd.length + '条')
       } catch (error) {
-        console.error('[操作] 粘贴失败:', error)
+        notice.alert('粘贴失败:', 'error', '剪贴板错误', `${error}`)
       }
     },
     
@@ -1281,7 +1287,7 @@ export const useEditorStore = defineStore('editor', {
       const confirmed = await notice.confirm('确定要清空本地缓存的工程吗？此操作不可撤销。')
       if (confirmed) {
         clearProject()
-        console.log('[操作] 已清空缓存工程')
+        notice.log('已清空缓存工程')
         // 重新加载以恢复默认状态
         window.location.reload()
       }

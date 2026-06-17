@@ -330,6 +330,7 @@
 
 <script setup lang="ts">
 import { useEditorStore } from '../../store/editor'
+import { useNoticeStore } from '@/store/notice'
 import DanmakuLayer from './DanmakuLayer.vue'
 import { ref, watch, onMounted, nextTick, computed } from 'vue'
 import {
@@ -340,6 +341,7 @@ import {
 } from '@/utils/tauriMedia'
 
 const store = useEditorStore()
+const notice = useNoticeStore()
 const videoRef = ref<HTMLVideoElement | null>(null)
 const videoInput = ref<HTMLInputElement | null>(null)
 const projectInput = ref<HTMLInputElement | null>(null)
@@ -648,7 +650,7 @@ watch(
       
       nextTick(() => {
         videoRef.value?.play().catch(() => {
-          console.warn('播放失败')
+          notice.alert('播放失败', 'error', '错误')
         })
       })
     } else {
@@ -672,12 +674,12 @@ async function importVideo() {
 
       if (media) {
         store.setVideoSource(media.url, media.path)
-        console.log('媒体文件路径已设置:', media.path)
+        notice.log('媒体文件路径已设置:' + media.path)
       }
 
       return
     } catch (error) {
-      console.warn('[媒体] Tauri 文件选择失败，回退到浏览器文件选择', error)
+      notice.log('[媒体] Tauri 文件选择失败，回退到浏览器文件选择', error)
     }
   }
 
@@ -703,17 +705,17 @@ async function onVideoFileChange(e: Event) {
       try {
         const media = await registerMediaPath(nativePath)
         store.setVideoSource(media.url, media.path)
-        console.log('媒体文件路径已设置:', media.path)
+        notice.log('媒体文件路径已设置:' + media.path)
         input.value = ''
         return
       } catch (error) {
-        console.warn('[媒体] 真实路径注册失败，回退到临时 Object URL', error)
+        notice.alert('[媒体] 真实路径注册失败，回退到临时 Object URL', 'error', '错误', `${error}`)
       }
     }
 
     const url = URL.createObjectURL(file)
     store.setVideoSource(url, '')
-    console.log('媒体文件已临时载入:', file.name)
+    notice.log('媒体文件成功载入:' + file.name)
   }
 
   input.value = ''

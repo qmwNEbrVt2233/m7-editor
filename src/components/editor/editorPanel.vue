@@ -344,6 +344,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useEditorStore } from '@/store/editor'
+import { useNoticeStore } from '@/store/notice'
 import { parseInput, applyOperation, formatInputDisplay, parseColorWithAlpha, blendColor } from '@/utils/parser'
 import type { ParseResult } from '@/utils/parser'
 import { validateField, roundToInteger, roundOpacityValue, normalizeAngle, normalizeColor, validateRange, M7_RULES } from '@/utils/validation'
@@ -365,6 +366,7 @@ const LOCAL_FONT_LIST_HEIGHT = 224
 const LOCAL_FONT_OVERSCAN = 6
 
 const store = useEditorStore()
+const notice = useNoticeStore()
 
 const builtInFontOptions: FontOption[] = [
   { value: 'SimHei', label: '黑体' },
@@ -728,7 +730,7 @@ async function loadLocalFonts() {
       }
     }
 
-    console.warn('读取本地字体失败:', error)
+    notice.alert('读取本地字体失败:', 'error', '功能不可用', `${error}`)
   } finally {
     isLoadingLocalFonts.value = false
   }
@@ -870,7 +872,7 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
     // 否则按普通颜色处理并规范化（补全 # 号等）
     const normalized = normalizeColor(inputStr)
     if (!normalized) {
-      window.alert('颜色格式无效（支持 #RRGGBB 或 RRGGBB@Alpha 格式）')
+      notice.alert('颜色格式无效（支持 #RRGGBB 或 RRGGBB@Alpha 格式）', 'warn')
       return
     }
     
@@ -882,7 +884,7 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
   if (isOpacityPath(path)) {
     const operation = parseOpacityInput(String(inputValue))
     if ('error' in operation) {
-      console.warn(`字段 ${path} 验证失败: ${operation.error}`)
+      notice.alert(`字段 ${path} 验证失败: ${operation.error}`, 'warn')
       return
     }
 
@@ -914,7 +916,7 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
       const currentValue = d.transform?.[path.endsWith('zRotate') ? 'zRotate' : 'yRotate'] || 0
       const operation = parseInput(String(inputValue), false)
       if (operation.error) {
-        console.warn(`字段 ${path} 验证失败: ${operation.error}`)
+        notice.alert(`字段 ${path} 验证失败: ${operation.error}`, 'warn')
         return
       }
 
@@ -939,7 +941,7 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
     if (path === 'content.text') {
       const textValue = String(inputValue)
       if (!isTextLengthValid(textValue)) {
-        window.alert('文本数据未写入，超出字符限制（最多255个字符，换行符占用2个）')
+        notice.alert('文本数据超出字符限制（最多255个字符，换行符占用2个），请尝试使用“行分隔工具”')
         return
       }
     }
@@ -954,7 +956,7 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
   const parseResult = parseInput(String(inputValue), false) 
 
   if (parseResult.error) {
-    console.warn(`字段 ${path} 验证失败: ${parseResult.error}`)
+    notice.alert(`字段 ${path} 验证失败: ${parseResult.error}`, 'warn')
     return
   }
 
@@ -992,7 +994,7 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
 
   const validation = validateField(getValidationFieldName(path), newValue)
   if (!validation.valid) {
-    console.warn(validation.message)
+    notice.alert(`${validation.message}`, 'warn')
     const rule = M7_RULES[getValidationFieldName(path) as keyof typeof M7_RULES]
     if (rule) {
       newValue = roundToInteger(validateRange(newValue, rule.min, rule.max), store.allowNegativeValues)
