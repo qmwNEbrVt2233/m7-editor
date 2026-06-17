@@ -5,7 +5,7 @@
         <Player />
       </div>
       <div v-if="!store.screenRecordingMode" class="toolbar-section">
-        <ToolBar/>
+        <ToolBar />
       </div>
       <div v-if="!store.screenRecordingMode" class="editor-section">
         <EditorPanel />
@@ -25,6 +25,7 @@
       :visible="store.showCreationTools && !store.screenRecordingMode"
       @update:visible="store.showCreationTools = $event"
     />
+    <GlobalNotice />
   </div>
 </template>
 
@@ -33,11 +34,14 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import Player from './components/player/Player.vue'
 import EditorPanel from './components/editor/editorPanel.vue'
 import Timeline from './components/timeline/timeline.vue'
-import { useEditorStore } from './store/editor'
 import ToolBar from './components/editor/ToolBar.vue'
 import CreationTools from './components/editor/creationTools.vue'
+import GlobalNotice from './components/notice/GlobalNotice.vue'
+import { useEditorStore } from './store/editor'
+import { useNoticeStore } from './store/notice'
 
 const store = useEditorStore()
+const notice = useNoticeStore()
 const timelineHeight = ref(window.innerHeight - store.screenHeight * store.screenScale / 100 - 80)
 const scaleBeforeRecording = ref(store.screenScale)
 
@@ -55,7 +59,7 @@ function isTextEditingTarget(target: EventTarget | null): boolean {
 }
 
 // 全局快捷键
-function handleKeyDown(e: KeyboardEvent) {
+async function handleKeyDown(e: KeyboardEvent) {
   
   const isCtrl = e.ctrlKey || e.metaKey
   const isAlt = e.altKey
@@ -122,7 +126,8 @@ function handleKeyDown(e: KeyboardEvent) {
   // `ctrl+shift+del` 清空所有缓存
   if (e.key === 'Delete' && isCtrl && !isAlt && isShift) {
     e.preventDefault()
-    if (window.confirm('确定要清空所有缓存吗？这将删除所有未保存的工程数据和预设，此操作不可撤销')) {
+    const confirmed = await notice.confirm('确定要清空所有缓存吗？这将删除所有未保存的工程数据和预设，此操作不可撤销')
+    if (confirmed) {
       localStorage.clear()
       console.log('[快捷键] 清空所有缓存')
     }
@@ -146,11 +151,15 @@ function handleKeyDown(e: KeyboardEvent) {
 
   if (((e.key === 'Enter' && isCtrl) || e.key === 'Escape') && store.screenRecordingMode) {
     e.preventDefault()
-    if (window.confirm('确定要退出屏幕录制模式吗？')) {
+
+    const confirmed = await notice.confirm('确定要退出屏幕录制模式吗？')
+
+    if (confirmed) {
       store.screenRecordingMode = false
       store.aggressiveOptimization = false
       store.screenScale = scaleBeforeRecording.value
       store.timelineOffset = store.currentTime
+      notice.alert('已退出录屏模式')
     }
   }
 }

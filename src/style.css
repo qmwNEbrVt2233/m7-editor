@@ -27,7 +27,7 @@
 }
 
 .have-scrollbar::-webkit-scrollbar-track {
-  background: #1e1e1e;
+  background: transparent;
 }
 
 .have-scrollbar::-webkit-scrollbar-thumb {

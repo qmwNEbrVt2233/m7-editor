@@ -790,7 +790,7 @@ function formatTime(ms: number) {
   background-color: #1e1e1e;
   padding: 3px 16px;
   border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 5px rgba(0, 0, 0, 0.4);
   position: fixed;
 }
 

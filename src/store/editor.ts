@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { useNoticeStore } from './notice'
 import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager'
 import type { DanmakuItem } from '@/core/danmaku.ts'
 import { saveProject, loadProject, clearProject } from '../localStorage/projectStorage'
@@ -43,6 +44,7 @@ async function saveBlobWithFallback(
   filename: string,
   acceptType: SavePickerAcceptType
 ) {
+  const notice = useNoticeStore()
   const savePickerWindow = window as SavePickerWindow
 
   if (typeof savePickerWindow.showSaveFilePicker !== 'function') {
@@ -63,7 +65,7 @@ async function saveBlobWithFallback(
       return
     }
 
-    console.warn('[保存] File System Access API 保存失败，回退到 Blob 下载', error)
+    notice.alert(`'[保存] File System Access API 保存失败，回退到 Blob 下载' + ${error}`, 'warn')
     triggerBlobDownload(blob, filename)
   }
 }
@@ -281,16 +283,16 @@ export const useEditorStore = defineStore('editor', {
      
     startPlayback() {
       this.playing = true
-      const startTime = performance.now();
-      const initialTime = this.currentTime;
+      const startTime = performance.now()
+      const initialTime = this.currentTime
 
       const loop = () => {
-        if (!this.playing) return;
+        if (!this.playing) return
         // 计算当前播放头：暂停时的 currentTime + 本次播放经过的时间
-        this.currentTime = initialTime + (performance.now() - startTime);
-        requestAnimationFrame(loop);
-      };
-      loop();
+        this.currentTime = initialTime + (performance.now() - startTime)
+        requestAnimationFrame(loop)
+      }
+      loop()
     },
 
     pausePlayback() {
@@ -381,6 +383,7 @@ export const useEditorStore = defineStore('editor', {
     },
 
     loadXmlFromFile(file: File) {
+      const notice = useNoticeStore()
       const reader = new FileReader()
 
       reader.onload = () => {
@@ -398,7 +401,7 @@ export const useEditorStore = defineStore('editor', {
           this.currentTime = 0
 
           historyManager.clear()
-          historyManager.recordSnapshot(this.danmakus, `导入XML(${danmakus.length}条弹幕)`)
+          historyManager.recordSnapshot(this.danmakus)
 
           errors.forEach((error) => {
             console.warn('[XML 导入] 已跳过异常弹幕:', error.message, error.metadata)
@@ -411,10 +414,9 @@ export const useEditorStore = defineStore('editor', {
           // 标记导入完成，触发缓冲池重构
           this.importTimestamp = Date.now()
 
-          alert(`XML 导入成功: ${danmakus.length} 条弹幕，共跳过 ${errors.length} 条异常弹幕`)
+          notice.alert(errors.length === 0 ? `共 ${danmakus.length} 条，未见异常弹幕` : `共 ${danmakus.length} 条，共跳过 ${errors.length} 条异常弹幕`, errors.length === 0 ? 'success' : 'warn', 'XML导入成功')
         } catch (error) {
-          console.error('XML 解析失败', error)
-          alert('XML 解析失败: ' + (error instanceof Error ? error.message : String(error)))
+          notice.alert(error instanceof Error ? error.message : String(error), 'error', 'XML解析失败')
         }
       }
 
@@ -1274,8 +1276,9 @@ export const useEditorStore = defineStore('editor', {
     /**
      * 清空缓存工程
      */
-    clearCache(): void {
-      const confirmed = window.confirm('确定要清空本地缓存的工程吗？此操作不可撤销。')
+    async clearCache(): Promise<void> {
+      const notice = useNoticeStore()
+      const confirmed = await notice.confirm('确定要清空本地缓存的工程吗？此操作不可撤销。')
       if (confirmed) {
         clearProject()
         console.log('[操作] 已清空缓存工程')

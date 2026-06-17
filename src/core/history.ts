@@ -1,4 +1,5 @@
 import type { DanmakuItem } from './danmaku'
+import { useNoticeStore } from '@/store/notice'
 
 /**
  * 增量补丁结构
@@ -259,7 +260,8 @@ export class HistoryManager {
    * 日志输出
    */
   private logOperation(message: string) {
-    console.log(`[历史记录] ${message}`)
+    const notice = useNoticeStore()
+    notice.log(message)
   }
 }
 

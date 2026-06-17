@@ -180,6 +180,10 @@ watch(() => store.importTimestamp, (newTimestamp) => {
   }
 })
 
+watch(() => store.screenRecordingMode, () => {
+    updateBuffer(store.currentTime)
+})
+
 // 缓动函数
 function applyEasing(progress: number, easing: string) {
   if (easing === 'speedup') {
