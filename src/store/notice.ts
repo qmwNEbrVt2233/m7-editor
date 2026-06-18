@@ -19,6 +19,7 @@ export const useNoticeStore = defineStore('notice', () => {
   const popMessage = ref('')
   const logMessage =ref('')
   const isConfirm = ref(false)
+  const lastLogTime = ref(Date.now())
   
   // 核心：用来处理 confirm 的 Promise 回调
   let confirmResolve: ((value: boolean) => void) | null = null
@@ -33,8 +34,10 @@ export const useNoticeStore = defineStore('notice', () => {
       timestamp: new Date().toLocaleTimeString(),
       type: noticeType,
       message: msg,
-      AdditionalInfo: AdditionalInfo
+      AdditionalInfo
     })
+
+    lastLogTime.value = Date.now()
   }
 
   const log = (msg: string, AdditionalInfo?: any) => {
@@ -77,7 +80,7 @@ export const useNoticeStore = defineStore('notice', () => {
   }
 
   return {
-    isVisible, type, title, popMessage, logMessage, isConfirm, logList,
+    isVisible, type, title, popMessage, logMessage, isConfirm, logList, lastLogTime,
     log, alert, confirm, handleAction
   }
 })

@@ -39,7 +39,7 @@ function triggerBlobDownload(blob: Blob, filename: string) {
   URL.revokeObjectURL(url)
 }
 
-async function saveBlobWithFallback(
+export async function saveBlobWithFallback(
   blob: Blob,
   filename: string,
   acceptType: SavePickerAcceptType
@@ -1288,8 +1288,6 @@ export const useEditorStore = defineStore('editor', {
       if (confirmed) {
         clearProject()
         notice.log('已清空缓存工程')
-        // 重新加载以恢复默认状态
-        window.location.reload()
       }
     },
 

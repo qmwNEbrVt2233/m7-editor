@@ -65,6 +65,15 @@ async function handleKeyDown(e: KeyboardEvent) {
   const isAlt = e.altKey
   const isShift = e.shiftKey
 
+  if (e.key === 'r' && isCtrl && !isAlt && isShift) {
+    e.preventDefault()
+    const confirmed = await notice.confirm('确定要重载页面吗？这将丢失未保存的进度')
+    if (confirmed) {
+      window.location.reload()
+    }
+    return
+  }
+
   if ((e.ctrlKey || e.metaKey) && e.code === 'Semicolon') {
     e.preventDefault()
     store.showCreationTools = !store.showCreationTools
