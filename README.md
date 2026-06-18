@@ -580,6 +580,7 @@ npm run tauri dev
 - XML 比例坐标导入导出依赖当前播放器设置中的 `screen width/height` **若要使用请提前修改宽高！否则转为坐标时会与预期不符！**
 - 弹幕渲染优化采用低频确定高刷范围，若发现弹幕层级显示不正常或无法显示，请按下`Shift + Tab`手动重构缓存池
 - 若您发现修改弹幕结束坐标时不起效用，请检查您的`运动耗时`设置，这可能是因为其设置为0导致的
+- 若遇到问题可选择导出日志以排查
 
 # 项目结构
 
@@ -611,6 +612,9 @@ npm run tauri dev
 │   │   │       editorPanel.vue      #编辑面板
 │   │   │       ToolBar.vue          #工具栏
 │   │   │
+│   │   ├───notice
+│   │   │       GlobalNotice.vue     #全局提醒弹窗与日志
+│   │   │
 │   │   ├───player
 │   │   │       DanmakuLayer.vue     #弹幕渲染
 │   │   │       Player.vue           #播放器渲染
@@ -633,6 +637,7 @@ npm run tauri dev
 │   │
 │   ├───store
 │   │       editor.ts                #Pinia 状态管理
+│   │       notice.ts                #日志/提醒状态管理
 │   │
 │   └───utils
 │           danmakuGenerator.ts      #高级创建工具生成算法
