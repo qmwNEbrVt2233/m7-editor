@@ -455,8 +455,8 @@ npm run tauri dev
 | `Ctrl + Delete` | 清空本地缓存工程 |
 | `Ctrl + Shift + Delete` | 清空所有缓存 |
 | `Shift + Tab` | 手动重构缓存池 |
-| `Ctrl + Space` | 开启录屏模式 |
-| `Escape` | 关闭录屏模式 |
+| `Ctrl + Alt + Space` | 开启录屏模式 |
+| `Escape / Ctrl + Enter` | 关闭录屏模式 |
 
 ## 弹幕编辑
 
@@ -470,6 +470,7 @@ npm run tauri dev
 | `Ctrl + V` | 粘贴弹幕 |
 | `Ctrl + A` | 全选弹幕 |
 | `Ctrl + R` | 反选弹幕 |
+| `Ctrl + Backspace` | 清空选择状态 |
 | `Ctrl + Z` | 撤销 |
 | `Ctrl + Y` | 重做 |
 | `[` | 将播放头移动到当前操作弹幕或首个选中弹幕的开始位置 |
@@ -487,9 +488,9 @@ npm run tauri dev
 | `8` | 行分隔工具 |
 | `9` | 字分隔工具 |
 | `\` | 时间分割工具 |
-| `Ctrl + /` | 展开高级工具面板 |
-| `Ctrl + ArrowUp` | 将结束坐标应用至起始坐标 |
+| `/` | 展开高级工具面板 |
 | `Ctrl + ArrowDown` | 将起始坐标应用至结束坐标 |
+| `Ctrl + ArrowUp` | 将结束坐标应用至起始坐标 |
 
 ## 时间轴与播放头
 
@@ -568,7 +569,7 @@ npm run tauri dev
 4. 累了？使用 `ctrl + s` 保存至本地或选择 `ctrl + d` 以便下次快速进入工作
 5. 完成后选择你需要的预处理选项并导出 XML
 6. 使用[弹幕发射场](https://github.com/MikuFan039/DMSenderAPP/releases)或其他任何用于发送 xml 的工具将你的弹幕上传至 bilibili 吧！
-7. 做完后想要录屏分享？打开`录屏模式`！（Ctrl + Space）自动全屏，抛弃所有不必要的渲染，专注于性能，完成录屏后按`ESC`回到编辑模式
+7. 做完后想要录屏分享？打开`录屏模式`！（Ctrl + Alt + Space）自动全屏，抛弃所有不必要的渲染，专注于性能，完成录屏后按`ESC`回到编辑模式
 
 # 当前注意事项
 
@@ -579,6 +580,7 @@ npm run tauri dev
 - XML 比例坐标导入导出依赖当前播放器设置中的 `screen width/height` **若要使用请提前修改宽高！否则转为坐标时会与预期不符！**
 - 弹幕渲染优化采用低频确定高刷范围，若发现弹幕层级显示不正常或无法显示，请按下`Shift + Tab`手动重构缓存池
 - 若您发现修改弹幕结束坐标时不起效用，请检查您的`运动耗时`设置，这可能是因为其设置为0导致的
+- 若遇到问题可选择导出日志以排查
 
 # 项目结构
 
@@ -610,6 +612,9 @@ npm run tauri dev
 │   │   │       editorPanel.vue      #编辑面板
 │   │   │       ToolBar.vue          #工具栏
 │   │   │
+│   │   ├───notice
+│   │   │       GlobalNotice.vue     #全局提醒弹窗与日志
+│   │   │
 │   │   ├───player
 │   │   │       DanmakuLayer.vue     #弹幕渲染
 │   │   │       Player.vue           #播放器渲染
@@ -632,6 +637,7 @@ npm run tauri dev
 │   │
 │   ├───store
 │   │       editor.ts                #Pinia 状态管理
+│   │       notice.ts                #日志/提醒状态管理
 │   │
 │   └───utils
 │           danmakuGenerator.ts      #高级创建工具生成算法
