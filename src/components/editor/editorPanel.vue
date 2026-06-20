@@ -730,7 +730,7 @@ async function loadLocalFonts() {
       }
     }
 
-    notice.alert('读取本地字体失败:', 'error', '功能不可用', `${error}`)
+    notice.alert('读取本地字体失败:', 'error', '功能不可用', error)
   } finally {
     isLoadingLocalFonts.value = false
   }
@@ -941,8 +941,7 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
     if (path === 'content.text') {
       const textValue = String(inputValue)
       if (!isTextLengthValid(textValue)) {
-        notice.alert('文本数据超出字符限制（最多255个字符，换行符占用2个），请尝试使用“行分隔工具”')
-        return
+        notice.alert('文本数据超出字符限制（最多255个字符，换行符占用2个），请尝试使用“行分隔工具”', 'warn', '警告')
       }
     }
     

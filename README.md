@@ -457,6 +457,7 @@ npm run tauri dev
 | `Shift + Tab` | 手动重构缓存池 |
 | `Ctrl + Alt + Space` | 开启录屏模式 |
 | `Escape / Ctrl + Enter` | 关闭录屏模式 |
+| `Ctrl + Shift + R / Ctrl + F5` | 刷新界面 |
 
 ## 弹幕编辑
 

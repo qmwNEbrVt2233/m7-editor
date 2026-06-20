@@ -418,7 +418,7 @@ button {
 }
 
 button:hover {
-  color: #5c5c5c;
+  filter: brightness(0.9);
 }
 
 .btn-confirm {

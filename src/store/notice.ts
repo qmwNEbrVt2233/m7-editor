@@ -62,7 +62,7 @@ export const useNoticeStore = defineStore('notice', () => {
     popMessage.value = msg
     isVisible.value = true
 
-    addLog(`触发确认弹窗: ${msg}`, 'warn')
+    addLog(msg, 'warn')
 
     return new Promise((resolve) => {
       confirmResolve = resolve

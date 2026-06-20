@@ -362,6 +362,7 @@ export const useEditorStore = defineStore('editor', {
     },
 
     loadFromFile(file: File) {
+      const notice = useNoticeStore()
       const reader = new FileReader()
 
       reader.onload = async () => {
@@ -375,7 +376,7 @@ export const useEditorStore = defineStore('editor', {
           console.log('文件加载成功')
         } catch (e) {
           console.error('文件解析失败', e)
-          alert('文件解析失败: ' + (e instanceof Error ? e.message : String(e)))
+          notice.alert((e instanceof Error ? e.message : String(e)), 'error', '文件解析失败: ', e)
         }
       }
 
@@ -404,7 +405,7 @@ export const useEditorStore = defineStore('editor', {
           historyManager.recordSnapshot(this.danmakus)
 
           errors.forEach((error) => {
-            console.warn('[XML 导入] 已跳过异常弹幕:', error.message, error.metadata)
+            notice.log('[XML 导入] 已跳过异常弹幕:'+ error.message + '，导出日志以获取更多信息', error.metadata)
           })
 
           if (errors.length > 0) {
@@ -416,7 +417,7 @@ export const useEditorStore = defineStore('editor', {
 
           notice.alert(errors.length === 0 ? `共 ${danmakus.length} 条，未见异常弹幕` : `共 ${danmakus.length} 条，共跳过 ${errors.length} 条异常弹幕`, errors.length === 0 ? 'success' : 'warn', 'XML导入成功')
         } catch (error) {
-          notice.alert(error instanceof Error ? error.message : String(error), 'error', 'XML解析失败')
+          notice.alert(error instanceof Error ? error.message : String(error), 'error', 'XML解析失败', error)
         }
       }
 
@@ -438,33 +439,7 @@ export const useEditorStore = defineStore('editor', {
     clearSelection() {
       this.selectedIds = []
     },
-
-    /*
-    _applyDeepPatch(obj: any, patch: any) {
-      for (const [key, value] of Object.entries(patch)) {
-        if (key.includes('.')) {
-          const keys = key.split('.')
-          let current = obj
-          
-          // 迭代到倒数第一个 key 之前
-          for (let i = 0; i < keys.length - 1; i++) {
-            const k = keys[i]
-            // 确保路径存在
-            if (!current[k]) {
-              current[k] = {}
-            }
-            current = current[k]
-          }
-          
-          // 直接设置最深层的值
-          // Vue 3 的 reactive 能够拦截到这种深度赋值
-          current[keys[keys.length - 1]] = value
-        } else {
-          obj[key] = value
-        }
-      }
-    },
-    */
+    
     _applyDeepPatch(id: string, obj: any, patch: any) {
       for (const [key, value] of Object.entries(patch)) {
         // console.log('写入:', key, value, typeof value)
@@ -536,42 +511,17 @@ export const useEditorStore = defineStore('editor', {
      * 检查是否需要移动播放头
      */
     _checkAndMovePlayhead(patch: any, danmakuId: string): void {
+      const hasDuration = patch['animation.duration'] !== undefined || 
+                      (patch.animation?.duration !== undefined)
+      const hasStartTime = patch['startTime'] !== undefined || 
+                      (patch.startTime !== undefined)
       const hasChangedGrop1 = patch['transform.end.x'] !== undefined || 
                       (patch.transform?.end?.x !== undefined) ||
                       patch['transform.end.y'] !== undefined || 
                       (patch.transform?.end?.y !== undefined) ||
                       patch['opacity.to'] !== undefined || 
                       (patch.opacity?.to !== undefined)
-      const hasChangedGrop2 = patch['opacity.from'] !== undefined || 
-                      (patch.opacity?.from !== undefined) ||
-                      patch['content.text'] !== undefined || 
-                      (patch.content?.text !== undefined) ||
-                      patch['content.font'] !== undefined || 
-                      (patch.content?.font !== undefined) ||
-                      patch['content.size'] !== undefined || 
-                      (patch.content?.size !== undefined) ||
-                      patch['content.color'] !== undefined || 
-                      (patch.content?.color !== undefined) ||
-                      patch['content.stroke'] !== undefined || 
-                      (patch.content?.stroke !== undefined) ||
-                      patch['transform.start.x'] !== undefined || 
-                      (patch.transform?.start?.x !== undefined)||
-                      patch['transform.start.y'] !== undefined || 
-                      (patch.transform?.start?.y !== undefined) ||
-                      patch['transform.zRotate'] !== undefined || 
-                      (patch.transform?.zRotate !== undefined) ||
-                      patch['transform.yRotate'] !== undefined || 
-                      (patch.transform?.yRotate !== undefined) ||
-                      patch['animation.moveDuration'] !== undefined || 
-                      (patch.animation?.moveDuration !== undefined) ||
-                      patch['animation.delay'] !== undefined || 
-                      (patch.animation?.delay !== undefined) ||
-                      patch['animation.easing'] !== undefined || 
-                      (patch.animation?.easing !== undefined)
-      const hasDuration = patch['animation.duration'] !== undefined || 
-                      (patch.animation?.duration !== undefined)
-      const hasStartTime = patch['startTime'] !== undefined || 
-                      (patch.startTime !== undefined)
+      const hasChangedGrop2 = !(hasChangedGrop1 || hasDuration || hasStartTime)
       if (hasChangedGrop1) {
         const danmaku = this.danmakus.find((d: any) => d.id === danmakuId)
         if (danmaku) {
@@ -1001,7 +951,7 @@ export const useEditorStore = defineStore('editor', {
           console.log('[剪贴板] 已通过浏览器API读取')
           return data
         } catch (fallbackError) {
-          notice.alert('[剪贴板] 读取剪贴板的两种方法均失败，粘贴弹幕功能不可用', 'error', '剪贴板错误', `${fallbackError}`)
+          notice.alert('[剪贴板] 读取剪贴板的两种方法均失败，粘贴弹幕功能不可用', 'error', '剪贴板错误', fallbackError)
           throw new Error('从剪贴板读取失败')
         }
       }
@@ -1130,7 +1080,7 @@ export const useEditorStore = defineStore('editor', {
         await this._writeToClipboard(data)
         notice.log('复制弹幕:' + selectedDanmakus.length + '条')
       } catch (error) {
-        notice.alert('复制到剪贴板失败:', 'error', '剪贴板错误', `${error}`)
+        notice.alert('复制到剪贴板失败:', 'error', '剪贴板错误', error)
       }
     },
 
@@ -1183,7 +1133,7 @@ export const useEditorStore = defineStore('editor', {
 
         notice.log('粘贴弹幕:' + danmakusToAdd.length + '条')
       } catch (error) {
-        notice.alert('粘贴失败:', 'error', '剪贴板错误', `${error}`)
+        notice.alert('粘贴失败:', 'error', '剪贴板错误', error)
       }
     },
     

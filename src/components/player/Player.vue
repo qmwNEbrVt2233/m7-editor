@@ -20,6 +20,7 @@
                   <tr><td>Shift + Tab</td><td>手动重构缓存池</td></tr>
                   <tr><td>Ctrl + Alt + Space</td><td>开启录屏模式</td></tr>
                   <tr><td>Escape / Ctrl + Enter</td><td>关闭录屏模式</td></tr>
+                  <tr><td>Ctrl + Shift + R / Ctrl + F5</td><td>刷新界面</td></tr>
                 </tbody>
               </table>
             </div>
@@ -709,7 +710,7 @@ async function onVideoFileChange(e: Event) {
         input.value = ''
         return
       } catch (error) {
-        notice.alert('[媒体] 真实路径注册失败，回退到临时 Object URL', 'error', '错误', `${error}`)
+        notice.alert('[媒体] 真实路径注册失败，回退到临时 Object URL', 'error', '错误', error)
       }
     }
 

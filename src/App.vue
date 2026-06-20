@@ -43,7 +43,9 @@ import { useNoticeStore } from './store/notice'
 const store = useEditorStore()
 const notice = useNoticeStore()
 const timelineHeight = ref(window.innerHeight - store.screenHeight * store.screenScale / 100 - 80)
-const scaleBeforeRecording = ref(store.screenScale)
+const screenScaleBeforeRecording = ref(store.screenScale)
+const currentTimeBeforeRecording = ref(store.currentTime)
+const timeLineOffsetBeforeRecording =ref(store.timelineOffset) 
 
 function isTextEditingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -65,7 +67,7 @@ async function handleKeyDown(e: KeyboardEvent) {
   const isAlt = e.altKey
   const isShift = e.shiftKey
 
-  if (e.key === 'r' && isCtrl && !isAlt && isShift) {
+  if ((e.code === 'KeyR' && isCtrl && !isAlt && isShift) || (e.key === 'F5' && isCtrl && !isAlt && !isShift)) {
     e.preventDefault()
     const confirmed = await notice.confirm('确定要重载页面吗？这将丢失未保存的进度')
     if (confirmed) {
@@ -115,7 +117,7 @@ async function handleKeyDown(e: KeyboardEvent) {
   }
   
   // Ctrl+S 导出JSON
-  if (e.code === 'KeyS' && isCtrl) {
+  if (e.key === 's' && isCtrl) {
     e.preventDefault()
     void store.downloadProject()
   }
@@ -149,7 +151,9 @@ async function handleKeyDown(e: KeyboardEvent) {
   if (e.code === 'Space' && isCtrl && isAlt && !isShift) {
     e.preventDefault()
     if (!store.screenRecordingMode) {
-      scaleBeforeRecording.value = store.screenScale
+      screenScaleBeforeRecording.value = store.screenScale
+      currentTimeBeforeRecording.value = store.currentTime
+      timeLineOffsetBeforeRecording.value = store.timelineOffset
       store.showCreationTools = false
       store.screenRecordingMode = true
       store.aggressiveOptimization = true
@@ -167,8 +171,9 @@ async function handleKeyDown(e: KeyboardEvent) {
     if (confirmed) {
       store.screenRecordingMode = false
       store.aggressiveOptimization = false
-      store.screenScale = scaleBeforeRecording.value
-      store.timelineOffset = store.currentTime
+      store.screenScale = screenScaleBeforeRecording.value
+      store.currentTime = currentTimeBeforeRecording.value
+      store.timelineOffset = timeLineOffsetBeforeRecording.value
       notice.log('已退出录屏模式')
     }
   }

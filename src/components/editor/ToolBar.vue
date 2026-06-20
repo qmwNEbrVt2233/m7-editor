@@ -1631,7 +1631,7 @@ async function handleCenterByAxis(axis: Axis) {
       notice.alert('部分弹幕居中后坐标小于 0，已自动修正为 0。', 'warn')
     }
   } catch (error) {
-    notice.alert('居中计算失败:', 'error', '工具栏错误', `${error}`)
+    notice.alert('居中计算失败:', 'error', '工具栏错误', error)
   }
 }
 

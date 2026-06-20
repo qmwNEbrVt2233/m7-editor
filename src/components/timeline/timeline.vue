@@ -919,6 +919,7 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   const isShift = e.shiftKey
   
   if (store.showCreationTools || store.screenRecordingMode || notice.isVisible) {
+    e.preventDefault()
     return
   }
 
