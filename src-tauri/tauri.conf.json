@@ -1,7 +1,6 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
   "productName": "m7-editor",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "identifier": "com.jerryeee.m7-editor",
   "build": {
     "beforeDevCommand": "npm run dev -- --port 2388",

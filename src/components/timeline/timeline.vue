@@ -3,8 +3,6 @@
     class="timeline"
     ref="timelineRef"
     @mousedown="onMouseDown"
-    @mousemove="onMouseMove"
-    @mouseup="onMouseUp"
   >
     <!-- 刻度 -->
     <div class="ruler">
@@ -1111,6 +1109,8 @@ onMounted(() => {
   initContainerWidth()
   updateTracksViewHeight()
   initSpectrogram()
+  window.addEventListener('mousemove', onMouseMove)
+  window.addEventListener('mouseup', onMouseUp)
   window.addEventListener('keydown', handleKeyboardShortcuts)
   window.addEventListener('keyup', handleKeyboardUp)
   window.addEventListener('resize', handleWindowResize)
@@ -1130,6 +1130,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('mousemove', onMouseMove)
+  window.removeEventListener('mouseup', onMouseUp)
   window.removeEventListener('keydown', handleKeyboardShortcuts)
   window.removeEventListener('keyup', handleKeyboardUp)
   window.removeEventListener('resize', handleWindowResize)
@@ -1287,14 +1289,8 @@ function onMouseDown(e: MouseEvent) {
   const isOnRuler = (e.target as HTMLElement).closest('.ruler')
   const isCtrlPressed = e.ctrlKey || e.metaKey
   
-  if (isOnRuler) {
-    dragging.value = true
-    updateTime(e)
-    return
-  }
-  
   // 点击空白处取消所有选择
-  if (!isOnBlock && !isOnHandle && !isCtrlPressed) {
+  if (!isOnBlock && !isOnHandle && !isCtrlPressed && !isOnRuler) {
     store.clearSelection()
   }
   
@@ -1322,7 +1318,10 @@ function onMouseDown(e: MouseEvent) {
 }
 
 function updateTime(e: MouseEvent) {
-  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  const rect = timelineRef.value?.getBoundingClientRect()
+  if (!rect) {
+    return
+  }
 
   const x = e.clientX - rect.left
 
@@ -1477,40 +1476,11 @@ function onBlockMouseDown(e: MouseEvent, d: any) {
     
     // dragStartLayer应该考虑ruler高度和scrollTop
     dragStartLayer.value = Math.floor((e.clientY - timelineRect.top - RULER_HEIGHT + scrollTop) / rowHeight)
-
-    window.addEventListener('mousemove', onGlobalMouseMove)
-    window.addEventListener('mouseup', onGlobalMouseUp)
   }
   
   // 记录全局鼠标位置（用于计算多选拖动的delta）
   dragStartPageX.value = e.pageX
   dragStartPageY.value = e.pageY
-}
-
-function onGlobalMouseMove(e: MouseEvent) {
-  if (!dragMode.value) return
-
-  // 计算位移距离，防止极其微小的抖动误触发
-  const dx = Math.abs(e.pageX - dragStartPageX.value)
-  const dy = Math.abs(e.pageY - dragStartPageY.value)
-
-  if (dragMode.value === 'move' && (dx > DRAG_THRESHOLD_PX || dy > DRAG_THRESHOLD_PX) && !hasRecordedSnapshotDuringDrag) {
-    hasRecordedSnapshotDuringDrag = true
-    dragInteractionChanged.value = true
-  }
-
-  if ((dragMode.value === 'resize-left' || dragMode.value === 'resize-right') && dx > DRAG_THRESHOLD_PX && !hasRecordedSnapshotDuringResize) {
-    hasRecordedSnapshotDuringResize = true
-    dragInteractionChanged.value = true
-  }
-
-  onMouseMove(e) 
-}
-
-function onGlobalMouseUp() {
-  window.removeEventListener('mousemove', onGlobalMouseMove)
-  window.removeEventListener('mouseup', onGlobalMouseUp)
-  finishBlockInteraction()
 }
 
 function finishBlockInteraction() {
@@ -1674,9 +1644,6 @@ function onResizeStart(e: MouseEvent, d: any, side: 'left' | 'right') {
   // 记录鼠标位置（用于计算resize的delta）
   dragStartPageX.value = e.pageX
   dragStartPageY.value = e.pageY
-
-  window.addEventListener('mousemove', onGlobalMouseMove)
-  window.addEventListener('mouseup', onGlobalMouseUp)
 }
 
 // 时间舍入函数，确保精度
@@ -1773,6 +1740,20 @@ function onMouseMove(e: MouseEvent) {
 
   // 拖动弹幕块
   if (!dragMode.value) return
+
+  // 计算位移距离，防止极其微小的抖动误触发
+  const dx = Math.abs(e.pageX - dragStartPageX.value)
+  const dy = Math.abs(e.pageY - dragStartPageY.value)
+
+  if (dragMode.value === 'move' && (dx > DRAG_THRESHOLD_PX || dy > DRAG_THRESHOLD_PX) && !hasRecordedSnapshotDuringDrag) {
+    hasRecordedSnapshotDuringDrag = true
+    dragInteractionChanged.value = true
+  }
+
+  if ((dragMode.value === 'resize-left' || dragMode.value === 'resize-right') && dx > DRAG_THRESHOLD_PX && !hasRecordedSnapshotDuringResize) {
+    hasRecordedSnapshotDuringResize = true
+    dragInteractionChanged.value = true
+  }
 
   // 问题3修复：从.tracks获取scrollTop，而不是e.currentTarget（timeline）
   const tracksElement = tracksRef.value
