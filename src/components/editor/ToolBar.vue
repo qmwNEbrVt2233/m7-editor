@@ -311,18 +311,24 @@ type SelectionFieldDefinition = {
 }
 type CommandRule = {
   target: string
-  expression: string
+  mode: 'expression' | 'upset'
+  expression?: string
 }
 type SelectionExactCriterion = {
   type: 'exact'
   value: string
+}
+type SelectionRegexCriterion = {
+  type: 'regex'
+  value: string
+  regex: RegExp
 }
 type SelectionRangeCriterion = {
   type: 'range'
   fromExpression: string
   toExpression: string
 }
-type SelectionCriterion = SelectionExactCriterion | SelectionRangeCriterion
+type SelectionCriterion = SelectionExactCriterion | SelectionRegexCriterion | SelectionRangeCriterion
 type SelectionFilterRule =
   | { type: 'selecting' }
   | { type: 'field'; field: string; definition: SelectionFieldDefinition; criteria: SelectionCriterion[] }
@@ -740,7 +746,11 @@ function parseCommandRules(commandText: string): CommandRule[] {
       throw new Error(`第 ${index + 1} 条规则的目标字段 ${target} 不是可写入的数值字段`)
     }
 
-    return { target, expression }
+    if (expression === 'upset') {
+      return { target, mode: 'upset' }
+    }
+
+    return { target, mode: 'expression', expression }
   })
 }
 
@@ -816,20 +826,37 @@ function parseSelectionCriteria(rawCriteria: string, field: string, definition: 
       }
     }
 
-    if (definition.kind !== 'number') {
-      throw new Error(`筛选字段 ${field} 不是数值字段，不能使用范围表达式`)
+    if (trimmedCriterion.startsWith('<') && trimmedCriterion.endsWith('>')) {
+      const pattern = trimmedCriterion.slice(1, -1)
+      try {
+        return {
+          type: 'regex',
+          value: pattern,
+          regex: new RegExp(pattern)
+        }
+      } catch (error) {
+        throw new Error(`筛选字段 ${field} 的正则表达式无效: ${error}`)
+      }
     }
 
-    const rangeParts = splitOutsideQuotes(trimmedCriterion, '~')
-    if (rangeParts.length !== 2 || !rangeParts[0] || !rangeParts[1]) {
-      throw new Error(`筛选字段 ${field} 的条件格式无效，应为 '匹配值' 或 数值~数值`)
+    if (definition.kind === 'number') {
+      const rangeParts = splitOutsideQuotes(trimmedCriterion, '~')
+      if (rangeParts.length !== 2 || !rangeParts[0] || !rangeParts[1]) {
+        throw new Error(`筛选字段 ${field} 的条件格式无效，应为 '匹配值' 或 数值~数值`)
+      }
+
+      return {
+        type: 'range',
+        fromExpression: rangeParts[0],
+        toExpression: rangeParts[1]
+      }
     }
 
-    return {
-      type: 'range',
-      fromExpression: rangeParts[0],
-      toExpression: rangeParts[1]
+    if (definition.kind === 'string') {
+      throw new Error(`筛选字段 ${field} 的条件格式无效，应为 '匹配值' 或 <正则表达式>`)
     }
+
+    throw new Error(`筛选字段 ${field} 只能使用 '匹配值' 作为条件`)
   })
 }
 
@@ -910,6 +937,14 @@ function matchesSelectionFieldRule(danmaku: DanmakuItem, rule: Extract<Selection
   return rule.criteria.some((criterion) => {
     if (criterion.type === 'exact') {
       return matchesExactSelectionCriterion(value, criterion.value)
+    }
+
+    if (criterion.type === 'regex') {
+      if (value === null || value === undefined) {
+        return false
+      }
+
+      return criterion.regex.test(String(value))
     }
 
     if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -1134,6 +1169,28 @@ function appendCommandLog(message: string) {
   commandLogs.value = commandLogs.value.slice(0, 30)
 }
 
+function shuffleArray<T>(values: T[]): T[] {
+  const shuffled = [...values]
+
+  for (let index = shuffled.length - 1; index > 0; index--) {
+    const randomIndex = Math.floor(Math.random() * (index + 1))
+    const temp = shuffled[index]
+    shuffled[index] = shuffled[randomIndex]
+    shuffled[randomIndex] = temp
+  }
+
+  return shuffled
+}
+
+function readNumericFieldValue(danmaku: DanmakuItem, path: string, label: string): number {
+  const value = getValueByPath(danmaku as Record<string, any>, path)
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`${label} 不是有效数值，无法执行 upset`)
+  }
+
+  return value
+}
+
 // 处理描边颜色选择器输入事件，将颜色值同步到文本输入框
 function handleStrokeColorPickerInput() {
   strokeColorText.value = strokeColorPicker.value.toUpperCase()
@@ -1303,27 +1360,33 @@ function handleCommandSubmit() {
     return
   }
 
-  const originalDanmakus = selectedDanmakus.value.map((danmaku) => cloneDanmaku(danmaku))
+  const baseDanmakus = selectedDanmakus.value.map((danmaku) => cloneDanmaku(danmaku))
+  const workingDanmakus = baseDanmakus.map((danmaku) => cloneDanmaku(danmaku))
+  const baseVariableContexts = baseDanmakus.map((danmaku) => createNumericVariableContext(danmaku))
   let hasChange = false
 
   try {
-    originalDanmakus.forEach((danmaku) => {
-      const baseVariables = createNumericVariableContext(danmaku)
-      const pendingAssignments = new Map<string, number>()
+    rules.forEach((rule) => {
+      const definition = NUMERIC_FIELD_DEFINITIONS[rule.target]
 
-      rules.forEach((rule) => {
-        const definition = NUMERIC_FIELD_DEFINITIONS[rule.target]
-        const result = evaluateCommandExpression(rule.expression, baseVariables)
+      if (rule.mode === 'upset') {
+        const shuffledValues = shuffleArray(
+          workingDanmakus.map((danmaku) => readNumericFieldValue(danmaku, definition.path, rule.target))
+        )
+
+        workingDanmakus.forEach((danmaku, index) => {
+          setValueByPath(danmaku as Record<string, any>, definition.path, shuffledValues[index])
+        })
+        return
+      }
+
+      workingDanmakus.forEach((danmaku, index) => {
+        const result = evaluateCommandExpression(rule.expression || '', baseVariableContexts[index])
         const normalizedValue = definition.kind === 'opacity'
           ? roundOpacityValue(result)
           : roundToInteger(result, store.allowNegativeValues)
 
-        pendingAssignments.set(rule.target, normalizedValue)
-      })
-
-      pendingAssignments.forEach((value, target) => {
-        const definition = NUMERIC_FIELD_DEFINITIONS[target]
-        setValueByPath(danmaku as Record<string, any>, definition.path, value)
+        setValueByPath(danmaku as Record<string, any>, definition.path, normalizedValue)
       })
     })
   } catch (error) {
@@ -1331,7 +1394,7 @@ function handleCommandSubmit() {
     return
   }
 
-  originalDanmakus.forEach((updatedDanmaku, index) => {
+  workingDanmakus.forEach((updatedDanmaku, index) => {
     const targetDanmaku = selectedDanmakus.value[index]
     if (!targetDanmaku) {
       return
