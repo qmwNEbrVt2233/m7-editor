@@ -57,6 +57,7 @@ export type NumericFieldPath =
 
 export type ColorFieldPath = 'content.color'
 export type DirectFieldPath = 'content.text' | 'content.font' | 'content.stroke' | 'animation.easing'
+export type AllFieldPath = NumericFieldPath | ColorFieldPath | DirectFieldPath
 
 export type NumericRuleState = {
   mode: RuleMode
@@ -114,6 +115,7 @@ interface RangeEvaluationParams {
   startVal: number;   // UI传入的起点数值
   endVal: number;     // UI传入的终点数值
   quantity: number;   // 生成数量
+  fieldSeries?: Partial<Record<AllFieldPath, unknown[]>>
 }
 
 export type ExpressionPreset = {
@@ -183,6 +185,36 @@ const NUMERIC_FIELD_PATHS: NumericFieldPath[] = [
   'animation.delay'
 ]
 
+const COLOR_FIELD_PATHS: ColorFieldPath[] = [
+  'content.color'
+]
+
+const DIRECT_FIELD_PATHS: DirectFieldPath[] = [
+  'content.text',
+  'content.font',
+  'content.stroke',
+  'animation.easing'
+]
+
+export const CREATION_TOOL_FIELD_PATHS: AllFieldPath[] = [
+  ...NUMERIC_FIELD_PATHS,
+  ...COLOR_FIELD_PATHS,
+  ...DIRECT_FIELD_PATHS
+]
+
+const CREATION_TOOL_FIELD_PATH_SET = new Set<AllFieldPath>(CREATION_TOOL_FIELD_PATHS)
+
+type FieldSeriesMap = Partial<Record<AllFieldPath, unknown[]>>
+type FieldResolveState = 'visiting' | 'resolved'
+
+type TextTemplatePart =
+  | { type: 'text'; value: string }
+  | { type: 'expression'; source: string; compiled: any }
+
+type TextTemplate = {
+  parts: TextTemplatePart[]
+}
+
 export function writeGeneratedDanmakusToPreview(request: ToolWriteRequest): GeneratedPreviewResult {
   const store = useEditorStore()
   const generatedDanmakus = generateDanmakuDraftsFromRules(request).map((draft) => {
@@ -201,16 +233,13 @@ export function writeGeneratedDanmakusToPreview(request: ToolWriteRequest): Gene
 
 export function generateDanmakuDraftsFromRules(request: ToolWriteRequest): DanmakuDraft[] {
   const quantity = normalizeQuantity(request.quantity)
-  const numericSeries = buildNumericSeriesMap(
-    request.numericRules,
-    quantity,
-    request.expressionEnabled
-  )
-  const colorSeries = buildColorSeries(request.colorRule, quantity)
-  const textSeries = buildDirectFieldSeries<string>('content.text', request.directRules.text, quantity)
-  const fontSeries = buildDirectFieldSeries<string>('content.font', request.directRules.font, quantity)
-  const strokeSeries = buildDirectFieldSeries<boolean>('content.stroke', request.directRules.stroke, quantity)
-  const easingSeries = buildDirectFieldSeries<DanmakuItem['animation']['easing']>('animation.easing', request.directRules.easing, quantity)
+  const fieldSeries = buildFieldSeriesMap(request, quantity)
+  const numericSeries = fieldSeries as Record<NumericFieldPath, number[]>
+  const colorSeries = fieldSeries['content.color'] as string[]
+  const textSeries = fieldSeries['content.text'] as string[]
+  const fontSeries = fieldSeries['content.font'] as string[]
+  const strokeSeries = fieldSeries['content.stroke'] as boolean[]
+  const easingSeries = fieldSeries['animation.easing'] as DanmakuItem['animation']['easing'][]
 
   const drafts: DanmakuDraft[] = []
 
@@ -315,25 +344,100 @@ export function normalizeGeneratedDraft(draft: DanmakuDraft, allowNegativeValues
   }
 }
 
-function buildNumericSeriesMap(
-  numericRules: Record<NumericFieldPath, NumericRuleState>,
-  quantity: number,
-  expressionEnabled: boolean
-): Record<NumericFieldPath, number[]> {
-  const result = {} as Record<NumericFieldPath, number[]>
+function buildFieldSeriesMap(request: ToolWriteRequest, quantity: number): Record<AllFieldPath, unknown[]> {
+  const cache: FieldSeriesMap = {}
+  const states = new Map<AllFieldPath, FieldResolveState>()
+  const stack: AllFieldPath[] = []
 
-  for (const path of NUMERIC_FIELD_PATHS) {
-    result[path] = buildNumericSeries(path, numericRules[path], quantity, expressionEnabled)
+  const resolveField = (path: AllFieldPath): unknown[] => {
+    if (states.get(path) === 'resolved') {
+      return cache[path] || []
+    }
+
+    if (states.get(path) === 'visiting') {
+      const cycleStart = stack.indexOf(path)
+      const cycle = [...stack.slice(cycleStart), path].join(' -> ')
+      throw new Error(`字段引用出现循环: ${cycle}`)
+    }
+
+    states.set(path, 'visiting')
+    stack.push(path)
+
+    const dependencies = getFieldDependencies(path, request)
+    if (dependencies.has(path)) {
+      throw new Error(`${path} 表达式不能引用自身`)
+    }
+
+    for (const dependency of dependencies) {
+      resolveField(dependency)
+    }
+
+    const series = buildFieldSeries(path, request, quantity, cache)
+    cache[path] = series
+    stack.pop()
+    states.set(path, 'resolved')
+
+    return series
   }
 
-  return result
+  for (const path of CREATION_TOOL_FIELD_PATHS) {
+    resolveField(path)
+  }
+
+  return cache as Record<AllFieldPath, unknown[]>
+}
+
+function getFieldDependencies(path: AllFieldPath, request: ToolWriteRequest): Set<AllFieldPath> {
+  if (isNumericFieldPath(path)) {
+    const rule = request.numericRules[path]
+    if (request.expressionEnabled && rule.mode === 'range') {
+      const expression = rule.expression?.trim() || RANGE_EXPRESSION_PRESETS[0].expression
+      return extractExpressionDependencies(expression, `${path} `)
+    }
+  }
+
+  if (path === 'content.text') {
+    return getTextRuleDependencies(request.directRules.text)
+  }
+
+  return new Set()
+}
+
+function buildFieldSeries(
+  path: AllFieldPath,
+  request: ToolWriteRequest,
+  quantity: number,
+  fieldSeries: FieldSeriesMap
+): unknown[] {
+  if (isNumericFieldPath(path)) {
+    return buildNumericSeries(path, request.numericRules[path], quantity, request.expressionEnabled, fieldSeries)
+  }
+
+  if (path === 'content.color') {
+    return buildColorSeries(request.colorRule, quantity)
+  }
+
+  if (path === 'content.text') {
+    return buildTextFieldSeries(request.directRules.text, quantity, fieldSeries)
+  }
+
+  if (path === 'content.font') {
+    return buildDirectFieldSeries<string>('content.font', request.directRules.font, quantity)
+  }
+
+  if (path === 'content.stroke') {
+    return buildDirectFieldSeries<boolean>('content.stroke', request.directRules.stroke, quantity)
+  }
+
+  return buildDirectFieldSeries<DanmakuItem['animation']['easing']>('animation.easing', request.directRules.easing, quantity)
 }
 
 function buildNumericSeries(
   path: NumericFieldPath,
   rule: NumericRuleState,
   quantity: number,
-  expressionEnabled: boolean
+  expressionEnabled: boolean,
+  fieldSeries: FieldSeriesMap
 ): number[] {
   if (rule.mode === 'cycle') {
     return buildCycleNumericSeries(path, rule.cycleList, quantity)
@@ -353,7 +457,8 @@ function buildNumericSeries(
         expression,
         startVal: startValue,
         endVal: endValue,
-        quantity
+        quantity,
+        fieldSeries
       })
     }
 
@@ -476,6 +581,89 @@ function buildCycleColorSeries(cycleList: string, quantity: number): string[] {
   })
 }
 
+function getTextRuleDependencies(rule: DirectRuleState<string>): Set<AllFieldPath> {
+  const dependencies = new Set<AllFieldPath>()
+
+  if (rule.mode === 'assign') {
+    mergeDependencies(dependencies, collectTextTemplateDependencies(rule.value, 'content.text '))
+    return dependencies
+  }
+
+  const entries = parseStrictList(rule.cycleList)
+  for (const [entryIndex, rawValue] of entries.entries()) {
+    mergeDependencies(dependencies, collectTextTemplateDependencies(rawValue, `content.text 循环值 ${entryIndex + 1} `))
+  }
+
+  return dependencies
+}
+
+function collectTextTemplateDependencies(rawValue: string, label: string): Set<AllFieldPath> {
+  const expressions = scanTextTemplateExpressions(rawValue)
+  const dependencies = new Set<AllFieldPath>()
+
+  if (!expressions) {
+    return dependencies
+  }
+
+  for (const expression of expressions) {
+    mergeDependencies(dependencies, extractExpressionDependencies(expression.source, label))
+  }
+
+  return dependencies
+}
+
+function buildTextFieldSeries(
+  rule: DirectRuleState<string>,
+  quantity: number,
+  fieldSeries: FieldSeriesMap
+): string[] {
+  if (rule.mode === 'assign') {
+    const template = compileTextTemplate(rule.value, 'content.text ')
+    if (!template) {
+      return Array.from({ length: quantity }, () => rule.value)
+    }
+
+    return Array.from({ length: quantity }, (_, index) => {
+      return renderTextTemplate(template, {
+        index,
+        quantity,
+        startVal: 0,
+        endVal: 0,
+        fieldSeries,
+        label: 'content.text '
+      })
+    })
+  }
+
+  const entries = parseStrictList(rule.cycleList)
+  if (entries.length === 0) {
+    throw new Error('content.text 循环列表不能为空')
+  }
+
+  const compiledEntries = entries.map((rawValue, entryIndex) => {
+    return {
+      rawValue,
+      template: compileTextTemplate(rawValue, `content.text 循环值 ${entryIndex + 1} `)
+    }
+  })
+
+  return Array.from({ length: quantity }, (_, index) => {
+    const entry = compiledEntries[index % compiledEntries.length]
+    if (!entry.template) {
+      return entry.rawValue
+    }
+
+    return renderTextTemplate(entry.template, {
+      index,
+      quantity,
+      startVal: 0,
+      endVal: 0,
+      fieldSeries,
+      label: 'content.text '
+    })
+  })
+}
+
 function buildDirectFieldSeries<T>(
   path: DirectFieldPath,
   rule: DirectRuleState<T>,
@@ -510,6 +698,207 @@ function parseDirectCycleValue(path: DirectFieldPath, rawValue: string): any {
   }
 
   return rawValue
+}
+
+function scanTextTemplateExpressions(rawValue: string): Array<{ start: number; end: number; source: string }> | null {
+  if (!rawValue.startsWith('`') || !rawValue.endsWith('`') || rawValue.length < 2) {
+    return null
+  }
+
+  const inner = rawValue.slice(1, -1)
+  const expressions: Array<{ start: number; end: number; source: string }> = []
+  let cursor = 0
+
+  while (cursor < inner.length) {
+    const start = inner.indexOf('${', cursor)
+    if (start === -1) {
+      break
+    }
+
+    const end = inner.indexOf('}', start + 2)
+    if (end === -1) {
+      cursor = start + 2
+      continue
+    }
+
+    expressions.push({
+      start,
+      end,
+      source: inner.slice(start + 2, end)
+    })
+    cursor = end + 1
+  }
+
+  return expressions.length > 0 ? expressions : null
+}
+
+function compileTextTemplate(rawValue: string, label: string): TextTemplate | null {
+  const expressions = scanTextTemplateExpressions(rawValue)
+  if (!expressions) {
+    return null
+  }
+
+  const inner = rawValue.slice(1, -1)
+  const parts: TextTemplatePart[] = []
+  let cursor = 0
+
+  for (const expression of expressions) {
+    if (expression.start > cursor) {
+      parts.push({
+        type: 'text',
+        value: inner.slice(cursor, expression.start)
+      })
+    }
+
+    parts.push({
+      type: 'expression',
+      source: expression.source,
+      compiled: compileMathExpression(expression.source, label)
+    })
+    cursor = expression.end + 1
+  }
+
+  if (cursor < inner.length) {
+    parts.push({
+      type: 'text',
+      value: inner.slice(cursor)
+    })
+  }
+
+  return { parts }
+}
+
+function renderTextTemplate(
+  template: TextTemplate,
+  params: {
+    index: number
+    quantity: number
+    startVal: number
+    endVal: number
+    fieldSeries: FieldSeriesMap
+    label: string
+  }
+): string {
+  return template.parts.map((part) => {
+    if (part.type === 'text') {
+      return part.value
+    }
+
+    const result = evaluateCompiledExpression(part.compiled, params)
+    return String(result ?? '')
+  }).join('')
+}
+
+function compileMathExpression(expression: string, label: string): any {
+  try {
+    return math.compile(expression)
+  } catch (error) {
+    throw new Error(`${label}表达式解析失败: ${getErrorMessage(error)}`)
+  }
+}
+
+function extractExpressionDependencies(expression: string, label: string): Set<AllFieldPath> {
+  try {
+    const node = math.parse(expression) as any
+    const dependencies = new Set<AllFieldPath>()
+
+    node.traverse((childNode: any) => {
+      const fieldPath = childNode.toString()
+      if (isAllFieldPath(fieldPath)) {
+        dependencies.add(fieldPath)
+      }
+    })
+
+    return dependencies
+  } catch (error) {
+    throw new Error(`${label}表达式解析失败: ${getErrorMessage(error)}`)
+  }
+}
+
+function evaluateCompiledExpression(
+  compiledExpression: any,
+  params: {
+    index: number
+    quantity: number
+    startVal: number
+    endVal: number
+    fieldSeries?: FieldSeriesMap
+    label?: string
+  }
+): unknown {
+  try {
+    return compiledExpression.evaluate(createExpressionScope(params))
+  } catch (error) {
+    if (params.label !== undefined) {
+      throw new Error(`${params.label}表达式解析失败: ${getErrorMessage(error)}`)
+    }
+    throw error
+  }
+}
+
+function createExpressionScope(params: {
+  index: number
+  quantity: number
+  startVal: number
+  endVal: number
+  fieldSeries?: FieldSeriesMap
+}) {
+  const store = useEditorStore()
+  const t = params.quantity <= 1 ? 0 : params.index / (params.quantity - 1)
+  const scope: Record<string, any> = {
+    S: params.startVal,
+    E: params.endVal,
+    i: params.index,
+    n: params.quantity,
+    t,
+    bezier: evaluateBezier,
+    width: store.screenWidth,
+    height: store.screenHeight
+  }
+
+  for (const [path, series] of Object.entries(params.fieldSeries || {}) as Array<[AllFieldPath, unknown[]]>) {
+    assignScopePath(scope, path, series[params.index])
+  }
+
+  return scope
+}
+
+function assignScopePath(scope: Record<string, any>, path: AllFieldPath, value: unknown) {
+  const segments = path.split('.')
+  let target = scope
+
+  while (segments.length > 1) {
+    const segment = segments.shift() as string
+    if (!isRecord(target[segment])) {
+      target[segment] = {}
+    }
+    target = target[segment]
+  }
+
+  target[segments[0]] = value
+}
+
+function evaluateBezier(x1: number, y1: number, x2: number, y2: number, t: number) {
+  const solver = createCubicBezierSolver(x1, y1, x2, y2)
+  return solver(t)
+}
+
+function mergeDependencies(target: Set<AllFieldPath>, source: Set<AllFieldPath>) {
+  for (const dependency of source) {
+    target.add(dependency)
+  }
+}
+
+function isNumericFieldPath(path: string): path is NumericFieldPath {
+  return (NUMERIC_FIELD_PATHS as string[]).includes(path)
+}
+
+function isAllFieldPath(path: string): path is AllFieldPath {
+  return CREATION_TOOL_FIELD_PATH_SET.has(path as AllFieldPath)
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : '未知错误'
 }
 
 function parseStrictList(rawText: string): string[] {
@@ -767,8 +1156,7 @@ export function createCubicBezierSolver(x1: number, y1: number, x2: number, y2: 
  * 范围模式下，根据数学表达式批量计算数值序列
  */
 export function evaluateRangeExpression(params: RangeEvaluationParams): number[] {
-  const store = useEditorStore()
-  const { expression, startVal, endVal, quantity } = params;
+  const { expression, startVal, endVal, quantity, fieldSeries } = params;
   const results: number[] = [];
 
   if (quantity < 2) return [startVal];
@@ -776,29 +1164,16 @@ export function evaluateRangeExpression(params: RangeEvaluationParams): number[]
   try {
     const compiledExpr = math.compile(expression);
 
-    const bezierFunction = (x1: number, y1: number, x2: number, y2: number, t: number) => {
-      const solver = createCubicBezierSolver(x1, y1, x2, y2);
-      return solver(t);
-    };
-
     // 循环为每条弹幕求值
     for (let i = 0; i < quantity; i++) {
-      const t = i / (quantity - 1); // 归一化进度 0.0 ~ 1.0
-
-      // 组装当前索引的上下文沙盒 (Scope)
-      const scope = {
-        S: startVal,
-        E: endVal,
-        i: i,
-        n: quantity,
-        t: t,
-        bezier: bezierFunction,
-        width: store.screenWidth,
-        height: store.screenHeight
-      };
-
       // 求值
-      const evalResult = compiledExpr.evaluate(scope);
+      const evalResult = evaluateCompiledExpression(compiledExpr, {
+        index: i,
+        quantity,
+        startVal,
+        endVal,
+        fieldSeries
+      });
       
       if (typeof evalResult !== 'number' || Number.isNaN(evalResult) || !Number.isFinite(evalResult)) {
         throw new Error(`第 ${i} 条弹幕计算结果不合法 (NaN/Infinite)`);

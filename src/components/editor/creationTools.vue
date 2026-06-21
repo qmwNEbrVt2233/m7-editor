@@ -305,7 +305,7 @@
                       <textarea
                         v-model="directRules.text.value"
                         rows="3"
-                        placeholder="输入固定文本"
+                        placeholder="输入固定文本，或使用 `${}` 格式"
                       />
                     </label>
                     <label v-else class="stack-field">
@@ -313,7 +313,7 @@
                       <textarea
                         v-model="directRules.text.cycleList"
                         rows="5"
-                        placeholder="使用 ; + 换行 分隔，完整保留空格与内部换行"
+                        placeholder="使用 ; + 换行 分隔，支持 `${}` 格式"
                       />
                     </label>
                   </div>
@@ -365,7 +365,7 @@
                       <textarea
                         v-model="directRules.easing.cycleList"
                         rows="4"
-                        placeholder="支持 speedup / speeddown，使用 ;\n 分隔"
+                        placeholder="支持 speedup / speeddown，使用 ; + 换行 分隔"
                       />
                     </label>
                   </div>

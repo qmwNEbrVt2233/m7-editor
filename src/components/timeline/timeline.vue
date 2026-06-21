@@ -918,12 +918,11 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   const isAlt = e.altKey
   const isShift = e.shiftKey
   
-  if (store.showCreationTools || store.screenRecordingMode || notice.isVisible) {
-    e.preventDefault()
-    return
-  }
-
-  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+  if (store.showCreationTools || store.screenRecordingMode || notice.isVisible || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+    if ((e.code === 'KeyR' && (isCtrl || isShift) && !isAlt) || (e.key === 'F5' && isCtrl && !isAlt && !isShift)) {
+      e.preventDefault()
+      return
+    }
     return
   }
 
