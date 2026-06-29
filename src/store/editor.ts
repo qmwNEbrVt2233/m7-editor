@@ -1197,8 +1197,8 @@ export const useEditorStore = defineStore('editor', {
     undo(): void {
       const result = historyManager.undo()
       if (result) {
-        this.danmakus = result
-        this.selectedIds = []
+        this.danmakus = result.danmakus
+        this.selectedIds = result.selectedIds
       }
     },
 
@@ -1208,8 +1208,8 @@ export const useEditorStore = defineStore('editor', {
     redo(): void {
       const result = historyManager.redo()
       if (result) {
-        this.danmakus = result
-        this.selectedIds = []
+        this.danmakus = result.danmakus
+        this.selectedIds = result.selectedIds
       }
     },
 

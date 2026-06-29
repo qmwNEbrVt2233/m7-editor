@@ -20,6 +20,12 @@ export interface HistorySnapshot {
   description?: string
 }
 
+export interface HistoryOperationResult {
+  danmakus: DanmakuItem[]
+  selectedIds: string[]
+  snapshotId: string
+}
+
 export interface HistoryState {
   snapshots: HistorySnapshot[]
   currentIndex: number
@@ -134,7 +140,7 @@ export class HistoryManager {
   /**
    * 撤销到上一个状态
    */
-  undo(): DanmakuItem[] | null {
+  undo(): HistoryOperationResult | null {
     if (this.state.currentIndex <= 0) {
       this.logOperation('无法撤销: 已在最早的快照')
       return null
@@ -156,13 +162,17 @@ export class HistoryManager {
 
     this.logOperation(`撤销操作（跃迁至快照 ID: ${prevSnapshot.id}）`)
 
-    return this.exportCurrentData()
+    return {
+      danmakus: this.exportCurrentData(),
+      selectedIds: this.uniqueIds(delta.undoUpserted.map(item => item.id)),
+      snapshotId: prevSnapshot.id
+    }
   }
 
   /**
    * 重做到下一个状态
    */
-  redo(): DanmakuItem[] | null {
+  redo(): HistoryOperationResult | null {
     if (this.state.currentIndex >= this.state.snapshots.length - 1) {
       this.logOperation('无法重做: 已在最新的快照')
       return null
@@ -183,7 +193,11 @@ export class HistoryManager {
 
     this.logOperation(`重做操作（跃迁至快照 ID: ${snapshot.id}）`)
 
-    return this.exportCurrentData()
+    return {
+      danmakus: this.exportCurrentData(),
+      selectedIds: this.uniqueIds(delta.upserted.map(item => item.id)),
+      snapshotId: snapshot.id
+    }
   }
 
   /**
@@ -247,6 +261,13 @@ export class HistoryManager {
    */
   private exportCurrentData(): DanmakuItem[] {
     return Array.from(this.currentFullData.values()).map(item => this.clone(item))
+  }
+
+  /**
+   * 去重并过滤空 ID，避免快照增量中出现重复选中项
+   */
+  private uniqueIds(ids: string[]): string[] {
+    return [...new Set(ids.filter(Boolean))]
   }
 
   /**
