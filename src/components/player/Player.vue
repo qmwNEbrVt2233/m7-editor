@@ -675,12 +675,12 @@ async function importVideo() {
 
       if (media) {
         store.setVideoSource(media.url, media.path)
-        notice.log('媒体文件路径已设置:' + media.path)
+        notice.log('媒体文件路径已设置:' + media.path, 'success')
       }
 
       return
     } catch (error) {
-      notice.log('[媒体] Tauri 文件选择失败，回退到浏览器文件选择', error)
+      notice.log('[媒体] Tauri 文件选择失败，回退到浏览器文件选择', 'warn', error)
     }
   }
 
@@ -706,17 +706,17 @@ async function onVideoFileChange(e: Event) {
       try {
         const media = await registerMediaPath(nativePath)
         store.setVideoSource(media.url, media.path)
-        notice.log('媒体文件路径已设置:' + media.path)
+        notice.log('媒体文件路径已设置:' + media.path, 'success')
         input.value = ''
         return
       } catch (error) {
-        notice.alert('[媒体] 真实路径注册失败，回退到临时 Object URL', 'error', '错误', error)
+        notice.log('[媒体] 真实路径注册失败，回退到临时 Object URL', 'error', error)
       }
     }
 
     const url = URL.createObjectURL(file)
     store.setVideoSource(url, '')
-    notice.log('媒体文件成功载入:' + file.name)
+    notice.log('媒体文件成功载入:' + file.name, 'success')
   }
 
   input.value = ''

@@ -143,7 +143,7 @@ async function handleKeyDown(e: KeyboardEvent) {
     const confirmed = await notice.confirm('确定要清空所有缓存吗？这将删除所有未保存的工程数据和预设，此操作不可撤销')
     if (confirmed) {
       localStorage.clear()
-      notice.log('[快捷键] 清空所有缓存')
+      notice.log('[快捷键] 清空所有缓存', 'success')
     }
     return
   }
@@ -174,7 +174,7 @@ async function handleKeyDown(e: KeyboardEvent) {
       store.screenScale = screenScaleBeforeRecording.value
       store.currentTime = currentTimeBeforeRecording.value
       store.timelineOffset = timeLineOffsetBeforeRecording.value
-      notice.log('已退出录屏模式')
+      notice.log('已退出录屏模式', 'success')
     }
   }
 }

@@ -40,9 +40,9 @@ export const useNoticeStore = defineStore('notice', () => {
     lastLogTime.value = Date.now()
   }
 
-  const log = (msg: string, AdditionalInfo?: any) => {
+  const log = (msg: string, noticeType?: NoticeType, AdditionalInfo?: any) => {
     logMessage.value = msg
-    addLog(msg, undefined, AdditionalInfo)
+    addLog(msg, noticeType, AdditionalInfo)
   }
 
   const alert = (msg: string, alertType: NoticeType = 'info', alertTitle = '提示', AdditionalInfo?: any) => {

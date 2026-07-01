@@ -311,7 +311,7 @@ function initSpectrogram() {
       tileCache.clear()
       renderSpectrogram()
     } catch (error) {
-      notice.alert('生成频谱失败:', 'error', '频谱错误',error)
+      notice.alert('生成频谱失败:', 'error', '频谱错误', error)
       resetSpectrogramData()
     }
   })

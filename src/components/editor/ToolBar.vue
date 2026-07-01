@@ -1,5 +1,5 @@
 <template>
-  <div v-show="showAdvancedTools" class="advanced-tools">
+  <div v-show="showAdvancedTools" class="advanced-tools no-select">
     <div class="advanced-header">高级工具</div>
 
     <div class="advanced-tabs">
@@ -1048,7 +1048,7 @@ function resolveAngleForDanmaku(danmaku: DanmakuItem): number | null {
 function parseLengthInput(): number | null {
   const rawValue = String(calculatorLengthInput.value ?? '').trim()
   if (!rawValue) {
-    notice.alert('请输入长度')
+    notice.log('请输入长度', 'warn')
     return null
   }
 
@@ -2248,10 +2248,8 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 16px;
-  background-color: #1b1b1b;
-  border: 1px solid #333;
-  border-radius: 10px;
+  padding: 10px;
+  border-right: 1px solid #333;
   box-sizing: border-box;
   margin-right: 7px;
 }
@@ -2399,6 +2397,7 @@ onBeforeUnmount(() => {
 }
 
 .command-panel {
+  height: calc(100% - 70px);
   gap: 10px;
 }
 

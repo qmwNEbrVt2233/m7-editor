@@ -65,7 +65,7 @@ export async function saveBlobWithFallback(
       return
     }
 
-    notice.log(`'[保存] File System Access API 保存失败，回退到 Blob 下载'`, error)
+    notice.log(`'[保存] File System Access API 保存失败，回退到 Blob 下载'`, 'warn', error)
     triggerBlobDownload(blob, filename)
   }
 }
@@ -369,6 +369,7 @@ export const useEditorStore = defineStore('editor', {
         try {
           const project = JSON.parse(reader.result as string)
           await this.applyProject(project)
+          historyManager.clear()
           historyManager.recordSnapshot(this.danmakus, `导入工程(${this.danmakus.length}条弹幕)`)
           // 标记导入完成，触发缓冲池重构
           this.importTimestamp = Date.now()
@@ -405,7 +406,7 @@ export const useEditorStore = defineStore('editor', {
           historyManager.recordSnapshot(this.danmakus)
 
           errors.forEach((error) => {
-            notice.log('[XML 导入] 已跳过异常弹幕:'+ error.message + '，导出日志以获取更多信息', error.metadata)
+            notice.log('[XML 导入] 已跳过异常弹幕:'+ error.message + '，导出日志以获取更多信息', 'warn', error.metadata)
           })
 
           if (errors.length > 0) {
@@ -599,6 +600,7 @@ export const useEditorStore = defineStore('editor', {
         const media = await registerMediaPath(path)
         this.videoFilePath = media.path
         this.videoUrl = media.url
+        notice.log('成功读取工程中的媒体文件', 'success')
       } catch (error) {
         notice.alert('无法读取工程中的媒体文件:', 'error', '错误', path + error)
         this.videoUrl = ''
@@ -922,7 +924,7 @@ export const useEditorStore = defineStore('editor', {
         await writeText(data)
         console.log('[剪贴板] 已通过Tauri插件写入')
       } catch (error) {
-        console.warn('[剪贴板] Tauri剪贴板插件不可用，回退到浏览器API', error)
+        notice.log('[剪贴板] Tauri剪贴板插件不可用，回退到浏览器API', 'error', error)
         try {
           await navigator.clipboard.writeText(data)
           console.log('[剪贴板] 已通过浏览器API写入')
@@ -977,7 +979,7 @@ export const useEditorStore = defineStore('editor', {
       }
 
       if (visibleDanmakus.length === 0) {
-        notice.log('当前帧没有可复制的弹幕')
+        notice.log('当前帧没有可复制的弹幕', 'warn')
         return
       }
 
@@ -1058,7 +1060,7 @@ export const useEditorStore = defineStore('editor', {
       const data = JSON.stringify(copiedDanmakus)
       try {
         await this._writeToClipboard(data)
-        notice.log('复制当前帧弹幕:' + copiedDanmakus.length + '条')
+        notice.log('复制当前帧弹幕:' + copiedDanmakus.length + '条', 'success')
       } catch (error) {
         notice.alert('复制到剪贴板失败:', 'error', '剪贴板错误', error)
       }
@@ -1071,14 +1073,14 @@ export const useEditorStore = defineStore('editor', {
       const notice = useNoticeStore()
       const selectedDanmakus = this.getSelectedDanmakus
       if (selectedDanmakus.length === 0) {
-        notice.alert('没有选中的弹幕', 'error')
+        notice.log('没有选中的弹幕', 'warn')
         return
       }
 
       const data = JSON.stringify(selectedDanmakus)
       try {
         await this._writeToClipboard(data)
-        notice.log('复制弹幕:' + selectedDanmakus.length + '条')
+        notice.log('复制弹幕:' + selectedDanmakus.length + '条', 'success')
       } catch (error) {
         notice.alert('复制到剪贴板失败:', 'error', '剪贴板错误', error)
       }
@@ -1131,7 +1133,7 @@ export const useEditorStore = defineStore('editor', {
         // 记录历史
         historyManager.recordSnapshot(this.danmakus, `粘贴${danmakusToAdd.length}条弹幕`)
 
-        notice.log('粘贴弹幕:' + danmakusToAdd.length + '条')
+        notice.log('粘贴弹幕:' + danmakusToAdd.length + '条', 'success')
       } catch (error) {
         notice.alert('粘贴失败:', 'error', '剪贴板错误', error)
       }
@@ -1214,14 +1216,6 @@ export const useEditorStore = defineStore('editor', {
     },
 
     /**
-     * 初始化历史记录（在项目加载时调用）
-     */
-    initHistory(): void {
-      historyManager.clear()
-      historyManager.recordSnapshot(this.danmakus, '项目初始化')
-    },
-
-    /**
      * 更新弹幕生存时间配置
      */
     setDanmakuDuration(mode: 'ms' | 'multiplier', value: number): void {
@@ -1237,7 +1231,7 @@ export const useEditorStore = defineStore('editor', {
       const confirmed = await notice.confirm('确定要清空本地缓存的工程吗？此操作不可撤销。')
       if (confirmed) {
         clearProject()
-        notice.log('已清空缓存工程')
+        notice.log('已清空缓存工程', 'success')
       }
     },
 
