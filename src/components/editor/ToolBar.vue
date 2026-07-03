@@ -2334,8 +2334,8 @@ onBeforeUnmount(() => {
   color: #e0e0e0;
   font-size: 13px;
   transition: border-color 0.2s;
-  resize: vertical;
-  height: 100px;
+  height: calc(100% - 300px);
+  min-height: 70px;
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   resize: none;
 }
@@ -2402,7 +2402,7 @@ onBeforeUnmount(() => {
 }
 
 .command-log {
-  height: 250px;
+  height: 330px;
   overflow-y: auto;
   padding: 10px;
   border: 1px solid #333;

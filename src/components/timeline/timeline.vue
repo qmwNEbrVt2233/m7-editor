@@ -45,7 +45,7 @@
           :key="d.id"
           class="block"
           :class="{ selected: store.selectedIds.includes(d.id) }"
-          :style="getBlockStyle(d)"
+          :style="getBlockStyle(d, store.danmakuColorForBlock, store.selectedIds.includes(d.id))"
           @mousedown.stop="onBlockMouseDown($event, d)"
           @click.stop="onSelect($event, d)"
           @mouseenter="onBlockMouseEnter(d.id)"
@@ -89,6 +89,7 @@ import { historyManager } from '../../core/history'
 import { isValidHex , normalizeColor } from '@/utils/validation'
 import WaveSurfer from 'wavesurfer.js'
 import SpectrogramPlugin from 'wavesurfer.js/dist/plugins/spectrogram.esm.js'
+import { blendColor } from '@/utils/parser'
 
 const store = useEditorStore()
 const notice = useNoticeStore()
@@ -97,9 +98,10 @@ const tracksRef = ref<HTMLElement | null>(null)
 
 // tracks样式控制
 const tracksOpacityLevels = [0.7, 0.8, 0.9, 1]
-const tracksOpacityIndex = ref(3) // 默认为1
+const tracksOpacityIndex = ref(3)
 const tracksOpacity = computed(() => tracksOpacityLevels[tracksOpacityIndex.value])
 const tracksHidden = ref(false)
+const useOriginalColorWhenSelect = ref(false)
 
 // 时间轴核心参数
 const scale = ref(store.timelineScale) // 1ms = 0.1px
@@ -942,6 +944,14 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
     console.log(`[快捷键] 隐藏tracks`)
   }
 
+  // `i` 切换选中弹幕块时是否高亮
+  if (e.key === 'i' && !isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    useOriginalColorWhenSelect.value = !useOriginalColorWhenSelect.value
+    console.log(`[快捷键] 切换选中弹幕块时是否高亮`)
+  }
+
+  // 操作视图上下或弹幕层级
   if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !isCtrl && !isAlt && !isShift) {
     if (store.selectedIds.length > 0) {
       e.preventDefault()
@@ -1242,20 +1252,42 @@ const scrollbarSpacerHeight = computed(() => {
 })
 
 // ===== 弹幕块 =====
-function getBlockStyle(d: any) {
+function getBlockStyle(d: any, danmakuColorForBlock: boolean, selected: boolean) {
+  let backgroundcolor = danmakuColorForBlock ? d.content.color : '#4caf50'
+  if (selected && !useOriginalColorWhenSelect.value) {
+    backgroundcolor = blendColor(backgroundcolor, '#FFFFFF', 0.2)
+  }
   return {
     position: 'absolute' as const,
+    background: backgroundcolor,
     left: (d.startTime - offset.value) * scale.value + 'px',
     width: d.animation.duration * scale.value + 'px',
     top: d.layer * rowHeight + 'px'
   }
 }
 
+function isLightColor(hexColor: string): boolean {
+  let color = hexColor.replace('#', '');
+  
+  if (color.length === 3) {
+    color = color.split('').map(char => char + char).join('');
+  }
+
+  const r = parseInt(color.substring(0, 2), 16);
+  const g = parseInt(color.substring(2, 4), 16);
+  const b = parseInt(color.substring(4, 6), 16);
+
+  const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+  return luminance > 192; 
+}
+
 function getBlockTextStyle(d: any) {
   const blockLeft = (d.startTime - offset.value) * scale.value
+  let backgroundcolor = store.danmakuColorForBlock ? d.content.color : '#4caf50'
 
   return {
-    left: Math.max(0, -blockLeft) + 'px'
+    left: Math.max(0, -blockLeft) + 'px',
+    color: isLightColor(backgroundcolor) ? '#222222' : undefined
   }
 }
 
@@ -1989,12 +2021,10 @@ function onMouseUp(e?: MouseEvent) {
 .block {
   position: absolute;
   height: 28px;
-  background: #4caf50;
   color: white;
   font-size: 12px;
   overflow: hidden;
   border-radius: 2px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
   clip-path: inset(0);
   outline: 2px solid #d8d8d8;
   outline-offset: -2px;
@@ -2011,14 +2041,8 @@ function onMouseUp(e?: MouseEvent) {
   pointer-events: none;
 }
 
-.block:hover {
-  background: #66bb6a;
-}
-
 .block.selected {
   outline: 2px solid yellow;
-  outline-offset: -2px;
-  background: #81c784;
   z-index: 9;
 }
 

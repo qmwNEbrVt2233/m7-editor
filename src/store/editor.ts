@@ -239,6 +239,7 @@ export const useEditorStore = defineStore('editor', {
       showSpectrogram: saved?.timeline?.showSpectrogram || false,
       spectrogramColorScheme: saved?.timeline?.spectrogramColorScheme || 'default',
       spectrogramCustomColor: saved?.timeline?.spectrogramCustomColor || '#00bbff',
+      danmakuColorForBlock: saved?.timeline?.danmakuColorForBlock || false,
       // 导入完成时间戳：用于触发缓冲池重构
       importTimestamp: 0,
       // _applyDeepPatch 防抖计时器
@@ -678,6 +679,9 @@ export const useEditorStore = defineStore('editor', {
       if (typeof project.timeline?.spectrogramCustomColor === 'string') {
         this.spectrogramCustomColor = project.timeline.spectrogramCustomColor
       }
+      if (typeof project.timeline?.danmakuColorForBlock === 'boolean') {
+        this.danmakuColorForBlock = project.timeline.danmakuColorForBlock
+      }
 
       this.currentTime = typeof project.timeline?.currentTime === 'number'
         ? Math.max(0, Math.round(project.timeline.currentTime))
@@ -705,6 +709,7 @@ export const useEditorStore = defineStore('editor', {
           showSpectrogram: this.showSpectrogram,
           spectrogramColorScheme: this.spectrogramColorScheme,
           spectrogramCustomColor: this.spectrogramCustomColor,
+          danmakuColorForBlock: this.danmakuColorForBlock
         },
         video: {
           path: this.videoFilePath,
@@ -775,6 +780,10 @@ export const useEditorStore = defineStore('editor', {
 
     setSpectrogramCustomColor(color: string) {
       this.spectrogramCustomColor = color
+    },
+
+    setdanmakuColorForBlock(enabled: boolean) {
+      this.danmakuColorForBlock = enabled
     },
 
     /**

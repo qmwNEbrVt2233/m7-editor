@@ -79,6 +79,7 @@
                   <tr><td>Ctrl + =</td><td>放大时间轴视图</td></tr>
                   <tr><td>O</td><td>切换时间轴轨道透明度</td></tr>
                   <tr><td>P</td><td>按下时隐藏轨道</td></tr>
+                  <tr><td>I</td><td>切换选中弹幕块时是否高亮</td></tr>
                 </tbody>
               </table>
             </div>
@@ -255,6 +256,17 @@
       <div v-if="activeMenu === 'assistant'" class="menu-panel">
         <label class="config-group checkbox-group">
           <input
+          type="checkbox"
+          v-model="danmakuColorForBlock"
+          @change="onDanmakuColorForBlockChange"
+          />
+          <span>使用弹幕颜色渲染弹幕块</span>
+        </label>
+
+        <div class="divider"></div>
+
+        <label class="config-group checkbox-group">
+          <input
             type="checkbox"
             v-model="showSpectrogram"
             @change="onSpectrogramvisibilityChange"
@@ -375,6 +387,7 @@ const aggressiveOptimization = ref(store.aggressiveOptimization)
 const showSpectrogram = ref(store.showSpectrogram)
 const spectrogramColorScheme = ref<'default' | 'customize'>(store.spectrogramColorScheme === 'default' ? 'default' : 'customize')
 const spectrogramCustomColor = ref(store.spectrogramCustomColor)
+const danmakuColorForBlock = ref(store.danmakuColorForBlock)
 
 const screenStyle = computed(() => ({
   width: `${store.screenWidth}px`,
@@ -500,6 +513,10 @@ function onSpectrogramColorSchemeChange() {
 
 function onSpectrogramColorChange() {
   store.setSpectrogramCustomColor(spectrogramCustomColor.value)
+}
+
+function onDanmakuColorForBlockChange() {
+  store.setdanmakuColorForBlock(danmakuColorForBlock.value)
 }
 
 // 隐藏快捷键提示框，带有延迟以允许鼠标移入快捷键列表
