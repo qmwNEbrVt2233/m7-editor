@@ -1,3 +1,4 @@
+import { useNoticeStore } from '@/store/notice'
 import type {
   ColorRuleState,
   NumericFieldPath,
@@ -8,7 +9,7 @@ import type {
 
 const PRESET_STORAGE_KEY = 'm7-editor.creation-tool-presets'
 const PRESET_EXPORT_TYPE = 'm7-editor.creation-tool-presets'
-const PRESET_EXPORT_VERSION = '1.6.0'
+const PRESET_EXPORT_VERSION = '1.7.0'
 
 export type CreationToolPanelState = {
   quantityInput: string
@@ -23,7 +24,6 @@ export type CreationToolPreset = {
   id: string
   name: string
   createdAt: number
-  updatedAt: number
   state: CreationToolPanelState
 }
 
@@ -45,7 +45,8 @@ export function loadCreationToolPresets(): CreationToolPreset[] {
 
     return parsePresetImport(raw)
   } catch (error) {
-    console.warn('[预设] 读取本地预设失败:', error)
+    const notice = useNoticeStore()
+    notice.alert('读取本地预设失败:', 'error', '错误', error)
     return []
   }
 }
@@ -86,7 +87,6 @@ export function createPresetFromState(
     id: createPresetId(),
     name: createDefaultPresetName(presets),
     createdAt: now,
-    updatedAt: now,
     state: deepClone(state)
   }
 }
@@ -126,8 +126,7 @@ export function updatePresetName(
 
     return {
       ...preset,
-      name: trimmed,
-      updatedAt: Date.now()
+      name: trimmed
     }
   })
 }
@@ -183,7 +182,6 @@ function normalizePreset(input: unknown, index: number): CreationToolPreset {
     id: typeof input.id === 'string' && input.id.trim() ? input.id : createPresetId(),
     name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : `新建预设${index + 1}`,
     createdAt: typeof input.createdAt === 'number' ? input.createdAt : now,
-    updatedAt: typeof input.updatedAt === 'number' ? input.updatedAt : now,
     state: deepClone(stateCandidate as CreationToolPanelState)
   }
 }

@@ -19,7 +19,7 @@
             <div class="block-header">
               <div>
                 <h3>预备弹幕数据</h3>
-                <p>支持单条对象、对象数组，或包含 `danmakus` 字段的对象。</p>
+                <p>支持单条对象、对象数组，或包含 `danmakus` 字段的对象</p>
               </div>
               <div class="preview-summary" :class="{ error: previewSummary.hasError }">
                 {{ previewSummary.message }}
@@ -470,7 +470,7 @@ const emit = defineEmits<{
 const store = useEditorStore()
 
 const previewText = ref('')
-const previewStatus = ref('预览框中的 JSON 可以直接编辑并创建。')
+const previewStatus = ref('预览框中的 JSON 可以直接编辑并创建')
 const previewStatusTone = ref<'info' | 'success' | 'error'>('info')
 const toolStatus = ref('')
 const quantityInput = ref('10')
@@ -684,7 +684,7 @@ function buildTemplateDraft(): DanmakuDraft[] {
 
 function resetPreviewToTemplate() {
   previewText.value = JSON.stringify(buildTemplateDraft(), null, 2)
-  previewStatus.value = '已重置为单条弹幕模板。'
+  previewStatus.value = '已重置为单条弹幕模板'
   previewStatusTone.value = 'info'
 }
 
@@ -692,7 +692,7 @@ function formatPreview() {
   try {
     const drafts = parsePreviewDanmakus(previewText.value)
     previewText.value = JSON.stringify(drafts, null, 2)
-    previewStatus.value = 'JSON 已格式化。'
+    previewStatus.value = 'JSON 已格式化'
     previewStatusTone.value = 'success'
   } catch (error) {
     previewStatus.value = error instanceof Error ? error.message : 'JSON 格式化失败'
@@ -758,7 +758,7 @@ function normalizeColorInput(target: ColorInputTarget) {
   const rawValue = target === 'start' ? colorRule.value.startText : colorRule.value.targetText
   const normalized = normalizeColor(rawValue)
   if (!normalized) {
-    toolStatus.value = `颜色字段 ${target === 'start' ? '起始' : '目标'} 输入无效，已保留原值。`
+    toolStatus.value = `颜色字段 ${target === 'start' ? '起始' : '目标'} 输入无效，已保留原值`
     return
   }
 
@@ -810,8 +810,8 @@ function handleToolWrite() {
     const result = writeGeneratedDanmakusToPreview(request)
 
     previewText.value = result.previewText
-    toolStatus.value = `已生成 ${result.generatedDanmakus.length} 条弹幕，并${request.writeMode === 'append' ? '追加到' : '写入'}预览框。`
-    previewStatus.value = `预览框已更新，共 ${result.nextDanmakus.length} 条弹幕。`
+    toolStatus.value = `已生成 ${result.generatedDanmakus.length} 条弹幕，并${request.writeMode === 'append' ? '追加到' : '写入'}预览框`
+    previewStatus.value = `预览框已更新，共 ${result.nextDanmakus.length} 条弹幕`
     previewStatusTone.value = 'success'
     emit('tool-write', request)
   } catch (error) {
@@ -827,7 +827,7 @@ function handleToolReset() {
   numericRules.value = createDefaultNumericRules()
   colorRule.value = createDefaultColorRule()
   directRules.value = createDefaultDirectRules()
-  toolStatus.value = '工具栏已重置至默认值。'
+  toolStatus.value = '工具栏已重置至默认值'
 }
 
 function handleAddPreset() {
@@ -886,7 +886,7 @@ function handleImportPresets(importedPresets: CreationToolPreset[]) {
     managedPresetId.value = firstImportedPreset.id
   }
 
-  toolStatus.value = `已导入 ${importedPresets.length} 个预设，可在预设列表中点击应用。`
+  toolStatus.value = `已导入 ${importedPresets.length} 个预设，可在预设列表中点击应用`
 }
 
 function setExpressionPreset(path: NumericFieldPath, presetKey: string) {
@@ -948,7 +948,7 @@ function handleCreate() {
     store.selectedIds = createdDanmakus.map((item) => item.id)
     historyManager.recordSnapshot(store.danmakus, `高级创建工具：创建${createdDanmakus.length}条弹幕`)
 
-    previewStatus.value = `已创建 ${createdDanmakus.length} 条弹幕。`
+    previewStatus.value = `已创建 ${createdDanmakus.length} 条弹幕`
     previewStatusTone.value = 'success'
     emit('created', {
       count: createdDanmakus.length,

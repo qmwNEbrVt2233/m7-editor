@@ -698,7 +698,7 @@ export const useEditorStore = defineStore('editor', {
     exportProject() {
       return {
         meta: {
-          version: '1.6.0',
+          version: '1.7.0',
           createdAt: Date.now()
         },
         timeline: {
@@ -1237,7 +1237,7 @@ export const useEditorStore = defineStore('editor', {
      */
     async clearCache(): Promise<void> {
       const notice = useNoticeStore()
-      const confirmed = await notice.confirm('确定要清空本地缓存的工程吗？此操作不可撤销。')
+      const confirmed = await notice.confirm('确定要清空本地缓存的工程吗？此操作不可撤销')
       if (confirmed) {
         clearProject()
         notice.log('已清空缓存工程', 'success')

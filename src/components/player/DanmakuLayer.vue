@@ -302,7 +302,7 @@ function getPausedStyle(d: DanmakuItem, index: number) {
   }
 }
 
-// 幽灵层复用同一套文本渲染样式，只去掉位移，便于测量真实包围盒。
+// 幽灵层复用同一套文本渲染样式，只去掉位移，便于测量真实包围盒
 function getGhostStyle(d: DanmakuItem, index: number) {
   const transform = `
     translate3d(0px, 0px, 0)

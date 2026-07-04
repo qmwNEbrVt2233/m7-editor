@@ -322,8 +322,8 @@ function createXmlDanmakuMetadata(node: Element, index: number): XmlDanmakuMetad
 }
 
 /**
- * 修复 XML body JSON 字符串中的原始控制字符。
- * 典型场景是文本字段里直接混入了真实换行，而不是 "\\n"。
+ * 修复 XML body JSON 字符串中的原始控制字符
+ * 典型场景是文本字段里直接混入了真实换行，而不是 "\\n"
  */
 function sanitizeXmlBodyJson(text: string): string {
   let result = ''

@@ -70,7 +70,18 @@
                 @click="toggleFontDropdown"
               >
                 <span class="font-trigger-label">{{ selectedFontLabel }}</span>
-                <span class="font-trigger-arrow">{{ isFontDropdownOpen ? '∧' : '∨' }}</span>
+                <span class="font-trigger-arrow">
+                  <svg v-if="!isFontDropdownOpen" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 272.59 177.2"style="width: 10px; height: 10px;">
+                    <path
+                    style="fill: #fff; stroke: #D4D4D4; stroke-miterlimit: 10; stroke-width: 31px;"
+                    d="M134.46,133.04L31.8,17.79s-9.12-2.85-13.67,1.44c-4.55,4.29-1.81,14.49-1.81,14.49l104.44,119.59s8.6,8.39,13.13,8.39c4.53,0,12.14-9.14,12.14-9.14l110.56-122.42s2.31-9.77-3.09-13.5c-4.85-3.34-13.88,1.7-13.88,1.7l-105.17,114.7Z"/>
+                  </svg>
+                  <svg v-if="isFontDropdownOpen" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 272.59 177.2"style="width: 10px; height: 10px;">
+                    <path
+                    style="fill: #fff; stroke: #D4D4D4; stroke-miterlimit: 10; stroke-width: 31px;"
+                    d="M134.46,44.15L31.8,159.41s-9.12,2.85-13.67-1.44c-4.55-4.29-1.81-14.49-1.81-14.49L120.76,23.89s8.6-8.39,13.13-8.39c4.53,0,12.14,9.14,12.14,9.14l110.56,122.42s2.31,9.77-3.09,13.5c-4.85,3.34-13.88-1.7-13.88-1.7l-105.17-114.7Z"/>
+                  </svg>
+                </span>
               </button>
 
               <div v-show="isFontDropdownOpen" class="font-dropdown">
@@ -1186,8 +1197,8 @@ onBeforeUnmount(() => {
 }
 
 .editor-section {
-  margin-bottom: 25px;
-  padding-bottom: 16px;
+  margin-bottom: 14px;
+  padding-bottom: 7px;
   border-bottom: 1px solid #333;
 }
 
@@ -1436,6 +1447,7 @@ onBeforeUnmount(() => {
 
 .slider {
   height: 6px;
+  margin: 4px 0 0;
   border-radius: 3px;
   background: #3e3e42;
   outline: none;

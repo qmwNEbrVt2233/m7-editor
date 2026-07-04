@@ -43,7 +43,7 @@
           @click="$emit('apply-preset', preset.id)"
         >
           <span class="preset-name">{{ preset.name }}</span>
-          <span class="preset-time">{{ formatPresetTime(preset.updatedAt) }}</span>
+          <span class="preset-time">{{ formatPresetTime(preset.createdAt) }}</span>
         </button>
       </div>
     </section>
@@ -91,7 +91,7 @@
             />
             <template v-else>
               <span class="manager-name">{{ preset.name }}</span>
-              <span class="manager-meta">{{ formatPresetTime(preset.updatedAt) }}</span>
+              <span class="manager-meta">{{ formatPresetTime(preset.createdAt) }}</span>
             </template>
           </div>
         </div>
@@ -105,10 +105,11 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref } from 'vue'
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { CreationToolPreset } from '@/utils/toolPresets'
 import { parsePresetImport, serializePresetExport } from '@/utils/toolPresets'
 import { useEditorStore } from '@/store/editor'
+import { useNoticeStore } from '@/store/notice'
 
 const props = defineProps<{
   presets: CreationToolPreset[]
@@ -173,7 +174,7 @@ async function handleExport() {
       }
     })
 
-    statusMessage.value = `已导出 ${props.presets.length} 个预设。`
+    statusMessage.value = `已导出 ${props.presets.length} 个预设`
     statusTone.value = 'success'
   } catch (error) {
     statusMessage.value = error instanceof Error ? error.message : '预设导出失败'
@@ -253,6 +254,14 @@ function formatPresetTime(timestamp: number): string {
 }
 
 window.addEventListener('keydown', handleWindowKeydown)
+
+watch(
+  () => statusMessage.value,
+  () => {
+    const notice = useNoticeStore()
+    notice.log(`[预设] ${statusMessage.value}`, statusTone.value)
+  }
+)
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleWindowKeydown)
@@ -360,10 +369,6 @@ onBeforeUnmount(() => {
   text-align: left;
 }
 
-.manager-item.active {
-  background: #243744;
-}
-
 .preset-name,
 .manager-name {
   font-size: 13px;
@@ -401,6 +406,14 @@ onBeforeUnmount(() => {
 
 .manager-item:hover {
   background: #2b2b30;
+}
+
+.manager-item.active {
+  background: #243744;
+}
+
+.manager-item.active:hover {
+  background: #2b4251;
 }
 
 .rename-input {

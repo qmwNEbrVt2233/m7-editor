@@ -436,7 +436,7 @@ const calculatorLengthInput = ref('200')
 const lockAngleEnabled = ref(false)
 const commandInput = ref('')
 const commandLogs = ref<string[]>([
-  '运算赋值命令与 /s 筛选命令已就绪。'
+  '运算赋值命令与 /s 筛选命令已就绪'
 ])
 
 const selectedDanmakus = computed(() => store.getSelectedDanmakus)
@@ -993,7 +993,7 @@ function handleSelectionCommand(command: string) {
   }
 
   store.selectedIds = matchedDanmakus.map((danmaku: DanmakuItem) => danmaku.id)
-  appendCommandLog(`筛选命令执行成功：${groups.length} 组规则，选中 ${store.selectedIds.length} 条弹幕。`)
+  appendCommandLog(`筛选命令执行成功：${groups.length} 组规则，选中 ${store.selectedIds.length} 条弹幕`)
   commandInput.value = ''
 }
 
@@ -1020,7 +1020,7 @@ function parseAngleMode(input: string) {
 
   return {
     mode: 'invalid' as const,
-    message: '角度输入格式无效，请留空，或输入数字，或输入 +数字 / -数字。'
+    message: '角度输入格式无效，请留空，或输入数字，或输入 +数字 / -数字'
   }
 }
 
@@ -1200,7 +1200,7 @@ function handleStrokeColorPickerInput() {
 function handleStrokeColorTextChange() {
   const normalizedColor = normalizeColor(strokeColorText.value)
   if (!normalizedColor) {
-    notice.alert('描边颜色格式无效，请输入 #RRGGBB 或 rgb(...)。', 'warn')
+    notice.alert('描边颜色格式无效，请输入 #RRGGBB 或 rgb(...)', 'warn')
     strokeColorText.value = strokeColorPicker.value
     return
   }
@@ -1213,7 +1213,7 @@ function handleStrokeColorTextChange() {
 function normalizeStrokeWidth(): number | null {
   const parsedWidth = Number(strokeWidthInput.value)
   if (!Number.isFinite(parsedWidth) || parsedWidth <= 0) {
-    notice.alert('描边宽度必须是大于 0 的数字。', 'warn')
+    notice.alert('描边宽度必须是大于 0 的数字', 'warn')
     return null
   }
 
@@ -1265,7 +1265,7 @@ function handleApplyStroke() {
 
   const normalizedColor = normalizeColor(strokeColorText.value)
   if (!normalizedColor) {
-    notice.alert('描边颜色格式无效，请输入 #RRGGBB 或 rgb(...)。', 'warn')
+    notice.alert('描边颜色格式无效，请输入 #RRGGBB 或 rgb(...)', 'warn')
     return
   }
 
@@ -1329,7 +1329,7 @@ function handleApplyStroke() {
   finishToolbarOperation('工具栏：高级工具描边', nextSelectedIds)
 
   if (hasClampWarning) {
-    notice.alert('部分描边弹幕坐标小于 0，已自动修正为 0。')
+    notice.alert('部分描边弹幕坐标小于 0，已自动修正为 0')
   }
 }
 
@@ -1337,7 +1337,7 @@ function handleApplyStroke() {
 function handleCommandSubmit() {
   const command = commandInput.value.trim()
   if (!command) {
-    appendCommandLog('命令为空，未执行。')
+    appendCommandLog('命令为空，未执行')
     return
   }
 
@@ -1347,7 +1347,7 @@ function handleCommandSubmit() {
   }
 
   if (!hasSelection.value) {
-    appendCommandLog('没有选中弹幕，命令未执行。')
+    appendCommandLog('没有选中弹幕，命令未执行')
     return
   }
 
@@ -1411,13 +1411,13 @@ function handleCommandSubmit() {
   })
 
   if (!hasChange) {
-    appendCommandLog('命令执行完成，但没有产生实际变更。')
+    appendCommandLog('命令执行完成，但没有产生实际变更')
     commandInput.value = ''
     return
   }
 
   finishToolbarOperation(`命令执行：${rules.length} 条规则`)
-  appendCommandLog(`命令执行成功：${rules.length} 条规则，${selectedDanmakus.value.length} 条弹幕。`)
+  appendCommandLog(`命令执行成功：${rules.length} 条规则，${selectedDanmakus.value.length} 条弹幕`)
   commandInput.value = ''
 }
 
@@ -1496,7 +1496,7 @@ function handleApplyLength() {
   finishToolbarOperation('工具栏：长度输入')
 
   if (hasClampWarning) {
-    notice.alert('部分长度计算结果超出坐标范围，已自动限制在 0 到 10000 之间。')
+    notice.alert('部分长度计算结果超出坐标范围，已自动限制在 0 到 10000 之间')
   }
 }
 
@@ -1551,7 +1551,7 @@ function handleLockedAngleUpdate(changedAxis: Axis) {
   finishToolbarOperation('工具栏：锁定角度')
 
   if (hasClampWarning) {
-    notice.alert('部分锁定角度结果超出坐标范围，已自动限制在 0 到 10000 之间。')
+    notice.alert('部分锁定角度结果超出坐标范围，已自动限制在 0 到 10000 之间')
   }
 }
 
@@ -1608,8 +1608,8 @@ function handlePickTool() {
 }
 
 /**
- * 请求 DanmakuLayer 测量弹幕的实际渲染宽高。
- * 通过自定义事件 TOOLBAR_MEASURE_EVENT 发送请求，DanmakuLayer 负责创建幽灵元素并测量。
+ * 请求 DanmakuLayer 测量弹幕的实际渲染宽高
+ * 通过自定义事件 TOOLBAR_MEASURE_EVENT 发送请求，DanmakuLayer 负责创建幽灵元素并测量
  */
 function measureDanmakus(danmakus: DanmakuItem[]): Promise<ToolbarMeasureResponse> {
   if (danmakus.length === 0) {
@@ -1663,7 +1663,7 @@ async function handleCenterByAxis(axis: Axis) {
         return
       }
 
-      // 写回的是左上角锚点坐标，所以需要先算出旋转后包围盒，再反推出锚点位置。
+      // 写回的是左上角锚点坐标，所以需要先算出旋转后包围盒，再反推出锚点位置
       const rotatedBox = getRotatedBoundingBox(
         measurement.rawWidth,
         measurement.rawHeight,
@@ -1691,7 +1691,7 @@ async function handleCenterByAxis(axis: Axis) {
     finishToolbarOperation(axis === 'x' ? '工具栏：水平居中' : '工具栏：垂直居中')
 
     if (hasClampWarning) {
-      notice.alert('部分弹幕居中后坐标小于 0，已自动修正为 0。', 'warn')
+      notice.alert('部分弹幕居中后坐标小于 0，已自动修正为 0', 'warn')
     }
   } catch (error) {
     notice.alert('居中计算失败:', 'error', '工具栏错误', error)
@@ -1861,7 +1861,7 @@ function handleHorizontalMirror() {
   finishToolbarOperation('工具栏：水平镜像')
 
   if (hasClampWarning) {
-    notice.alert('部分水平镜像后的坐标小于 0，已自动修正为 0。')
+    notice.alert('部分水平镜像后的坐标小于 0，已自动修正为 0')
   }
 }
 
@@ -1896,14 +1896,14 @@ function handleVerticalMirror() {
   finishToolbarOperation('工具栏：垂直镜像')
 
   if (hasClampWarning) {
-    notice.alert('部分垂直镜像后的坐标小于 0，已自动修正为 0。')
+    notice.alert('部分垂直镜像后的坐标小于 0，已自动修正为 0')
   }
 }
 
 /**
  * 行分隔工具
- * 对于每个含有换行符 \n 的选中弹幕，将其拆分为多个弹幕。
- * 考虑弹幕的 Z 轴旋转，新行沿旋转方向偏移 (size) 像素。
+ * 对于每个含有换行符 \n 的选中弹幕，将其拆分为多个弹幕
+ * 考虑弹幕的 Z 轴旋转，新行沿旋转方向偏移 (size) 像素
  */
 function handleLineSplit() {
   if (!hasSelection.value) {
@@ -1923,7 +1923,7 @@ function handleLineSplit() {
   }
 
   if (newDanmakus.length > 0) {
-    // 新生成的弹幕统一走 store 的 layer 分配逻辑，避免时间轴冲突。
+    // 新生成的弹幕统一走 store 的 layer 分配逻辑，避免时间轴冲突
     store.assignLayersForDanmakusSequentially(newDanmakus)
     store.danmakus.push(...newDanmakus)
   }
@@ -1931,7 +1931,7 @@ function handleLineSplit() {
   finishToolbarOperation('工具栏：行分隔', nextSelectedIds)
 
   if (hasClampWarning) {
-    notice.alert('部分行分隔后的坐标小于 0，已自动修正为 0。')
+    notice.alert('部分行分隔后的坐标小于 0，已自动修正为 0')
   }
 }
 
@@ -2036,7 +2036,7 @@ async function handleLetterSplit() {
   finishToolbarOperation('工具栏：字分隔', nextSelectedIds)
 
   if (hasClampWarning) {
-    notice.alert('部分字分隔后的坐标小于 0，已自动修正为 0。')
+    notice.alert('部分字分隔后的坐标小于 0，已自动修正为 0')
   }
 }
 
