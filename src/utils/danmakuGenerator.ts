@@ -1,4 +1,4 @@
-import { useEditorStore } from '../store/editor'
+import { useEditorStore } from '@/store/editor'
 import type { DanmakuItem } from '@/core/danmaku'
 import { applyOperation, blendColor, parseColorWithAlpha, parseInput } from '@/utils/parser'
 import { M7_RULES, normalizeAngle, normalizeColor, validateRange } from '@/utils/validation'
@@ -394,6 +394,9 @@ function getFieldDependencies(path: AllFieldPath, request: ToolWriteRequest): Se
       const expression = rule.expression?.trim() || RANGE_EXPRESSION_PRESETS[0].expression
       return extractExpressionDependencies(expression, `${path} `)
     }
+    if (rule.mode === 'cycle') {
+      return getNumericCycleDependencies(rule.cycleList, path)
+    }
   }
 
   if (path === 'content.text') {
@@ -440,7 +443,7 @@ function buildNumericSeries(
   fieldSeries: FieldSeriesMap
 ): number[] {
   if (rule.mode === 'cycle') {
-    return buildCycleNumericSeries(path, rule.cycleList, quantity)
+    return buildCycleNumericSeries(path, rule.cycleList, quantity, fieldSeries)
   }
 
   const startValue = parseRequiredNumber(rule.start, `${path} 起始值`)
@@ -553,16 +556,53 @@ function parseRelativeColorStep(value: string): number {
   return validateRange(parsed, 0, 1)
 }
 
-function buildCycleNumericSeries(path: NumericFieldPath, cycleList: string, quantity: number): number[] {
+function buildCycleNumericSeries(
+  path: NumericFieldPath,
+  cycleList: string,
+  quantity: number,
+  fieldSeries: FieldSeriesMap
+): number[] {
   const entries = parseStrictList(cycleList)
   if (entries.length === 0) {
     throw new Error(`${path} 循环列表不能为空`)
   }
 
-  return Array.from({ length: quantity }, (_, index) => {
-    const rawValue = entries[index % entries.length]
-    return parseRequiredNumber(rawValue, `${path} 循环值`)
+  const compiledEntries = entries.map((rawValue, entryIndex) => {
+    try {
+      return math.compile(rawValue)
+    } catch (error) {
+      throw new Error(`${path} 循环值 ${entryIndex + 1} 表达式解析失败: ${getErrorMessage(error)}`)
+    }
   })
+
+  return Array.from({ length: quantity }, (_, index) => {
+    const compiled = compiledEntries[index % compiledEntries.length]
+    const result = evaluateCompiledExpression(compiled, {
+      index,
+      quantity,
+      startVal: 0,
+      endVal: 0,
+      fieldSeries,
+      label: `${path} 循环值`
+    })
+
+    if (typeof result !== 'number' || !Number.isFinite(result)) {
+      throw new Error(`${path} 循环值计算结果不合法 (NaN/Infinite)`)
+    }
+
+    return result
+  })
+}
+
+function getNumericCycleDependencies(cycleList: string, path: NumericFieldPath): Set<AllFieldPath> {
+  const entries = parseStrictList(cycleList)
+  const dependencies = new Set<AllFieldPath>()
+
+  for (const [index, entry] of entries.entries()) {
+    mergeDependencies(dependencies, extractExpressionDependencies(entry, `${path} 循环值 ${index + 1} `))
+  }
+
+  return dependencies
 }
 
 function buildCycleColorSeries(cycleList: string, quantity: number): string[] {

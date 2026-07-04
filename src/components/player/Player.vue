@@ -342,7 +342,7 @@
 </template>
 
 <script setup lang="ts">
-import { useEditorStore } from '../../store/editor'
+import { useEditorStore } from '@/store/editor'
 import { useNoticeStore } from '@/store/notice'
 import DanmakuLayer from './DanmakuLayer.vue'
 import { ref, watch, onMounted, nextTick, computed } from 'vue'

@@ -1,10 +1,10 @@
 import { defineStore } from 'pinia'
 import { useNoticeStore } from './notice'
 import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager'
-import type { DanmakuItem } from '@/core/danmaku.ts'
-import { saveProject, loadProject, clearProject } from '../localStorage/projectStorage'
+import type { DanmakuItem } from '@/core/danmaku'
+import { saveProject, loadProject, clearProject } from '@/localStorage/projectStorage'
 import { historyManager } from '@/core/history'
-import { parseXML, toXML } from '@/core/converter.ts'
+import { parseXML, toXML } from '@/core/converter'
 import {
   getProjectVideoPath,
   isTauriRuntime,
@@ -601,9 +601,9 @@ export const useEditorStore = defineStore('editor', {
         const media = await registerMediaPath(path)
         this.videoFilePath = media.path
         this.videoUrl = media.url
-        notice.log('成功读取工程中的媒体文件', 'success')
+        notice.log('成功读取媒体文件', 'success')
       } catch (error) {
-        notice.alert('无法读取工程中的媒体文件:', 'error', '错误', path + error)
+        notice.alert('无法读取工程中指向的媒体文件，请重新选择', 'error', '错误', path + error)
         this.videoUrl = ''
       }
     },

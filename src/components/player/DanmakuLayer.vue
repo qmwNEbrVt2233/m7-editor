@@ -42,7 +42,7 @@
 import type { ComponentPublicInstance } from 'vue'
 import { shallowRef, computed, watch, nextTick, ref, onMounted, onBeforeUnmount } from 'vue'
 import type { DanmakuItem } from '@/core/danmaku'
-import { useEditorStore } from '../../store/editor'
+import { useEditorStore } from '@/store/editor'
 
 const store = useEditorStore()
 

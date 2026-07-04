@@ -62,7 +62,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useEditorStore } from '@/store/editor';
-import { useNoticeStore } from '../../store/notice'
+import { useNoticeStore } from '@/store/notice'
 import { saveBlobWithFallback } from '@/store/editor'
 const store = useEditorStore()
 const notice = useNoticeStore()

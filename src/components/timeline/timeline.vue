@@ -33,7 +33,11 @@
     ></canvas>
 
     <!-- 弹幕块 -->
-    <div class="tracks  have-scrollbar" ref="tracksRef" @scroll="onTracksScroll" :style="{ opacity: tracksOpacity, display: tracksHidden ? 'none' : 'block' }">
+    <div
+    class="tracks have-scrollbar"
+    ref="tracksRef"
+    @scroll="onTracksScroll"
+    :style="{ opacity: tracksOpacity, display: tracksHidden ? 'none' : 'block' }">
       <div
         v-for="layer in visibleLayers"
         :key="layer"
@@ -83,9 +87,9 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { useEditorStore } from '../../store/editor'
+import { useEditorStore } from '@/store/editor'
 import { useNoticeStore } from '@/store/notice'
-import { historyManager } from '../../core/history'
+import { historyManager } from '@/core/history'
 import { isValidHex , normalizeColor } from '@/utils/validation'
 import WaveSurfer from 'wavesurfer.js'
 import SpectrogramPlugin from 'wavesurfer.js/dist/plugins/spectrogram.esm.js'
@@ -1287,7 +1291,7 @@ function getBlockTextStyle(d: any) {
 
   return {
     left: Math.max(0, -blockLeft) + 'px',
-    color: isLightColor(backgroundcolor) ? '#222222' : undefined
+    color: isLightColor(backgroundcolor) ? '#222' : '#FFF'
   }
 }
 
@@ -1953,7 +1957,7 @@ function onMouseUp(e?: MouseEvent) {
 .spectrogram {
   position: absolute;
   width: 100%;
-  height: 95%;
+  height: calc(100% - 20px);
   pointer-events: none;
   margin-top: 20px;
   z-index: 1;
