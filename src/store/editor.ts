@@ -110,7 +110,7 @@ function tryParseDanmakusJson(text: string): DanmakuItem[] | null {
   return extractDanmakusFromParsedJson(parsed)
 }
 
-function parsePastedDanmakusText(text: string): DanmakuItem[] {
+export function parsePastedDanmakusText(text: string): DanmakuItem[] {
   const trimmed = text.trim().replace(/^\uFEFF/, '')
   if (!trimmed) {
     throw new Error('剪贴板内容为空')
@@ -266,20 +266,8 @@ export const useEditorStore = defineStore('editor', {
   },
 
   actions: {
-    addDanmaku(item: DanmakuItem) {
-      this.danmakus.push(item)
-    },
-
     setTime(time: number) {
       this.currentTime = time
-    },
-
-    togglePlay() {
-      this.playing = !this.playing
-    },
-
-    setAggressiveOptimization(enabled: boolean) {
-      this.aggressiveOptimization = enabled
     },
      
     startPlayback() {
@@ -733,12 +721,12 @@ export const useEditorStore = defineStore('editor', {
      * 设置播放器 screen 尺寸
      */
     setScreenSize(width: number, height: number) {
-      this.screenWidth = Math.max(1, Math.round(width))
-      this.screenHeight = Math.max(1, Math.round(height))
+      this.screenWidth = Math.max(10, Math.round(width))
+      this.screenHeight = Math.max(10, Math.round(height))
     },
 
     setScreenScale(scale: number) {
-      this.screenScale = Math.max(1, Math.round(scale))
+      this.screenScale = Math.max(10, Math.round(scale))
     },
 
     /**
@@ -768,6 +756,10 @@ export const useEditorStore = defineStore('editor', {
       const minimumAllowed = Math.max(1, maxUsedLayer + 1)
 
       this.maxLayers = Math.max(normalized, minimumAllowed)
+    },
+
+    setAggressiveOptimization(enabled: boolean) {
+      this.aggressiveOptimization = enabled
     },
 
     setShowSpectrogram(enabled: boolean) {

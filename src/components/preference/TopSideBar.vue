@@ -1,0 +1,901 @@
+<template>
+  <div v-if="!store.screenRecordingMode" class="controls no-select">
+    <div class="logo-container" @mouseenter="showShortcutsNow" @mouseleave="hideShortcutsWithDelay">
+      <a @click="help.show('about')" target="_blank"><img src="/favicon.svg" width="35" height="35" alt="logo"></a>
+    </div>
+    <div v-show="showShortcuts" class="shortcuts-tooltip have-scrollbar" @mouseenter="showShortcutsNow" @mouseleave="hideShortcutsWithDelay">
+      <div class="shortcuts-content">
+          <h3>快捷键</h3>
+          
+          <div class="shortcuts-section">
+            <h4>播放与工程</h4>
+            <table class="shortcuts-table">
+              <tbody>
+                <tr><td>Space</td><td>播放 / 暂停</td></tr>
+                <tr><td>Ctrl + S</td><td>导出工程 JSON</td></tr>
+                <tr><td>Ctrl + D</td><td>保存工程到本地缓存</td></tr>
+                <tr><td>Ctrl + Delete</td><td>清空本地缓存工程</td></tr>
+                <tr><td>Ctrl + Shift + Delete</td><td>清空所有缓存</td></tr>
+                <tr><td>Shift + Tab</td><td>手动重构缓存池</td></tr>
+                <tr><td>Ctrl + Alt + Space</td><td>开启录屏模式</td></tr>
+                <tr><td>Escape / Ctrl + Enter</td><td>关闭录屏模式</td></tr>
+                <tr><td>Ctrl + Shift + R</td><td>刷新界面</td></tr>
+                <tr><td>H</td><td>开启 / 关闭 帮助面板</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="shortcuts-section">
+            <h4>弹幕编辑</h4>
+            <table class="shortcuts-table">
+              <tbody>
+                <tr><td>;</td><td>在当前播放头创建一条新弹幕</td></tr>
+                <tr><td>Ctrl + ;</td><td>唤出高级创建工具</td></tr>
+                <tr><td>Delete</td><td>删除当前选中的 弹幕 / 预设</td></tr>
+                <tr><td>Ctrl + C</td><td>复制选中的弹幕</td></tr>
+                <tr><td>Ctrl + Alt + C</td><td>复制当前帧的弹幕，保留当前状态</td></tr>
+                <tr><td>Ctrl + V</td><td>粘贴弹幕</td></tr>
+                <tr><td>Ctrl + A</td><td>全选弹幕</td></tr>
+                <tr><td>Ctrl + R</td><td>反选弹幕</td></tr>
+                <tr><td>Ctrl + Backspace</td><td>清空选择状态</td></tr>
+                <tr><td>Ctrl + Z</td><td>撤销</td></tr>
+                <tr><td>Ctrl + Y</td><td>重做</td></tr>
+                <tr><td>[</td><td>将播放头移动到弹幕的开始位置</td></tr>
+                <tr><td>]</td><td>将播放头移动到弹幕的结束位置</td></tr>
+                <tr><td>Shift + Enter</td><td>编辑文本字段时换行</td></tr>
+                <tr><td>Enter</td><td>将弹幕数据写入</td></tr>
+                <tr><td>0</td><td>切换SEB应用范围</td></tr>
+                <tr><td>1</td><td>拾取定位工具</td></tr>
+                <tr><td>2</td><td>垂直居中工具</td></tr>
+                <tr><td>3</td><td>水平居中工具</td></tr>
+                <tr><td>4</td><td>垂直镜像工具</td></tr>
+                <tr><td>5</td><td>水平镜像工具</td></tr>
+                <tr><td>6</td><td>互换结束与起始坐标工具</td></tr>
+                <tr><td>7</td><td>z轴旋转计算工具</td></tr>
+                <tr><td>8</td><td>行分隔工具</td></tr>
+                <tr><td>9</td><td>字分隔工具</td></tr>
+                <tr><td>\</td><td>时间分割工具</td></tr>
+                <tr><td>/</td><td>展开高级工具面板</td></tr>
+                <tr><td>Ctrl + ArrowDown</td><td>将起始坐标应用至结束坐标</td></tr>
+                <tr><td>Ctrl + ArrowUp</td><td>将结束坐标应用至起始坐标</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="shortcuts-section">
+            <h4>时间轴与播放头</h4>
+            <table class="shortcuts-table">
+              <tbody>
+                <tr><td>Ctrl + Drag / Click</td><td>多选弹幕</td></tr>
+                <tr><td>ArrowLeft</td><td>按步长向左移动播放头</td></tr>
+                <tr><td>ArrowRight</td><td>按步长向右移动播放头</td></tr>
+                <tr><td>ArrowUp</td><td>向上移动视图，若有选中的弹幕则将其layer-1</td></tr>
+                <tr><td>ArrowDown</td><td>向下移动视图，若有选中的弹幕则将其layer+1</td></tr>
+                <tr><td>Ctrl + ArrowLeft</td><td>向左平移时间轴一半视图</td></tr>
+                <tr><td>Ctrl + ArrowRight</td><td>向右平移时间轴一半视图</td></tr>
+                <tr><td>Ctrl + Alt + ArrowLeft</td><td>向左平移时间轴 30 秒</td></tr>
+                <tr><td>Ctrl + Alt + ArrowRight</td><td>向右平移时间轴 30 秒</td></tr>
+                <tr><td>Ctrl + -</td><td>缩小时间轴视图</td></tr>
+                <tr><td>Ctrl + =</td><td>放大时间轴视图</td></tr>
+                <tr><td>I</td><td>切换选中弹幕时是否高亮弹幕块背景</td></tr>
+                <tr><td>O</td><td>切换时间轴轨道透明度</td></tr>
+                <tr><td>P</td><td>按下时隐藏轨道</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    <button @click="toggle" class="btn">
+      <svg  v-if="store.playing" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="100" height="100" viewBox="0 -8 100 100" xml:space="preserve" style="width: 13px; height: 13px;">
+        <g transform="matrix(0.11 0 0 0.77 29.84 50)" id="obj-6"  >
+          <rect style="stroke: rgb(255,255,255); stroke-opacity: 0; stroke-width: 0; stroke-dasharray: none; stroke-linecap: butt; stroke-dashoffset: 0; stroke-linejoin: miter; stroke-miterlimit: 4; fill: rgb(255,255,255); fill-rule: nonzero; opacity: 1;" vector-effect="non-scaling-stroke"  x="-99" y="-59" rx="0" ry="0" width="198" height="118" />
+        </g>
+        <g transform="matrix(0.11 0 0 0.77 70.09 49.79)" id="obj-8"  >
+          <rect style="stroke: rgb(255,255,255); stroke-opacity: 0; stroke-width: 0; stroke-dasharray: none; stroke-linecap: butt; stroke-dashoffset: 0; stroke-linejoin: miter; stroke-miterlimit: 4; fill: rgb(255,255,255); fill-rule: nonzero; opacity: 1;" vector-effect="non-scaling-stroke"  x="-99" y="-59" rx="0" ry="0" width="198" height="118" />
+        </g>
+      </svg>
+
+      <svg v-if="!store.playing" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="100" height="100" viewBox="-7 -5 100 100" xml:space="preserve" style="width: 13px; height: 13px;">
+        <g transform="matrix(0 0.58 -0.62 0 50.58 49.91)" id="obj-5"  >
+          <path style="stroke: rgb(255,255,255); stroke-opacity: 0; stroke-width: 0; stroke-dasharray: none; stroke-linecap: butt; stroke-dashoffset: 0; stroke-linejoin: round; stroke-miterlimit: 4; fill: rgb(255,255,255); fill-rule: nonzero; opacity: 1;" vector-effect="non-scaling-stroke"  transform=" translate(-100, -90)" d="M 100 10 L 185 170 L 15 170 L 100 10 Z" stroke-linecap="round" />
+        </g>
+      </svg>
+
+    </button>
+
+    <select v-model="activeMenu" class="menu-select">
+      <option value="file">文件</option>
+      <option value="config">配置</option>
+      <option value="player">播放器</option>
+      <option value="preprocess">预处理</option>
+      <option value="assistant">辅助</option>
+    </select>
+
+    <div v-if="activeMenu === 'file'" class="menu-panel">
+      <button @click="importVideo" class="btn">导入媒体</button>
+      <button @click="saveProject" class="btn">导出工程</button>
+      <button @click="importProject" class="btn">导入工程</button>
+      <button @click="exportXml" class="btn">导出XML</button>
+      <button @click="importXml" class="btn">导入XML</button>
+      <button @click="saveCache" class="btn">保存缓存</button>
+      <button @click="loadCache" class="btn">加载缓存</button>
+      <button @click="clearCache" class="btn btn-danger">清空缓存工程</button>
+    </div>
+
+    <div v-if="activeMenu === 'config'" class="menu-panel">
+      <div class="config-group">
+        <span>播放头移动步长:</span>
+        <input
+          type="text"
+          v-model="playheadStepInput"
+          @change="onPlayheadStepChange"
+          placeholder="如 33 或 /60"
+          class="dark-input"
+          title="输入毫秒数(如33)或帧率(如/60表示60fps)"
+        />
+      </div>
+      
+      <div class="divider"></div>
+
+      <div class="config-group">
+        <span>新建弹幕生存时间:</span>
+        <input
+          type="text"
+          v-model="danmakuDurationInput"
+          @change="onDanmakuDurationChange"
+          placeholder="如 1000 或 *2"
+          class="dark-input"
+          title="输入毫秒数(如1000)或倍数(如*2表示2倍moveDuration)"
+        />
+        <span class="status-text">当前: {{ store.danmakuDuration.value }}{{ store.danmakuDuration.mode === 'multiplier' ? '倍' : 'ms' }}</span>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="config-group">
+        <span>Layer:</span>
+        <input
+          type="number"
+          v-model="maxLayersInput"
+          @change="onMaxLayersChange"
+          min="1"
+          class="dark-input"
+        />
+      </div>
+    </div>
+
+    <div v-if="activeMenu === 'player'" class="menu-panel">
+      <div class="config-group">
+        <span>宽:</span>
+        <input
+          type="number"
+          v-model="screenWidthInput"
+          @change="onScreenSizeChange"
+          min="1"
+          class="dark-input"
+        />
+      </div>
+
+      <div class="config-group">
+        <span>高:</span>
+        <input
+          type="number"
+          v-model="screenHeightInput"
+          @change="onScreenSizeChange"
+          min="1"
+          class="dark-input"
+        />
+      </div>
+
+      <div class="config-group">
+        <span>缩放:</span>
+        <input
+          type="number"
+          v-model.lazy="screenScaleInput"
+          @change="onScreenScaleChange"
+          min="1"
+          class="dark-input"
+        />
+      </div>
+
+      <div class="divider"></div>
+
+      <label class="config-group checkbox-group">
+        <input
+          type="checkbox"
+          v-model="aggressiveOptimization"
+          @change="onAggressiveOptimizationChange"
+        />
+        <span>激进优化</span>
+      </label>
+    </div>
+
+    <div v-if="activeMenu === 'preprocess'" class="menu-panel">
+      <label class="config-group checkbox-group">
+        <input
+          type="checkbox"
+          v-model="allowNegativeValues"
+          @change="onAllowNegativeValuesChange"
+        />
+        <span>允许负值</span>
+      </label>
+
+      <div class="divider"></div>
+
+      <label class="config-group checkbox-group">
+        <input
+          type="checkbox"
+          v-model="exportXmlAsRatio"
+          @change="onExportRatioChange"
+        />
+        <span>XML按百分比导出</span>
+      </label>
+
+      <div class="divider"></div>
+
+      <label class="config-group checkbox-group">
+        <input
+          type="checkbox"
+          v-model="importXmlDurationOffsetEnabled"
+          @change="onImportDurationOffsetChange"
+        />
+        <span>对导入xml进行-50ms处理</span>
+      </label>
+
+      <label class="config-group checkbox-group">
+        <input
+          type="checkbox"
+          v-model="exportXmlDurationOffsetEnabled"
+          @change="onExportDurationOffsetChange"
+        />
+        <span>对导出xml进行+50ms处理</span>
+      </label>
+    </div>
+
+    <div v-if="activeMenu === 'assistant'" class="menu-panel">
+      <label class="config-group checkbox-group">
+        <input
+        type="checkbox"
+        v-model="danmakuColorForBlock"
+        @change="onDanmakuColorForBlockChange"
+        />
+        <span>使用弹幕颜色渲染弹幕块</span>
+      </label>
+
+      <div class="divider"></div>
+
+      <label class="config-group checkbox-group">
+        <input
+          type="checkbox"
+          v-model="showSpectrogram"
+          @change="onSpectrogramvisibilityChange"
+        />
+        <span>显示频谱图</span>
+      </label>
+
+      <select v-model="spectrogramColorScheme" class="menu-select" @change="onSpectrogramColorSchemeChange">
+        <option value="default">默认彩色</option>
+        <option value="customize">自定义</option>
+      </select>
+
+      <div v-if="spectrogramColorScheme === 'customize'" class="config-group">
+        <input
+          type="color"
+          v-model="spectrogramCustomColor"
+          @change="onSpectrogramColorChange"
+          class="color-picker"
+          style="padding: 8px 10px"
+        />
+        <input
+          type="text"
+          v-model.lazy="spectrogramCustomColor"
+          @change="onSpectrogramColorChange"
+          placeholder="#FFFFFF"
+          class="dark-input"
+        />
+      </div>
+    </div>
+    
+    <input
+      type="file"
+      ref="videoInput"
+      @change="onVideoFileChange"
+      style="display: none"
+      accept="video/*,audio/*"
+    />
+    <input
+      type="file"
+      ref="projectInput"
+      @change="onFileChange"
+      style="display: none"
+      accept=".json"
+    />
+    <input
+      type="file"
+      ref="xmlInput"
+      @change="onXmlFileChange"
+      style="display: none"
+      accept=".xml,text/xml,application/xml"
+    />
+  </div>
+</template>
+
+<script setup lang="ts">
+import { useEditorStore } from '@/store/editor'
+import { useNoticeStore } from '@/store/notice'
+import { useHelpStore } from '@/store/help'
+import { ref, watch } from 'vue'
+import {
+  getFileInputPath,
+  isTauriRuntime,
+  openMediaFileWithTauri,
+  registerMediaPath
+} from '@/utils/tauriMedia'
+
+const store = useEditorStore()
+const notice = useNoticeStore()
+const help = useHelpStore()
+const videoInput = ref<HTMLInputElement | null>(null)
+const projectInput = ref<HTMLInputElement | null>(null)
+const xmlInput = ref<HTMLInputElement | null>(null)
+const activeMenu = ref<'file' | 'config' | 'player' | 'preprocess'| 'assistant' >('file')
+const showShortcuts = ref(false)
+let shortcutsHideTimer: ReturnType<typeof setTimeout> | null = null
+
+const playheadStepInput = ref(`${store.playheadStepMs.toFixed(6)}`)
+
+const danmakuDurationInput = ref(
+  store.danmakuDuration.mode === 'multiplier'
+    ? `*${store.danmakuDuration.value}`
+    : `${store.danmakuDuration.value}`
+)
+
+const screenWidthInput = ref(String(store.screenWidth))
+const screenHeightInput = ref(String(store.screenHeight))
+const screenScaleInput = ref(store.screenScale)
+const maxLayersInput = ref(String(store.maxLayers))
+const allowNegativeValues = ref(store.allowNegativeValues)
+const exportXmlAsRatio = ref(store.exportXmlAsRatio)
+const importXmlDurationOffsetEnabled = ref(store.importXmlDurationOffsetEnabled)
+const exportXmlDurationOffsetEnabled = ref(store.exportXmlDurationOffsetEnabled)
+const aggressiveOptimization = ref(store.aggressiveOptimization)
+const showSpectrogram = ref(store.showSpectrogram)
+const spectrogramColorScheme = ref<'default' | 'customize'>(store.spectrogramColorScheme === 'default' ? 'default' : 'customize')
+const spectrogramCustomColor = ref(store.spectrogramCustomColor)
+const danmakuColorForBlock = ref(store.danmakuColorForBlock)
+
+// ── 事件处理函数 ──
+
+function onPlayheadStepChange(e: Event) {
+  const input = (e.target as HTMLInputElement).value.trim()
+  
+  if (!input) return
+  
+  let stepMs = 16.666667
+  
+  if (input.startsWith('/')) {
+    const fpsStr = input.substring(1)
+    const fps = parseInt(fpsStr)
+    if (fps > 0) {
+      stepMs = 1000 / fps
+    }
+  } else {
+    const ms = parseFloat(input)
+    if (ms > 0) {
+      stepMs = ms
+    }
+  }
+  
+  if (stepMs > 0 && stepMs <= 10000) {
+    store.playheadStepMs = stepMs
+    playheadStepInput.value = `${stepMs.toFixed(6)}`
+  }
+}
+
+function onDanmakuDurationChange(e: Event) {
+  const input = (e.target as HTMLInputElement).value.trim()
+  
+  if (!input) return
+  
+  if (input.startsWith('*')) {
+    const multiplierStr = input.substring(1)
+    const multiplier = parseFloat(multiplierStr)
+    if (multiplier > 0) {
+      store.setDanmakuDuration('multiplier', multiplier)
+      danmakuDurationInput.value = input
+    }
+  } else {
+    const ms = parseFloat(input)
+    if (ms > 0) {
+      store.setDanmakuDuration('ms', ms)
+      danmakuDurationInput.value = input
+    }
+  }
+}
+
+function onScreenSizeChange() {
+  const width = parseInt(screenWidthInput.value, 10)
+  const height = parseInt(screenHeightInput.value, 10)
+
+  if (width > 0 && height > 0) {
+    store.setScreenSize(width, height)
+    screenWidthInput.value = String(store.screenWidth)
+    screenHeightInput.value = String(store.screenHeight)
+  }
+}
+
+function onScreenScaleChange() {
+  const scale = parseInt(screenScaleInput.value, 10)
+  if (scale > 0) {
+    store.setScreenScale(scale)
+    screenScaleInput.value = String(store.screenScale)
+  }
+}
+
+function onExportRatioChange() {
+  store.setExportXmlAsRatio(exportXmlAsRatio.value)
+}
+
+function onAllowNegativeValuesChange() {
+  store.setAllowNegativeValues(allowNegativeValues.value)
+}
+
+function onImportDurationOffsetChange() {
+  store.setImportXmlDurationOffsetEnabled(importXmlDurationOffsetEnabled.value)
+}
+
+function onExportDurationOffsetChange() {
+  store.setExportXmlDurationOffsetEnabled(exportXmlDurationOffsetEnabled.value)
+}
+
+function onMaxLayersChange() {
+  const maxLayers = parseInt(maxLayersInput.value, 10)
+  if (maxLayers > 0) {
+    store.setMaxLayers(maxLayers)
+  }
+  maxLayersInput.value = String(store.maxLayers)
+}
+
+function onAggressiveOptimizationChange() {
+  store.setAggressiveOptimization(aggressiveOptimization.value)
+}
+
+function onSpectrogramvisibilityChange() {
+  store.setShowSpectrogram(showSpectrogram.value)
+}
+
+function onSpectrogramColorSchemeChange() {
+  store.setSpectrogramColorScheme(spectrogramColorScheme.value)
+}
+
+function onSpectrogramColorChange() {
+  store.setSpectrogramCustomColor(spectrogramCustomColor.value)
+}
+
+function onDanmakuColorForBlockChange() {
+  store.setdanmakuColorForBlock(danmakuColorForBlock.value)
+}
+
+function hideShortcutsWithDelay() {
+  if (shortcutsHideTimer) clearTimeout(shortcutsHideTimer)
+  shortcutsHideTimer = setTimeout(() => {
+    showShortcuts.value = false
+  }, 100)
+}
+
+function showShortcutsNow() {
+  if (shortcutsHideTimer) clearTimeout(shortcutsHideTimer)
+  showShortcuts.value = true
+}
+
+// ── 播放控制 ──
+
+function toggle() {
+  if (store.playing) {
+    store.pausePlayback()
+  } else {
+    store.startPlayback()
+  }
+}
+
+// ── 文件操作 ──
+
+async function importVideo() {
+  if (isTauriRuntime()) {
+    try {
+      const media = await openMediaFileWithTauri()
+
+      if (media) {
+        store.setVideoSource(media.url, media.path)
+        notice.log('媒体文件路径已设置:' + media.path, 'success')
+      }
+
+      return
+    } catch (error) {
+      notice.log('[媒体] Tauri 文件选择失败，回退到浏览器文件选择', 'warn', error)
+    }
+  }
+
+  videoInput.value?.click()
+}
+
+function importProject() {
+  projectInput.value?.click()
+}
+
+function importXml() {
+  xmlInput.value?.click()
+}
+
+async function onVideoFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+
+  if (file) {
+    const nativePath = getFileInputPath(file)
+
+    if (nativePath && isTauriRuntime()) {
+      try {
+        const media = await registerMediaPath(nativePath)
+        store.setVideoSource(media.url, media.path)
+        notice.log('媒体文件路径已设置:' + media.path, 'success')
+        input.value = ''
+        return
+      } catch (error) {
+        notice.log('[媒体] 真实路径注册失败，回退到临时 Object URL', 'error', error)
+      }
+    }
+
+    const url = URL.createObjectURL(file)
+    store.setVideoSource(url, '')
+    notice.log('媒体文件成功载入:' + file.name, 'success')
+  }
+
+  input.value = ''
+}
+
+async function saveProject() {
+  await store.downloadProject()
+}
+
+async function exportXml() {
+  await store.downloadXml()
+}
+
+function saveCache() {
+  store.saveToLocal()
+}
+
+function loadCache() {
+  store.loadFromLocal()
+}
+
+function onFileChange(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (file) {
+    store.loadFromFile(file)
+  }
+}
+
+function onXmlFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (file) {
+    store.loadXmlFromFile(file)
+    input.value = ''
+  }
+}
+
+function clearCache() {
+  store.clearCache()
+}
+
+// ── 双向同步 store ↔ 本地 ref ──
+
+watch(
+  () => store.screenWidth,
+  (width) => {
+    screenWidthInput.value = String(width)
+  }
+)
+
+watch(
+  () => store.screenHeight,
+  (height) => {
+    screenHeightInput.value = String(height)
+  }
+)
+
+watch(
+  () => store.screenScale,
+  (scale) => {
+    screenScaleInput.value = String(scale)
+  }
+)
+
+watch(
+  () => store.exportXmlAsRatio,
+  (enabled) => {
+    exportXmlAsRatio.value = enabled
+  }
+)
+
+watch(
+  () => store.importXmlDurationOffsetEnabled,
+  (enabled) => {
+    importXmlDurationOffsetEnabled.value = enabled
+  }
+)
+
+watch(
+  () => store.exportXmlDurationOffsetEnabled,
+  (enabled) => {
+    exportXmlDurationOffsetEnabled.value = enabled
+  }
+)
+
+watch(
+  () => store.maxLayers,
+  (value) => {
+    maxLayersInput.value = String(value)
+  }
+)
+
+watch(
+  () => store.aggressiveOptimization,
+  (enabled) => {
+    aggressiveOptimization.value = enabled
+  }
+)
+
+watch(
+  () => store.showSpectrogram,
+  (enabled) => {
+    showSpectrogram.value = enabled
+  }
+)
+
+watch(
+  () => store.spectrogramColorScheme,
+  (scheme) => {
+    spectrogramColorScheme.value = scheme === 'default' ? 'default' : 'customize'
+  }
+)
+
+watch(
+  () => store.spectrogramCustomColor,
+  (color) => {
+    spectrogramCustomColor.value = color
+  }
+)
+
+watch(
+  () => store.danmakuColorForBlock,
+  (enabled) => {
+    danmakuColorForBlock.value = enabled
+  }
+)
+</script>
+
+<style scoped lang="css">
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 12px;
+  flex-wrap: wrap;
+  z-index: 11;
+  background-color: #1e1e1e;
+  padding: 3px 12px;
+  border-radius: 6px;
+  box-shadow: 0 4px 5px rgba(0, 0, 0, 0.4);
+  position: fixed;
+}
+
+.logo-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.logo-container a {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.logo-container a img {
+  transition: opacity 0.2s ease;
+}
+
+.logo-container a:hover img {
+  opacity: 0.8;
+}
+
+.help-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-weight: 700;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+  background: #3a3a3a;
+  color: #aaa;
+  border: 1px solid #555;
+}
+
+.help-btn:hover {
+  background: #2196f3;
+  color: #fff;
+  border-color: #2196f3;
+}
+
+.shortcuts-tooltip {
+  position: fixed;
+  top: 60px;
+  left: 16px;
+  background-color: #252525;
+  border: 1px solid #404040;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  max-height: 80vh;
+  overflow-y: auto;
+  font-size: 12px;
+}
+
+.shortcuts-content {
+  padding: 16px;
+  min-width: 300px;
+}
+
+.shortcuts-content h3 {
+  margin: 0 0 16px 0;
+  color: #e0e0e0;
+  font-size: 14px;
+  text-align: center;
+  border-bottom: 1px solid #404040;
+  padding-bottom: 12px;
+}
+
+.shortcuts-section {
+  margin-bottom: 16px;
+}
+
+.shortcuts-section h4 {
+  margin: 0 0 8px 0;
+  color: #b0b0b0;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.shortcuts-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.shortcuts-table tr {
+  border-bottom: 1px solid #323232;
+}
+
+.shortcuts-table tr:last-child {
+  border-bottom: none;
+}
+
+.shortcuts-table td {
+  padding: 8px 12px;
+  color: #d0d0d0;
+  text-align: left;
+}
+
+.shortcuts-table td:first-child {
+  color: #64b5f6;
+  font-weight: 500;
+  font-family: 'Courier New', monospace;
+  width: 180px;
+}
+
+.shortcuts-table tr:hover {
+  background-color: #2d2d2d;
+}
+
+.menu-panel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.btn {
+  padding: 10px 14px;
+  background: #2d2d2d;
+  color: #e0e0e0;
+  border: 1px solid #444;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s ease;
+}
+
+.btn:hover {
+  background: #3d3d3d;
+  border-color: #666;
+  color: #fff;
+}
+
+.btn:active {
+  background: #222;
+}
+
+.btn-danger {
+  background: #5c2018;
+  color: #ffb3b3;
+  border-color: #8a2e24;
+}
+
+.btn-danger:hover {
+  background: #7a2820;
+  border-color: #a3382d;
+  color: #fff;
+}
+
+.config-group {
+  display: flex;
+  align-items: center;
+  color: #b0b0b0;
+  font-size: 13px;
+}
+
+.checkbox-group {
+  gap: 8px;
+  cursor: pointer;
+}
+
+.checkbox-group input[type='checkbox'] {
+  cursor: pointer;
+}
+
+.dark-input {
+  background: #2a2a2a;
+  color: #fff;
+  border: 1px solid #444;
+  width: 80px;
+  padding: 10px 8px;
+  margin: 0 8px;
+  border-radius: 3px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.dark-input:focus {
+  border-color: #64b5f6;
+}
+
+.status-text {
+  color: #888;
+  font-size: 12px;
+}
+
+.color-picker {
+  width: 44px;
+  min-width: 44px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  background: #3c3c3c;
+  cursor: pointer;
+}
+
+.divider {
+  width: 1px;
+  height: 20px;
+  background-color: #444;
+  margin: 0 4px;
+}
+</style>

@@ -21,28 +21,35 @@
       <div class="timeline-resize-handle" @mousedown.stop="onResizeStart" />
     </div>
 
+    <TopSidebar />
+
     <CreationTools
       :visible="store.showCreationTools && !store.screenRecordingMode"
       @update:visible="store.showCreationTools = $event"
     />
+    <About />
     <GlobalNotice />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import Player from './components/player/Player.vue'
+import TopSidebar from './components/preference/TopSideBar.vue'
 import EditorPanel from './components/editor/editorPanel.vue'
 import Timeline from './components/timeline/timeline.vue'
 import ToolBar from './components/editor/ToolBar.vue'
 import CreationTools from './components/editor/creationTools.vue'
+import About from './components/preference/about.vue'
 import GlobalNotice from './components/notice/GlobalNotice.vue'
 import { useEditorStore } from './store/editor'
 import { useNoticeStore } from './store/notice'
+import { useHelpStore } from './store/help.ts'
 
 const store = useEditorStore()
 const notice = useNoticeStore()
-const timelineHeight = ref(window.innerHeight - store.screenHeight * store.screenScale / 100 - 80)
+const help = useHelpStore()
+const timelineHeight = ref(Math.max(100, window.innerHeight - store.screenHeight * store.screenScale / 100 - 80))
 const screenScaleBeforeRecording = ref(store.screenScale)
 const currentTimeBeforeRecording = ref(store.currentTime)
 const timeLineOffsetBeforeRecording =ref(store.timelineOffset) 
@@ -84,6 +91,10 @@ async function handleKeyDown(e: KeyboardEvent) {
 
   if (store.showCreationTools && e.code === 'Escape') {
     e.preventDefault()
+    if (help.isVisible) {
+      help.hide()
+      return
+    }
     store.showCreationTools = false
     return
   }
@@ -104,7 +115,7 @@ async function handleKeyDown(e: KeyboardEvent) {
   }
 
   // 空格播放/暂停
-  if (e.code === 'Space' && !isCtrl && !isAlt && !isShift) {
+  if (e.code === 'Space' && !isCtrl && !isAlt && !isShift && !store.screenRecordingMode) {
     e.preventDefault()
     if (store.showCreationTools) {
       return
@@ -148,6 +159,29 @@ async function handleKeyDown(e: KeyboardEvent) {
     return
   }
 
+  if (e.key === 'h' && !isCtrl && !isAlt && !isShift && !store.screenRecordingMode) {
+    e.preventDefault()
+    if (store.showCreationTools) {
+      if (!help.isVisible) {
+        help.show('interface-creation-panel')
+      } else {
+        help.hide()
+      }
+      return
+    } else {
+      if (store.selectedIds.length !== 0) {
+        if (!help.isVisible) {
+          help.show('interface-editor')
+        } else {
+          help.hide()
+        }
+        return
+      }
+    }
+    help.toggle()
+    return
+  }
+
   if (e.code === 'Space' && isCtrl && isAlt && !isShift) {
     e.preventDefault()
     if (!store.screenRecordingMode) {
@@ -155,13 +189,16 @@ async function handleKeyDown(e: KeyboardEvent) {
       currentTimeBeforeRecording.value = store.currentTime
       timeLineOffsetBeforeRecording.value = store.timelineOffset
       store.showCreationTools = false
+      help.hide()
       store.screenRecordingMode = true
       store.aggressiveOptimization = true
       store.currentTime = 0
       store.screenScale = Math.min(Math.round(window.innerHeight / store.screenHeight * 1 * 100), Math.round(window.innerWidth / store.screenWidth * 1 * 100))
+      store.startPlayback()
     } else {
       store.currentTime = 0
       store.screenScale = Math.min(Math.round(window.innerHeight / store.screenHeight * 1 * 100), Math.round(window.innerWidth / store.screenWidth * 1 * 100))
+      store.startPlayback()
     }
   }
 
@@ -174,6 +211,7 @@ async function handleKeyDown(e: KeyboardEvent) {
       store.screenScale = screenScaleBeforeRecording.value
       store.currentTime = currentTimeBeforeRecording.value
       store.timelineOffset = timeLineOffsetBeforeRecording.value
+      store.playing = false
       notice.log('已退出录屏模式', 'success')
     }
   }
@@ -211,6 +249,13 @@ function onTimelineDragStart(e: MouseEvent) {
     return
   }
 }
+
+watch(
+  () => store.screenHeight | store.screenScale,
+  () => {
+    timelineHeight.value = Math.max(100, window.innerHeight - store.screenHeight * store.screenScale / 100 - 80)
+  }
+)
 </script>
 
 <style scoped>

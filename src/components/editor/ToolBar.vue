@@ -87,6 +87,14 @@
           placeholder="输入长度"
         />
       </div>
+      
+      <button
+        class="apply-btn"
+        :disabled="!hasSelection"
+        @click="handleApplyLength"
+      >
+        应用
+      </button>
 
       <div class="advanced-field checkbox">
         <label>
@@ -96,14 +104,6 @@
           />开启锁定角度
         </label>
       </div>
-      
-      <button
-        class="apply-btn"
-        :disabled="!hasSelection"
-        @click="handleApplyLength"
-      >
-        应用
-      </button>
     </div>
     <div v-if="activeAdvancedPanel === `command`" class="advanced-panel command-panel">
       <div class="command-log have-scrollbar">
