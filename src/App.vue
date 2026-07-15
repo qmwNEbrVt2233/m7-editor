@@ -86,6 +86,7 @@ async function handleKeyDown(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.code === 'Semicolon') {
     e.preventDefault()
     store.showCreationTools = !store.showCreationTools
+    help.hide()
     return
   }
 
@@ -202,7 +203,7 @@ async function handleKeyDown(e: KeyboardEvent) {
     }
   }
 
-  if (((e.key === 'Enter' && isCtrl) || e.key === 'Escape') && store.screenRecordingMode) {
+  if (e.key === 'Escape' && store.screenRecordingMode) {
     e.preventDefault()
     const confirmed = await notice.confirm('确定要退出屏幕录制模式吗？')
     if (confirmed) {

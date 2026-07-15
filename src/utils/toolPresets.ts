@@ -46,7 +46,7 @@ export function loadCreationToolPresets(): CreationToolPreset[] {
     return parsePresetImport(raw)
   } catch (error) {
     const notice = useNoticeStore()
-    notice.alert('读取本地预设失败:', 'error', '错误', error)
+    notice.alert('读取本地预设失败', 'error', '错误', error)
     return []
   }
 }

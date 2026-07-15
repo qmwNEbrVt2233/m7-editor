@@ -5,7 +5,7 @@
       <button class="help-close-btn" @click="help.hide()" title="关闭">✕</button>
 
       <!-- 左侧导航 -->
-      <div class="help-sidebar">
+      <div class="help-sidebar no-select">
         <div class="help-sidebar-title">使用文档</div>
         <div class="help-sidebar-option help-scrollbar">
           <template v-for="section in docSections" :key="section.id">
@@ -62,7 +62,7 @@
 
       <!-- 右侧内容 -->
       <div class="help-content-wrapper">
-        <div class="help-content-header">{{ currentTitle }}</div>
+        <div class="help-content-header no-select">{{ currentTitle }}</div>
         <div class="help-content help-scrollbar" v-html="currentBody"></div>
       </div>
     </div>
@@ -515,7 +515,7 @@ const sectionContents: Record<string, string> = {
 
   'license': `
     <subtitle>开源协议</subtitle>
-    <kbd style="display: block; max-width: 550px;">Copyright (c) 2026 qmwNEbrVt2233
+    <kbd style="display: block; max-width: 520px; padding: inherit;">Copyright (c) 2026 qmwNEbrVt2233
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

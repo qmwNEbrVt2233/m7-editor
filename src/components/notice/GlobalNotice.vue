@@ -296,7 +296,7 @@ watch(
   border-radius: 0 5px 0 0;
   padding: 4px;
   font-size: 11px;
-  z-index: 9998;
+  z-index: 9999;
   max-width: 40%;
   max-height: 60%;
   display: flex;
@@ -383,7 +383,7 @@ watch(
   display: flex;
   justify-content: center;
   align-items: center;
-  z-index: 10000;
+  z-index: 10001;
 }
 
 .custom-modal-container {

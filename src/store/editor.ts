@@ -930,7 +930,7 @@ export const useEditorStore = defineStore('editor', {
           await navigator.clipboard.writeText(data)
           console.log('[剪贴板] 已通过浏览器API写入')
         } catch (fallbackError) {
-          notice.alert('写入剪贴板的两种方法均失败，粘贴弹幕功能不可用', 'error', '剪贴板错误', `${fallbackError}`)
+          notice.alert('写入剪贴板的两种方法均失败，粘贴弹幕功能不可用', 'error', '剪贴板错误', fallbackError)
           throw new Error('复制到剪贴板失败')
         }
       }

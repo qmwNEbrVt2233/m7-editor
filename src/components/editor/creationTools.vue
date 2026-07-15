@@ -40,7 +40,7 @@
               <button class="btn-secondary" type="button" @click="formatPreview">
                 格式化 JSON
               </button>
-              <button class="btn-secondary" type="button" @click="resetPreviewToTemplate">
+              <button class="btn-secondary" type="button" @click="resetPreviewToTemplate(true)">
                 重置模板
               </button>
               <span class="status-text" :class="previewStatusTone">
@@ -391,10 +391,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import type { DanmakuItem } from '@/core/danmaku'
 import { historyManager } from '@/core/history'
-import { useEditorStore } from '@/store/editor'
+import { useEditorStore, parsePastedDanmakusText } from '@/store/editor'
 import type {
   ColorFieldPath,
   ColorRuleState,
@@ -424,6 +424,7 @@ import {
   saveCreationToolPresets,
   updatePresetName
 } from '@/utils/toolPresets'
+import { useNoticeStore } from '@/store/notice.ts'
 
 type FieldPath = NumericFieldPath | ColorFieldPath | DirectFieldPath
 type ColorInputTarget = 'start' | 'target'
@@ -468,14 +469,16 @@ const emit = defineEmits<{
 }>()
 
 const store = useEditorStore()
+const notice = useNoticeStore()
 
 const previewText = ref('')
-const previewStatus = ref('预览框中的 JSON 可以直接编辑并创建')
+const previewStatus = ref('预览框中的 JSON 可直接编辑并创建')
 const previewStatusTone = ref<'info' | 'success' | 'error'>('info')
 const toolStatus = ref('')
 const quantityInput = ref('10')
 const expressionEnabled = ref(false)
 const writeMode = ref<WriteMode>('replace')
+const autoOperationMode = ref<'default' | 'auto'>('default')
 const rangeExpressionPresets = RANGE_EXPRESSION_PRESETS_VALUE
 const presets = ref<CreationToolPreset[]>(loadCreationToolPresets())
 const managedPresetId = ref<string | null>(null)
@@ -609,6 +612,197 @@ watch(
   { deep: true }
 )
 
+onMounted(() => {
+  document.addEventListener('keydown', handleCreationToolsShortcut)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', handleCreationToolsShortcut)
+})
+
+function isTextEditingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false
+  }
+
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    target.isContentEditable
+  )
+}
+
+async function handlePasteOverwrite(overwriteType: 'start' | 'end') {
+  const label = overwriteType === 'start' ? '起始值' : '结束值'
+  const confirmed = await notice.confirm(`确定要从剪贴板读取弹幕数据并覆盖当前面板的${label}吗？`)
+  if (!confirmed) {
+    return
+  }
+
+  try {
+    const clipboardText = await store._readFromClipboard()
+    const danmakus = parsePastedDanmakusText(clipboardText)
+
+    if (danmakus.length !== 1) {
+      notice.alert('仅支持一组弹幕数据，请确保剪贴板中只包含一条弹幕对象', 'warn', '警告')
+    }
+
+    const item = danmakus[0]
+    const mapping: Record<NumericFieldPath, number> = {
+      layer: item.layer,
+      startTime: item.startTime,
+      'content.size': item.content?.size,
+      'transform.start.x': item.transform?.start?.x,
+      'transform.start.y': item.transform?.start?.y,
+      'transform.end.x': item.transform?.end?.x,
+      'transform.end.y': item.transform?.end?.y,
+      'transform.zRotate': item.transform?.zRotate,
+      'transform.yRotate': item.transform?.yRotate,
+      'opacity.from': item.opacity?.from,
+      'opacity.to': item.opacity?.to,
+      'animation.duration': item.animation?.duration,
+      'animation.moveDuration': item.animation?.moveDuration,
+      'animation.delay': item.animation?.delay
+    }
+
+    const rawColor = item.content?.color
+    const normalizedColor = normalizeColor(String(rawColor ?? ''))
+    if (!normalizedColor) {
+      throw new Error('剪贴板弹幕数据缺少或无效的 content.color 字段')
+    }
+
+    for (const path of Object.keys(numericRules.value) as NumericFieldPath[]) {
+      const value = mapping[path]
+      if (typeof value !== 'number' || Number.isNaN(value) || !Number.isFinite(value)) {
+        throw new Error(`剪贴板弹幕数据缺少或无效的字段: ${path}`)
+      }
+
+      if (overwriteType === 'start') {
+        numericRules.value[path].start = String(value)
+      } else {
+        numericRules.value[path].end = String(value)
+      }
+    }
+
+    if (overwriteType === 'start') {
+      colorRule.value.start = normalizedColor
+      colorRule.value.startText = normalizedColor
+    } else {
+      colorRule.value.target = normalizedColor
+      colorRule.value.targetText = normalizedColor
+    }
+
+    toolStatus.value = `已根据剪贴板弹幕覆盖${label}`
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '从剪贴板读取弹幕数据失败'
+    toolStatus.value = message
+    previewStatus.value = message
+    previewStatusTone.value = 'error'
+  }
+}
+
+function swapStartEndValues() {
+  for (const path of Object.keys(numericRules.value) as NumericFieldPath[]) {
+    const rule = numericRules.value[path]
+    const temp = rule.start
+    rule.start = rule.end
+    rule.end = temp
+  }
+
+  const tempColor = colorRule.value.start
+  const tempColorText = colorRule.value.startText
+  colorRule.value.start = colorRule.value.target
+  colorRule.value.startText = colorRule.value.targetText
+  colorRule.value.target = tempColor
+  colorRule.value.targetText = tempColorText
+
+  toolStatus.value = '已交换所有字段的起始值与结束值'
+}
+
+function toggleAutoOperationMode() {
+  autoOperationMode.value = autoOperationMode.value === 'default' ? 'auto' : 'default'
+}
+
+async function handleClearPresets() {
+  const confirmed = await notice.confirm('确定要清空创建工具预设吗？这将丢失所有未导出的预设')
+  if (!confirmed) {
+    return
+  }
+
+  managedPresetId.value = null
+  localStorage.removeItem('m7-editor.creation-tool-presets')
+  toolStatus.value = '已清空高级创建工具预设'
+  notice.log('已清空高级创建工具预设', 'success')
+}
+
+function toggleWriteMode() {
+  writeMode.value = writeMode.value === 'replace' ? 'append' : 'replace'
+  toolStatus.value = `已切换写入模式：${writeMode.value === 'replace' ? '替换' : '添加'}`
+}
+
+function toggleExpressionEnabled() {
+  expressionEnabled.value = !expressionEnabled.value
+  toolStatus.value = `表达式 ${expressionEnabled.value ? '已启用' : '已关闭'}`
+}
+
+async function handleCreationToolsShortcut(event: KeyboardEvent) {
+  if (!props.visible || notice.isVisible) {
+    return
+  }
+
+  if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+    return
+  }
+
+  if (isTextEditingTarget(event.target)) {
+    return
+  }
+
+  switch (event.key) {
+    case '0':
+      event.preventDefault()
+      await handleCreate()
+      break
+    case '1':
+      event.preventDefault()
+      handleToolWrite()
+      break
+    case '2':
+      event.preventDefault()
+      await handlePasteOverwrite('start')
+      break
+    case '3':
+      event.preventDefault()
+      await handlePasteOverwrite('end')
+      break
+    case '4':
+      event.preventDefault()
+      swapStartEndValues()
+      break
+    case '5':
+      event.preventDefault()
+      toggleAutoOperationMode()
+      break
+    case '6':
+      event.preventDefault()
+      await handleClearPresets()
+      break
+    case '7':
+      event.preventDefault()
+      toggleWriteMode()
+      break
+    case '8':
+      event.preventDefault()
+      toggleExpressionEnabled()
+      break
+    case '9':
+      event.preventDefault()
+      await handleToolReset()
+      break
+  }
+}
+
 function createNumericRule(mode: RuleMode, start = '', end = '', step = ''): NumericRuleState {
   return {
     mode,
@@ -682,10 +876,18 @@ function buildTemplateDraft(): DanmakuDraft[] {
   ]
 }
 
-function resetPreviewToTemplate() {
-  previewText.value = JSON.stringify(buildTemplateDraft(), null, 2)
-  previewStatus.value = '已重置为单条弹幕模板'
-  previewStatusTone.value = 'info'
+async function resetPreviewToTemplate(resetByUser?: boolean) {
+  if (resetByUser) {
+    const confirmed = await notice.confirm('确定要重置模板吗？这将丢失现有进度')
+    if (confirmed) {
+      previewText.value = JSON.stringify(buildTemplateDraft(), null, 2)
+      previewStatus.value = '已重置为单条弹幕模板'
+      previewStatusTone.value = 'info'
+    }
+  } else {
+    previewText.value = JSON.stringify(buildTemplateDraft(), null, 2)
+    previewStatusTone.value = 'info'
+  }
 }
 
 function formatPreview() {
@@ -822,12 +1024,15 @@ function handleToolWrite() {
   }
 }
 
-function handleToolReset() {
-  expressionEnabled.value = false
-  numericRules.value = createDefaultNumericRules()
-  colorRule.value = createDefaultColorRule()
-  directRules.value = createDefaultDirectRules()
-  toolStatus.value = '工具栏已重置至默认值'
+async function handleToolReset() {
+  const confirmed = await notice.confirm('确定要重置工具栏吗？这将丢失未保存的设置')
+  if (confirmed) {
+    expressionEnabled.value = false
+    numericRules.value = createDefaultNumericRules()
+    colorRule.value = createDefaultColorRule()
+    directRules.value = createDefaultDirectRules()
+    toolStatus.value = '工具栏已重置至默认值'
+  }
 }
 
 function handleAddPreset() {
@@ -954,6 +1159,9 @@ function handleCreate() {
       count: createdDanmakus.length,
       ids: createdDanmakus.map((item) => item.id)
     })
+    if (autoOperationMode.value === 'auto') {
+      store.showCreationTools = false
+    }
   } catch (error) {
     previewStatus.value = error instanceof Error ? error.message : '创建失败'
     previewStatusTone.value = 'error'
@@ -995,7 +1203,7 @@ defineExpose({
 .creation-tools-overlay {
   position: fixed;
   inset: 0;
-  z-index: 999;
+  z-index: 9998;
   display: flex;
   align-items: center;
   justify-content: center;

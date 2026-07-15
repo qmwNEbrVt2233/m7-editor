@@ -137,6 +137,10 @@ npm run tauri dev
 │   │   │       DanmakuLayer.vue     #弹幕渲染
 │   │   │       Player.vue           #播放器渲染
 │   │   │
+│   │   ├───preference
+│   │   │       about.vue            #帮助/关于文档
+│   │   │       TopSideBar.vue       #顶边设置栏
+│   │   │
 │   │   └───timeline
 │   │           timeline.vue         #时间轴模块
 │   │

@@ -94,9 +94,11 @@ import { isValidHex , normalizeColor } from '@/utils/validation'
 import WaveSurfer from 'wavesurfer.js'
 import SpectrogramPlugin from 'wavesurfer.js/dist/plugins/spectrogram.esm.js'
 import { blendColor } from '@/utils/parser'
+import { useHelpStore } from '@/store/help'
 
 const store = useEditorStore()
 const notice = useNoticeStore()
+const help = useHelpStore()
 const timelineRef = ref<HTMLElement | null>(null)
 const tracksRef = ref<HTMLElement | null>(null)
 
@@ -922,7 +924,7 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   const isAlt = e.altKey
   const isShift = e.shiftKey
   
-  if (store.showCreationTools || store.screenRecordingMode || notice.isVisible || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+  if (store.showCreationTools || store.screenRecordingMode || notice.isVisible || help.isVisible || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
     if ((e.code === 'KeyR' && (isCtrl || isShift) && !isAlt) || (e.key === 'F5' && isCtrl && !isAlt && !isShift)) {
       e.preventDefault()
       return

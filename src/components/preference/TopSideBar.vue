@@ -11,6 +11,7 @@
             <h4>播放与工程</h4>
             <table class="shortcuts-table">
               <tbody>
+                <tr><td>H</td><td>开启 / 关闭 帮助文档</td></tr>
                 <tr><td>Space</td><td>播放 / 暂停</td></tr>
                 <tr><td>Ctrl + S</td><td>导出工程 JSON</td></tr>
                 <tr><td>Ctrl + D</td><td>保存工程到本地缓存</td></tr>
@@ -18,9 +19,8 @@
                 <tr><td>Ctrl + Shift + Delete</td><td>清空所有缓存</td></tr>
                 <tr><td>Shift + Tab</td><td>手动重构缓存池</td></tr>
                 <tr><td>Ctrl + Alt + Space</td><td>开启录屏模式</td></tr>
-                <tr><td>Escape / Ctrl + Enter</td><td>关闭录屏模式</td></tr>
+                <tr><td>Escape</td><td>关闭录屏模式</td></tr>
                 <tr><td>Ctrl + Shift + R</td><td>刷新界面</td></tr>
-                <tr><td>H</td><td>开启 / 关闭 帮助面板</td></tr>
               </tbody>
             </table>
           </div>
@@ -30,7 +30,6 @@
             <table class="shortcuts-table">
               <tbody>
                 <tr><td>;</td><td>在当前播放头创建一条新弹幕</td></tr>
-                <tr><td>Ctrl + ;</td><td>唤出高级创建工具</td></tr>
                 <tr><td>Delete</td><td>删除当前选中的 弹幕 / 预设</td></tr>
                 <tr><td>Ctrl + C</td><td>复制选中的弹幕</td></tr>
                 <tr><td>Ctrl + Alt + C</td><td>复制当前帧的弹幕，保留当前状态</td></tr>
@@ -80,6 +79,25 @@
                 <tr><td>I</td><td>切换选中弹幕时是否高亮弹幕块背景</td></tr>
                 <tr><td>O</td><td>切换时间轴轨道透明度</td></tr>
                 <tr><td>P</td><td>按下时隐藏轨道</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="shortcuts-section">
+            <h4>高级创建工具</h4>
+            <table class="shortcuts-table">
+              <tbody>
+                <tr><td>Ctrl + ;</td><td>唤出高级创建工具</td></tr>
+                <tr><td>0</td><td>高级创建工具创建</td></tr>
+                <tr><td>1</td><td>高级创建工具面板写入</td></tr>
+                <tr><td>2</td><td>解析剪贴板中的弹幕并对应到高级创建工具面板起始参数</td></tr>
+                <tr><td>3</td><td>解析剪贴板中的弹幕并对应到高级创建工具面板结束参数</td></tr>
+                <tr><td>4</td><td>交换高级创建工具面板起始&结束参数</td></tr>
+                <tr><td>5</td><td>切换是否在创建后自动关闭面板</td></tr>
+                <tr><td>6</td><td>清空预设列表</td></tr>
+                <tr><td>7</td><td>切换高级创建工具面板写入模式</td></tr>
+                <tr><td>8</td><td>切换是否使用表达式</td></tr>
+                <tr><td>9</td><td>重置高级创建工具面板</td></tr>
               </tbody>
             </table>
           </div>

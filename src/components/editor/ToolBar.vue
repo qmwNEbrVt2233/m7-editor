@@ -2164,55 +2164,49 @@ function handleshortcuts(e: KeyboardEvent) {
     return
   }
 
-  if (e.key === '0' ) {
-    if (scopeMode.value === 'S') {
-      scopeMode.value = 'E'
-    } else if (scopeMode.value === 'E') {
-      scopeMode.value = 'B'
-    } else {
-      scopeMode.value = 'S'
-    }
-    console.log('[工具栏] 快捷键：切换应用范围')
-  }
-
-  if (e.key === '1' ) {
-    handlePickTool()
-  }
-
-  if (e.key === '2' ) {
-    handleVerticalCenter()
-  }
-
-  if (e.key === '3' ) {
-    handleHorizontalCenter()
-  }
-
-  if (e.key === '4' ) {
-    handleHorizontalMirror()
-  }
-
-  if (e.key === '5' ) {
-    handleVerticalMirror()
-  }
-
-  if (e.key === '6' ) {
-    handleSwapStartAndEnd()
-  }
-
-  if (e.key === '7' ) {
-    handleCalculateZRotation()
-  }
-
-  if (e.key === '8' ) {
-    handleLineSplit()
-  }
-
-  if (e.key === '9' ) {
-    handleLetterSplit()
-  }
-
-  if (e.key === '\\') {
-    handleTimeSplit()
+  switch (e.key) {
+    case '0':
+      if (scopeMode.value === 'S') {
+        scopeMode.value = 'E'
+      } else if (scopeMode.value === 'E') {
+        scopeMode.value = 'B'
+      } else {
+        scopeMode.value = 'S'
+      }
+      break
+    case '1':
+      handlePickTool()
+      break
+    case '2':
+      handleVerticalCenter()
+      break
+    case '3':
+      handleHorizontalCenter()
+      break
+    case '4':
+      handleHorizontalMirror()
+      break
+    case '5':
+      handleVerticalMirror()
+      break
+    case '6':
+      handleSwapStartAndEnd()
+      break
+    case '7':
+      handleCalculateZRotation()
+      break
+    case '8':
+      handleLineSplit()
+      break
+    case '9':
+      handleLetterSplit()
+      break
+    case '\\':
+      handleTimeSplit()
+      break
+    case '/':
+      toggleAdvancedTools()
+      break
   }
 
   if (e.key === 'ArrowDown' && isCtrl ) {
@@ -2221,10 +2215,6 @@ function handleshortcuts(e: KeyboardEvent) {
 
   if (e.key === 'ArrowUp' && isCtrl ) {
     handleCopyEndToStart()
-  }
-
-  if (e.key === '/' ) {
-    toggleAdvancedTools()
   }
 }
 
