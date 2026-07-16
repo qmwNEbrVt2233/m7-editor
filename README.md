@@ -10,7 +10,7 @@
 # 如何使用
 
 - 现提供一键安装使用选择，请从[release](https://github.com/qmwNEbrVt2233/m7-editor/releases)获取最新版本
-- 安装包解压后应用程序大小约10mb
+- 安装包解压后应用程序大小约12mb
 - 本项目依赖[webview2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)，若启动后白屏，请检查是否安装了webview，其一般绑定为系统组件，随edge预装。如果你没有，请前往[microsoft webview](https://developer.microsoft.com/en-us/microsoft-edge/webview2/?form=MA13LH#download)下载
 - 目前`应用`支持 windows 与 mac 系统
 
@@ -86,17 +86,6 @@ npm run tauri dev
 按下`h`可唤出使用文档，在左上角图标悬停可查看快捷键，点击图标亦可唤出帮助
 - 若您需要查看旧版文档，请前往：[README_1.7.0.md](public/old_doc/README_1.7.0.md)
 
-# 当前注意事项
-
-- 若使用网页版，刷新页面后需重新选择媒体文件
-- 若使用网页版，本地缓存工程依赖浏览器 `localStorage`，清空网站数据后会丢失缓存的工程
-- XML 导入可能出现问题，请不要高估解析工具
-- 若发现高密度场景下渲染卡顿，请开启`激进优化`
-- XML 比例坐标导入导出依赖当前播放器设置中的 `screen width/height` **若要使用请提前修改宽高！否则转为坐标时会与预期不符！**
-- 弹幕渲染优化采用低频确定高刷范围，若发现弹幕层级显示不正常或无法显示，请按下`Shift + Tab`手动重构缓存池
-- 若您发现修改弹幕结束坐标时不起效用，请检查您的`运动耗时`设置，这可能是因为其设置为0导致的
-- 若遇到问题可选择导出日志以排查
-
 # 项目文件结构
 
 <details>
@@ -139,6 +128,7 @@ npm run tauri dev
 │   │   │
 │   │   ├───preference
 │   │   │       about.vue            #帮助/关于文档
+│   │   │       projectManager.vue   #工程管理
 │   │   │       TopSideBar.vue       #顶边设置栏
 │   │   │
 │   │   └───timeline
@@ -164,7 +154,7 @@ npm run tauri dev
 │   └───utils
 │           danmakuGenerator.ts      #高级创建工具生成算法
 │           parser.ts                #解析工具
-│           tauriMedia.ts            #媒体文件路径
+│           tauriBackend.ts          #后端api
 │           time.ts                  #时间格式化工具
 │           toolPresets.ts           #高级创建工具预设读写
 │           validation.ts            #验证工具
@@ -177,7 +167,7 @@ npm run tauri dev
     │   tauri.conf.json              #构建配置
     │
     ├───capabilities
-    │       default.json
+    │       default.json             #应用权限配置
     │
     ├───icons                        #应用图标
     │       ...

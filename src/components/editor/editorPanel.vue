@@ -1017,7 +1017,7 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
       if (typeof originalValue !== 'number') return
       const updatedValue = roundToInteger(applyOperation(originalValue, parseResult), store.allowNegativeValues)
       const rule = M7_RULES[getValidationFieldName(path) as keyof typeof M7_RULES]
-      const validated = roundToInteger(validateRange(updatedValue, rule?.min || 0, rule?.max || Infinity), store.allowNegativeValues)
+      const validated = roundToInteger(validateRange(updatedValue, rule?.min || updatedValue, rule?.max || Infinity), store.allowNegativeValues)
       store.updateDanmaku(d.id, { [path]: validated })
     })
   } else {

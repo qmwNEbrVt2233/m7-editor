@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { saveBlobWithFallback } from '@/store/editor'
 import { formatDateTime } from '@/utils/time'
+import { appendLogToFile, isTauriRuntime } from '@/utils/tauriBackend'
 
 export type NoticeType = 'info' | 'success' | 'warn' | 'error' | undefined
 
@@ -151,15 +152,24 @@ export const useNoticeStore = defineStore('notice', {
 
   actions: {
     addLog(msg: string, noticeType?: NoticeType, AdditionalInfo?: any) {
-      this.logList.push({
+      const entry = {
         id: Date.now(),
         timestamp: new Date().toLocaleTimeString(),
         type: noticeType,
         message: msg,
         AdditionalInfo
-      })
+      }
+
+      this.logList.push(entry)
 
       this.lastLogTime = Date.now()
+
+      if (isTauriRuntime()) {
+        const line = `[${entry.timestamp}] [${entry.type ?? 'log'}] ${entry.message}${entry.AdditionalInfo ? '\n' + serializeAdditionalInfo(entry.AdditionalInfo) + '\n' : ''}`
+        void appendLogToFile(line).catch((error) => {
+          console.warn('[日志] 写入后端日志失败', error)
+        })
+      }
     },
 
     log(msg: string, noticeType?: NoticeType, AdditionalInfo?: any) {
@@ -205,7 +215,7 @@ export const useNoticeStore = defineStore('notice', {
       const markdown = buildLogMarkdown(this.logList)
       const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
 
-      await saveBlobWithFallback(blob, `notice-logs ${formatDateTime(Date.now())}.md`, {
+      await saveBlobWithFallback(blob, `notice-logs_${formatDateTime(Date.now())}.md`, {
         description: 'Markdown 日志文件',
         accept: {
           'text/markdown': ['.md']

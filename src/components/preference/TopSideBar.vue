@@ -13,9 +13,11 @@
               <tbody>
                 <tr><td>H</td><td>开启 / 关闭 帮助文档</td></tr>
                 <tr><td>Space</td><td>播放 / 暂停</td></tr>
-                <tr><td>Ctrl + S</td><td>导出工程 JSON</td></tr>
-                <tr><td>Ctrl + D</td><td>保存工程到本地缓存</td></tr>
-                <tr><td>Ctrl + Delete</td><td>清空本地缓存工程</td></tr>
+                <tr><td>`</td><td>开启 / 关闭 工程管理</td></tr>
+                <tr><td>Ctrl + S</td><td>{{ store.projectMode === 'folder' ? '保存文件夹工程' : '导出工程 JSON' }}</td></tr>
+                <tr v-if="store.projectMode === 'folder'"><td>Ctrl + Shift + S</td><td>保存并备份文件夹工程</td></tr>
+                <tr v-if="store.projectMode === 'single'"><td>Ctrl + D</td><td>保存工程到本地缓存</td></tr>
+                <tr v-if="store.projectMode === 'single'"><td>Ctrl + Delete</td><td>清空本地缓存工程</td></tr>
                 <tr><td>Ctrl + Shift + Delete</td><td>清空所有缓存</td></tr>
                 <tr><td>Shift + Tab</td><td>手动重构缓存池</td></tr>
                 <tr><td>Ctrl + Alt + Space</td><td>开启录屏模式</td></tr>
@@ -132,13 +134,15 @@
 
     <div v-if="activeMenu === 'file'" class="menu-panel">
       <button @click="importMedia" class="btn">导入媒体</button>
-      <button @click="saveProject" class="btn">导出工程</button>
-      <button @click="importProject" class="btn">导入工程</button>
+      <button @click="saveProject" class="btn">{{ store.projectMode === 'folder' ? '保存工程' : '导出工程' }}</button>
+      <button v-if="store.projectMode === 'folder'" @click="backupProject" class="btn">保存并备份</button>
+      <button v-if="store.projectMode === 'single'" @click="importProject" class="btn">导入工程</button>
       <button @click="exportXml" class="btn">导出XML</button>
-      <button @click="importXml" class="btn">导入XML</button>
-      <button @click="saveCache" class="btn">保存缓存</button>
-      <button @click="loadCache" class="btn">加载缓存</button>
-      <button @click="clearCache" class="btn btn-danger">清空缓存工程</button>
+      <button v-if="store.projectMode === 'single'" @click="importXml" class="btn">导入XML</button>
+      <button v-if="store.projectMode === 'single'" @click="saveCache" class="btn">保存缓存</button>
+      <button v-if="store.projectMode === 'single'" @click="loadCache" class="btn">加载缓存</button>
+      <button v-if="store.projectMode === 'single'" @click="clearCache" class="btn btn-danger">清空缓存工程</button>
+      <span v-if="store.projectMode === 'folder'" class="status-text">当前：{{ store.activeFolderProjectConfig?.name }}</span>
     </div>
 
     <div v-if="activeMenu === 'config'" class="menu-panel">
@@ -525,7 +529,7 @@ async function importMedia() {
       const media = await openMediaFileWithTauri()
 
       if (media) {
-        store.setMediaSource(media.url, media.path)
+        store.setImportedMediaSource(media.url, media.path)
         notice.log('媒体文件路径已设置:' + media.path, 'success')
       }
 
@@ -538,11 +542,23 @@ async function importMedia() {
   mediaInput.value?.click()
 }
 
-function importProject() {
+async function importProject() {
+  if (!store.InitializationPhase) {
+    const confirmed = await notice.confirm('确定要加载工程吗？这将丢失未保存的进度')
+    if (!confirmed) {
+      return
+    }
+  }
   projectInput.value?.click()
 }
 
-function importXml() {
+async function importXml() {
+  if (!store.InitializationPhase) {
+    const confirmed = await notice.confirm('确定要加载 XML 弹幕文件吗？这将丢失未保存的进度')
+    if (!confirmed) {
+      return
+    }
+  }
   xmlInput.value?.click()
 }
 
@@ -556,7 +572,7 @@ async function onMediaFileChange(e: Event) {
     if (nativePath && isTauriRuntime()) {
       try {
         const media = await registerMediaPath(nativePath)
-        store.setMediaSource(media.url, media.path)
+        store.setImportedMediaSource(media.url, media.path)
         notice.log('媒体文件路径已设置:' + media.path, 'success')
         input.value = ''
         return
@@ -566,7 +582,7 @@ async function onMediaFileChange(e: Event) {
     }
 
     const url = URL.createObjectURL(file)
-    store.setMediaSource(url, '')
+    store.setImportedMediaSource(url, '')
     notice.log('媒体文件成功载入:' + file.name, 'success')
   }
 
@@ -575,6 +591,10 @@ async function onMediaFileChange(e: Event) {
 
 async function saveProject() {
   await store.downloadProject()
+}
+
+async function backupProject() {
+  await store.backupActiveFolderProject()
 }
 
 async function exportXml() {

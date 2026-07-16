@@ -79,9 +79,12 @@ const sectionContents: Record<string, string> = {
   'about': `
     <subtitle>关于</subtitle>
     <img src="/favicon.svg" alt="m7-editor" style="width: 150px; height: 150px;">
-    <p>m7-editor是一个面向 M7 / B 站特效弹幕场景的可视化编辑器，由jerryeee开发<p>
+    <p>m7-editor是一个面向 M7 / B 站特效弹幕场景的可视化编辑器，由jerryeee开发</p>
+    <h3>获取帮助</h3>
+    <p>按下<code>h</code>随时唤出帮助</p>
+    <p>鼠标在左上角图标处悬停以获取快捷键帮助</p>
     <p>您所在的版本：<kbd>1.8.0</kbd></p>
-    <p>反馈渠道:<p>
+    <p>反馈渠道:</p>
     <ul>
       <li><a href="https://github.com/qmwNEbrVt2233/m7-editor/issues" target="_blank">github issues</a></li>
       <li><a href="https://space.bilibili.com/108382388" target="_blank">bilibili profile</a></li>
@@ -89,6 +92,167 @@ const sectionContents: Record<string, string> = {
     </ul>
     <p>下载 / 更新 应用请前往：<a href="https://github.com/qmwNEbrVt2233/m7-editor/releases" target="_blank">qmwNEbrVt2233/m7-editor/releases</a></p>
     <p>开源地址：<a href="https://github.com/qmwNEbrVt2233/m7-editor" target="_blank">qmwNEbrVt2233/m7-editor</a></p>
+  `,
+
+  'interface-project-manager': `
+    <subtitle>工程管理</subtitle>
+    <p style="color: red;">注意！此面板及其相关功能只在应用中有效，网页版无此项</p>
+    <img src="./oi2neu10df-92emusioa-2ei1jb.jpg" style="width: 100%;">
+    <p style="color: #aaa; font-style: italic;">开启应用时你应该看到这个</p>
+    <p>应用会在系统文档中创建一个文件夹，结构如下</p>
+    <kbd style="white-space: pre; display: block; width: 110px">└───m7-editor</br>    ├───logs</br>    └───projects</kbd>
+    <ul>
+      <li>logs用于实时存放日志，每次打开都会创建一个新文件用于记录</li>
+      <li>projects是默认的工程创建目录</li>
+    </ul>
+
+    <h3>编辑工程时（新）</h3>
+    <p>使用 ctrl + s 以保存工程</p>
+    <p>使用 ctrl + shift + s 在保存的同时备份工程</p>
+
+    <h3>编辑单文件工程时（旧）</h3>
+    <p>使用 ctrl + s 手动选择路径保存工程</p>
+
+    <h3>兼容性</h3>
+    <p>现版本向下兼容所有版本的工程，可随时转换</p>
+  `,
+
+  'interface-create-project': `
+    <subtitle>新建工程</subtitle>
+
+    <h3 style="margin-top: 0;">基本信息</h3>
+    <ul>
+      <li><strong>工程名称</strong>：输入工程名称，会自动过滤非法文件名字符（如 <code>&lt; &gt; : " / \\ | ? *</code>）</li>
+      <li><strong>创建路径</strong>：选择工程文件夹的父目录，默认为 <code>文档/m7-editor/projects</code></li>
+      <li><strong>路径检查</strong>：输入名称和路径后自动检测目标目录是否已存在，存在时显示红色警告且不可创建</li>
+    </ul>
+
+    <h3>媒体文件</h3>
+    <ul>
+      <li><strong>媒体文件路径</strong>：可选，选择视频或音频文件关联到此工程</li>
+      <li><strong>复制媒体到工程文件夹中</strong>（默认勾选）：
+        <ul>
+          <li>勾选时：媒体文件会被复制到工程的 <code>media/</code> 子目录中，工程自包含、便于迁移</li>
+          <li>不勾选时：工程仅记录外部文件的引用路径，不复制文件本身</li>
+        </ul>
+      </li>
+    </ul>
+
+    <h3>从已有内容创建</h3>
+    <p>提供两种方式将已有数据作为新工程的起点：</p>
+    <ul>
+      <li><strong>从当前编辑内容创建</strong>（仅非初始化阶段可用）：
+        <ul>
+          <li>勾选后将当前编辑器中的全部内容导出作为新工程的初始数据</li>
+          <li>与"从导入的工程创建"互斥，勾选一个会自动取消另一个</li>
+        </ul>
+      </li>
+      <li><strong>从导入的工程创建</strong>：
+        <ul>
+          <li>勾选后显示"选择工程文件"按钮，可选取一个 <code>.json</code> 工程文件</li>
+          <li>读取该文件的内容作为新工程的初始数据</li>
+          <li>适用于从旧工程快速创建新工程、或基于模板工程创建</li>
+        </ul>
+      </li>
+    </ul>
+
+    <h3>描述</h3>
+    <ul><li>可选，为工程添加一段文字描述，便于日后识别工程用途</li></ul>
+
+    <h3>文件结构</h3>
+    <ul><li>创建工程后会在指定的路径下创建这样一个文件夹</li></ul>
+    <kbd style="white-space: pre; display: block; width: 320px">└───PROJECTNAME
+    |   project_config.json
+    │   PROJECTNAME.json
+    │
+    ├───backup
+    |
+    └───media
+            PROJECTNAME.* （若选择了复制媒体文件）</kbd>
+
+  <ul><li>文件夹工程配置文件（project_config.json）中的结构：</li></ul>
+  <kbd style="display: block; max-width: 320px">{
+  version: string,
+  name: string,
+  createdAt: number,
+  lastChangeAt: number,
+  lastBackUpAt: number,
+  projectFile: string,
+  media: {
+    name: string,
+    useExternalLink: boolean,
+    externalPath: string
+  },
+  description: string
+}</kbd>
+  `,
+
+  'interface-edit-project-info': `
+    <subtitle>编辑现有工程信息</subtitle>
+    <p>在工程列表中每个工程项右侧有"编辑"按钮，点击后展开编辑面板，可修改以下内容：</p>
+
+    <h3>重命名工程</h3>
+    <ul>
+      <li>修改"工程名称"字段即可重命名</li>
+      <li>后端会自动同步执行以下操作：
+        <ul>
+          <li>重命名工程文件夹</li>
+          <li>重命名工程 <code>.json</code> 项目文件</li>
+          <li>更新工程配置中的文件名记录</li>
+          <li>更新应用注册列表</li>
+        </ul>
+      </li>
+      <li>若目标名称已存在则报错，不会覆盖已有工程</li>
+    </ul>
+
+    <h3>编辑描述</h3>
+    <ul>
+      <li>直接在"描述"文本框中修改工程的描述信息</li>
+      <li>描述会显示在工程列表的每个工程项中</li>
+    </ul>
+
+    <h3>移动工程位置</h3>
+    <ul>
+      <li>在"移动到新路径"中输入目标父目录，或点击"选择"按钮选取</li>
+      <li>留空则不移动</li>
+      <li>后端会将整个工程文件夹移动到新位置，并在应用注册列表中更新路径</li>
+      <li>若目标路径已存在同名文件夹则报错</li>
+      <li>支持与重命名同时进行，先重命名再移动</li>
+    </ul>
+
+    <h3>媒体链接方式切换</h3>
+    <p>通过下拉菜单可选择两种模式：</p>
+    <ul>
+      <li><strong>内部复制（默认）</strong>：
+        <ul>
+          <li>媒体文件存放在工程的 <code>media/</code> 子目录中</li>
+          <li>切换到此模式时，若之前是外部链接，会自动将外部文件复制到工程内</li>
+          <li>工程自包含，适合迁移和备份</li>
+        </ul>
+      </li>
+      <li><strong>外部链接</strong>：
+        <ul>
+          <li>仅记录外部文件的路径引用，不复制文件</li>
+          <li>切换到此模式时需指定外部媒体文件路径</li>
+          <li>若之前是内部复制模式，切换后会自动删除工程内的媒体副本</li>
+          <li>适合多个工程共享同一媒体文件的场景</li>
+        </ul>
+      </li>
+    </ul>
+
+    <h3>媒体缺失警告</h3>
+    <ul>
+      <li>工程列表会自动检测媒体文件是否存在</li>
+      <li>若工程配置了媒体但文件不存在（路径失效、文件被移动或删除），工程项会显示 <strong>⚠️ 警告图标 </strong>和提示</li>
+      <li>加载此类工程时，会额外弹出警告对话框，提醒用户媒体文件缺失</li>
+      <li>可通过重新指定正确的媒体路径来修复</li>
+    </ul>
+
+    <h3>自动清理失效工程</h3>
+    <ul>
+      <li>每次刷新工程列表时，应用会自动检测注册的工程路径是否仍然有效</li>
+      <li>若工程目录已被手动删除或 <code>project_config.json</code> 丢失，该注册项会被自动移除</li>
+    </ul>
   `,
 
   'interface-file': `
@@ -233,14 +397,14 @@ const sectionContents: Record<string, string> = {
     <subtitle>一般工具</subtitle>
     <p>选中弹幕后可点击工具栏中的图标快捷操作，所有功能均支持批量操作。</p>
 
-    <h3>拾取定位工具</h3>
+    <h3>拾取定位工具（ 1 ）</h3>
     <ul>
       <li>点击工具图标后可在屏幕中单击任意位置将坐标应用</li>
       <li>点击其他位置视为放弃</li>
       <li>支持选择作用范围</li>
     </ul>
 
-    <h3>垂直/水平 居中工具</h3>
+    <h3>垂直/水平 居中工具（ 2 / 3 ）</h3>
     <ul>
       <li>支持 Z 轴旋转</li>
       <li><strong>不支持 Y 轴翻转</strong>，若有 Y 轴翻转会导致偏移，不建议使用</li>
@@ -248,7 +412,7 @@ const sectionContents: Record<string, string> = {
       <li>若弹幕坐标经处理后小于 0 则弹窗提醒并钳至 0（勾选"允许负值"则不执行此操作）</li>
     </ul>
 
-    <h3>SEB 模式</h3>
+    <h3>SEB 模式（ 0 ）</h3>
     <p>拾取定位工具、水平居中工具、垂直居中工具提供三个模式选项：</p>
     <ul>
       <li><strong>S（Start）</strong>：作用于起始坐标</li>
@@ -256,37 +420,40 @@ const sectionContents: Record<string, string> = {
       <li><strong>B（Both）</strong>：作用于起始与结束坐标（默认）</li>
     </ul>
 
-    <h3>垂直/水平 镜像工具</h3>
+    <h3>垂直/水平 镜像工具（ 4 / 5 ）</h3>
     <ul>
       <li>若弹幕坐标经处理后小于 0 则弹窗提醒并钳至 0（勾选"允许负值"则不执行此操作）</li>
     </ul>
 
     <h3>坐标转换工具</h3>
     <ul>
-      <li><strong>将起始坐标应用至结束坐标</strong></li>
-      <li><strong>将结束坐标应用至起始坐标</strong></li>
-      <li><strong>互换结束与起始坐标</strong></li>
+      <li><strong>将起始坐标应用至结束坐标</strong>（ Ctrl + ArrowDown ）</li>
+      <li><strong>将结束坐标应用至起始坐标</strong>（ Ctrl + ArrowUp ）</li>
+      <li><strong>互换结束与起始坐标</strong>（ 6 ）</li>
     </ul>
 
-    <h3>Z 轴旋转计算工具</h3>
+    <h3>Z 轴旋转计算工具（ 7 ）</h3>
     <p>通过起始/结束坐标计算 Z 轴旋转角度，使旋转角度与运动方向一致</p>
 
-    <h3>行分隔工具</h3>
+    <h3>行分隔工具（ 8 ）</h3>
     <ul>
       <li>将有换行的弹幕拆分为多条弹幕</li>
       <li>自动进行 Layer 避让</li>
       <li>支持 Z 轴旋转，<strong>不支持 Y 轴翻转</strong>，若有 Y 轴翻转会导致偏移，不建议使用</li>
     </ul>
 
-    <h3>字分隔工具</h3>
+    <h3>字分隔工具（ 9 ）</h3>
     <ul>
       <li>拆分为单个字符</li>
       <li>自动进行 Layer 避让</li>
       <li>支持 Z 轴旋转，<strong>不支持 Y 轴翻转</strong>，若有 Y 轴翻转会导致偏移，不建议使用</li>
     </ul>
 
-    <h3>时间分割工具</h3>
+    <h3>时间分割工具（ \\ ）</h3>
     <p>以当前播放时间分割选中弹幕。</p>
+
+    <h3>高级工具（ / ）</h3>
+    <p>展开高级工具面板</p>
   `,
 
   'interface-advanced-tools': `
@@ -355,8 +522,11 @@ const sectionContents: Record<string, string> = {
     </ul>
   `,
 
-  'interface-creation-data': `
-    <subtitle>预备弹幕数据区</subtitle>
+  'interface-creation': `
+    <subtitle>高级创建工具</subtitle>
+    <img src="./zney812dm21ey890523-18297.jpg" style="width: 100%;">
+
+    <h3>预备弹幕数据区</h3>
     <ul>
       <li>提供可直接编辑的 JSON 预览框</li>
       <li>支持格式化 JSON</li>
@@ -364,10 +534,8 @@ const sectionContents: Record<string, string> = {
       <li>点击"创建"后才会真正写入弹幕列表</li>
       <li>写入时会自动完成字段规范化、新 ID 分配，并记录历史快照</li>
     </ul>
-  `,
 
-  'interface-creation-panel': `
-    <subtitle>工具面板</subtitle>
+    <h3>工具面板</h3>
     <ul>
       <li>支持设置生成数量</li>
       <li>数量输入框前提供"表达式"复选框，默认关闭</li>
@@ -404,7 +572,7 @@ const sectionContents: Record<string, string> = {
   'interface-creation-expressions': `
     <subtitle>表达式规范</subtitle>
 
-    <h3>可用变量</h3>
+    <h3 style="margin-top: 0;">可用变量</h3>
     <ul>
       <li><code>S</code>：起始值</li>
       <li><code>E</code>：结束值</li>
@@ -438,33 +606,114 @@ const sectionContents: Record<string, string> = {
     </ul>
   `,
 
+  'interface-creation-shortcut': `
+    <subtitle>快捷键</subtitle>
+    <table class="help-table">
+      <thead><tr><th>按键</th><th>功能</th></tr></thead>
+      <tbody>
+        <tr><td>Ctrl + ;</td><td>唤出高级创建工具</td></tr>
+        <tr><td>0</td><td>高级创建工具创建</td></tr>
+        <tr><td>1</td><td>高级创建工具面板写入</td></tr>
+        <tr><td>2</td><td>解析剪贴板中的弹幕并对应到高级创建工具面板起始参数</td></tr>
+        <tr><td>3</td><td>解析剪贴板中的弹幕并对应到高级创建工具面板结束参数</td></tr>
+        <tr><td>4</td><td>交换高级创建工具面板起始&结束参数</td></tr>
+        <tr><td>5</td><td>切换是否在创建后自动关闭面板</td></tr>
+        <tr><td>6</td><td>清空预设列表</td></tr>
+        <tr><td>7</td><td>切换高级创建工具面板写入模式</td></tr>
+        <tr><td>8</td><td>切换是否使用表达式</td></tr>
+        <tr><td>9</td><td>重置高级创建工具面板</td></tr>
+      </tbody>
+    </table>
+  `,
+
   'import-export-json': `
     <subtitle>工程 JSON</subtitle>
-    <p>用于保存编辑器工程状态，包含：</p>
-    <ul>
-      <li>项目元数据</li>
-      <li>媒体文件信息</li>
-      <li>时间轴信息</li>
-      <li>播放器与导出设置</li>
-      <li>全部弹幕数据</li>
-    </ul>
-    <p>适合在本项目内继续编辑、备份或分享工程。</p>
+
+    <p>单工程文件内部结构：</p>
+    <kbd style="display: block; max-width: 270px">{
+  meta: {
+    version: string,
+    createdAt: number
+  },
+  timeline: {
+    currentTime: number,
+    scale: number,
+    offset: number,
+    scrollTop: number,
+    showSpectrogram: boolean,
+    spectrogramColorScheme: string,
+    spectrogramCustomColor: string,
+    danmakuColorForBlock: boolean
+  },
+  media: {
+    path: string,
+    url: string,
+  },
+  player: {
+    screenWidth: number,
+    screenHeight: number,
+    screenScale: number,
+    maxLayers: number
+  },
+  preprocess: {
+    allowNegativeValues: boolean
+  },
+  danmakus: [
+    {
+      id: string
+      layer: number
+      startTime: number
+
+      content: {
+        text: string
+        font: string
+        size: number
+        color: string
+        stroke: boolean
+      }
+
+      transform: {
+        start: { x: number; y: number }
+        end: { x: number; y: number }
+        zRotate: number
+        yRotate: number
+      }
+
+      opacity: {
+        from: number
+        to: number
+      }
+
+      animation: {
+        duration: number
+        moveDuration: number
+        delay: number
+        easing: 'speedup' | 'speeddown'
+      }
+    }
+    ...more
+  ]
+}</kbd>
   `,
 
   'import-export-xml': `
     <subtitle>XML 弹幕文件</subtitle>
-    <p>用于和 B 站 XML 弹幕格式进行互通。当前实现特性：</p>
+    <p>与 B 站 XML 弹幕格式互通</p>
+    <h3>导入时</h3>
     <ul>
-      <li>导出时会按 startTime → layer 排序</li>
-      <li>同一 startTime 下会使用 fake sendTime 保证导出顺序</li>
-      <li>Microsoft YaHei 会做特殊格式处理</li>
+      <li>根据 XML 中的 date/sendTime 反推层级顺序</li>
+      <li>若坐标位于 0 ≤ value &lt; 1，按当前 screen width/height 视为比例坐标并转成像素</li>
+      <li>分配层级，避免时间冲突</li>
+    </ul>
+
+    <h3>导出时</h3>
+    <ul>
+      <li>按 startTime → layer 排序</li>
+      <li>同一 startTime 下会使用 fake sendTime 保证层级顺序</li>
       <li>可按当前 screen width/height 将像素坐标导出为比例坐标</li>
-      <li>导入时会根据 XML 中的 date/sendTime 反推 layer 顺序</li>
-      <li>导入时若坐标位于 0 ≤ value &lt; 1，会按当前 screen width/height 视为比例坐标并转成像素</li>
-      <li>导入时会额外执行时间冲突避让，避免大量弹幕挤在同一 layer</li>
       <li>单条 XML 弹幕解析失败时会跳过该条并继续导入其他弹幕</li>
-      <li>导出时若颜色值为 0 则修正至 1，保证在 B 站不会显示错误</li>
-      <li>导出时若选择按比例并检测到有弹幕坐标超出显示范围，则强制修改为 0.999 并弹窗提示</li>
+      <li>若颜色值为 0 则修正至 1，保证在 B 站不会显示错误</li>
+      <li>若选择按比例并检测到有弹幕坐标超出显示范围，则强制修改为 0.999 并弹窗提示</li>
     </ul>
   `,
 
@@ -489,10 +738,10 @@ const sectionContents: Record<string, string> = {
   'suggestions': `
     <subtitle>推荐的基本工作流</subtitle>
     <ol>
-      <li>在上方配置所需屏幕宽高、最大 Layer 层数、XML 预处理等</li>
-      <li>导入所需资源（工程文件、XML 弹幕文件、媒体）。若上次使用了 <kbd>Ctrl + D</kbd> 记录工程缓存则可跳过导入工程（网页版需重新选择媒体文件）</li>
+      <li>在工程管理中创建一个工程</li>
+      <li>在顶边栏配置所需屏幕宽高、最大 Layer 层数、XML 预处理等</li>
       <li>使用提供的任何编辑手段开始弹幕编辑与创建</li>
-      <li>使用 <kbd>Ctrl + S</kbd> 保存至本地或选择 <kbd>Ctrl + D</kbd> 以便下次快速进入工作</li>
+      <li>使用 <kbd>Ctrl + S</kbd> 保存，使用 <kbd>Ctrl + shift + S</kbd> 保存时同时备份</li>
       <li>完成后选择你需要的预处理选项并导出 XML</li>
       <li>使用 <a href="https://github.com/qmwNEbrVt2233/DMsender_CLI/releases" target="_blank">DMsender_CLI</a> 或 <a href="https://github.com/MikuFan039/DMSenderAPP/releases" target="_blank">弹幕发射场</a> 或其他 XML 发送工具将弹幕上传至 Bilibili</li>
       <li>想要录屏分享？打开录屏模式（<kbd>Ctrl + Alt + Space</kbd>）自动全屏，完成后按 <kbd>ESC</kbd> 回到编辑模式</li>
@@ -503,7 +752,7 @@ const sectionContents: Record<string, string> = {
     <subtitle>当前注意事项</subtitle>
     <ul>
       <li>若使用网页版，刷新页面后需重新选择媒体文件</li>
-      <li>若使用网页版，本地缓存工程依赖浏览器 localStorage，清空网站数据后会丢失缓存的工程</li>
+      <li>本地缓存工程依赖浏览器 localStorage，清空缓存数据后会丢失缓存的工程</li>
       <li>XML 导入可能出现问题，请不要高估解析工具</li>
       <li>若发现高密度场景下渲染卡顿，请开启"激进优化"</li>
       <li>XML 比例坐标导入导出依赖当前播放器设置中的 screen width/height，<strong>若要使用请提前修改宽高！否则转为像素坐标时会与预期不符！</strong></li>
@@ -563,7 +812,7 @@ const currentBody = computed(() => {
   display: flex;
   justify-content: center;
   align-items: center;
-  z-index: 10000;
+  z-index: 9998;
 }
 
 .help-modal-container {

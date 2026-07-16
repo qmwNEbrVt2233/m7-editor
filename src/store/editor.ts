@@ -6,9 +6,14 @@ import { saveProject, loadProject, clearProject } from '@/localStorage/projectSt
 import { historyManager } from '@/core/history'
 import { parseXML, toXML } from '@/core/converter'
 import {
+  backupFolderProject,
+  convertMediaPathToUrl,
+  type FolderProjectConfig,
+  type FolderProjectPayload,
   getProjectMediaPath,
   isTauriRuntime,
-  registerMediaPath
+  registerMediaPath,
+  saveFolderProject
 } from '@/utils/tauriBackend'
 
 type SavePickerAcceptType = {
@@ -147,12 +152,18 @@ export function parsePastedDanmakusText(text: string): DanmakuItem[] {
 
 export const useEditorStore = defineStore('editor', {
   state: () => {
-    const saved = loadProject()
+    const saved = isTauriRuntime() ? null : loadProject()
     const savedMediaPath = getProjectMediaPath(saved?.media)
     historyManager.recordSnapshot(saved?.danmakus || [], `加载工程(${(saved?.danmakus || []).length}条弹幕)`)
 
     return {
       version: '1.8.0',
+      InitializationPhase: isTauriRuntime(),
+      showProjectManager: isTauriRuntime(),
+      projectMode: 'single' as 'single' | 'folder',
+      activeFolderProjectPath: '',
+      activeFolderProjectConfig: null as FolderProjectConfig | null,
+      pendingFolderMediaPath: '',
       mediaUrl: savedMediaPath ? '' : saved?.media?.url || '',
       mediaDuration: 0,
       mediaElement: null as HTMLMediaElement | null,
@@ -289,12 +300,24 @@ export const useEditorStore = defineStore('editor', {
     },
 
     saveToLocal() {
+      const notice = useNoticeStore()
+      if (this.projectMode === 'folder') {
+        notice.log('[缓存] 文件夹工程不会写入本地缓存，请使用保存工程', 'warn')
+        return
+      }
+
       const project = this.exportProject()
       saveProject(project)
       console.log('已保存到本地')
     },
 
     async loadFromLocal() {
+      const notice = useNoticeStore()
+      if (this.projectMode === 'folder') {
+        notice.log('[缓存] 文件夹工程不会从本地缓存恢复', 'warn')
+        return
+      }
+
       const project = loadProject()
 
       if (!project) {
@@ -309,6 +332,15 @@ export const useEditorStore = defineStore('editor', {
     },
 
     async downloadProject() {
+      if (this.projectMode === 'folder') {
+        if (this.activeFolderProjectPath) {
+          await this.saveActiveFolderProject()
+        } else {
+          useNoticeStore().log('[工程] 当前没有可保存的文件夹工程', 'warn')
+        }
+        return
+      }
+
       const project = this.exportProject()
 
       const blob = new Blob(
@@ -357,6 +389,7 @@ export const useEditorStore = defineStore('editor', {
       reader.onload = async () => {
         try {
           const project = JSON.parse(reader.result as string)
+          this.enterSingleFileMode(false)
           await this.applyProject(project)
           historyManager.clear()
           historyManager.recordSnapshot(this.danmakus, `导入工程(${this.danmakus.length}条弹幕)`)
@@ -391,6 +424,7 @@ export const useEditorStore = defineStore('editor', {
           this.selectedIds = []
           this.currentTime = 0
 
+          this.enterSingleFileMode(false)
           historyManager.clear()
           historyManager.recordSnapshot(this.danmakus)
 
@@ -555,6 +589,13 @@ export const useEditorStore = defineStore('editor', {
       this.mediaFilePath = path
     },
 
+    setImportedMediaSource(url: string, path = '') {
+      this.setMediaSource(url, path)
+      if (this.projectMode === 'folder' && path) {
+        this.pendingFolderMediaPath = path
+      }
+    },
+
     setMediaDuration(duration: number) {
       this.mediaDuration = duration
     },
@@ -591,6 +632,80 @@ export const useEditorStore = defineStore('editor', {
     setMediaElement(element: HTMLMediaElement | null) {
       this.mediaElement = element
     },
+
+    enterSingleFileMode(loadCached = true) {
+      this.InitializationPhase = false
+      this.projectMode = 'single'
+      this.activeFolderProjectPath = ''
+      this.activeFolderProjectConfig = null
+      this.pendingFolderMediaPath = ''
+
+      if (loadCached) {
+        const project = loadProject()
+        if (project) {
+          void this.applyProject(project)
+        }
+      }
+    },
+
+    async applyFolderProjectPayload(payload: FolderProjectPayload, isEditing = false) {
+      this.InitializationPhase = false
+      this.projectMode = 'folder'
+      this.activeFolderProjectPath = payload.path
+      this.activeFolderProjectConfig = payload.config
+      this.pendingFolderMediaPath = ''
+
+      await this.applyProject(payload.project, isEditing)
+
+      if (payload.mediaFile?.path) {
+        this.mediaFilePath = payload.mediaFile.path
+        this.mediaUrl = convertMediaPathToUrl(payload.mediaFile.path)
+      }
+
+      historyManager.clear()
+      historyManager.recordSnapshot(this.danmakus, `加载文件夹工程(${this.danmakus.length}条弹幕)`)
+      this.importTimestamp = Date.now()
+    },
+
+    async saveActiveFolderProject() {
+      const notice = useNoticeStore()
+      if (this.projectMode !== 'folder' || !this.activeFolderProjectPath) {
+        notice.log('[工程] 当前没有可保存的文件夹工程', 'warn')
+        return
+      }
+
+      try {
+        const payload = await saveFolderProject(
+          this.activeFolderProjectPath,
+          this.exportProject(),
+          this.pendingFolderMediaPath
+        )
+        await this.applyFolderProjectPayload(payload, true)
+        notice.log('[工程] 文件夹工程已保存', 'success')
+      } catch (error) {
+        notice.alert(error instanceof Error ? error.message : String(error), 'error', '保存文件夹工程失败', error)
+      }
+    },
+
+    async backupActiveFolderProject() {
+      const notice = useNoticeStore()
+      if (this.projectMode !== 'folder' || !this.activeFolderProjectPath) {
+        notice.log('[工程] 单文件工程不支持文件夹备份', 'warn')
+        return
+      }
+
+      try {
+        const payload = await backupFolderProject(
+          this.activeFolderProjectPath,
+          this.exportProject(),
+          this.pendingFolderMediaPath
+        )
+        await this.applyFolderProjectPayload(payload, true)
+        notice.log('[工程] 文件夹工程已保存并备份', 'success')
+      } catch (error) {
+        notice.alert(error instanceof Error ? error.message : String(error), 'error', '备份文件夹工程失败', error)
+      }
+    },
     
     // 时间轴视图相关操作
     setTimelineView(scale: number, offset: number, scrollTop?: number) {
@@ -608,9 +723,11 @@ export const useEditorStore = defineStore('editor', {
     },
 
     // 工程参数加载
-    async applyProject(project: any) {
+    async applyProject(project: any, isEditing = false) {
       this.danmakus = project.danmakus || []
-      this.selectedIds = []
+      if (!isEditing) {
+        this.selectedIds = []
+      }
 
       const mediaPath = getProjectMediaPath(project.media)
 
@@ -1209,6 +1326,11 @@ export const useEditorStore = defineStore('editor', {
      */
     async clearCache(): Promise<void> {
       const notice = useNoticeStore()
+      if (this.projectMode === 'folder') {
+        notice.log('[缓存] 文件夹工程不使用本地缓存', 'warn')
+        return
+      }
+
       const confirmed = await notice.confirm('确定要清空本地缓存的工程吗？此操作不可撤销')
       if (confirmed) {
         clearProject()

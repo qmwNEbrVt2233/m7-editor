@@ -36,7 +36,7 @@ export function formatDateTime(value: number | Date) {
     pad(date.getMonth() + 1),
     '-',
     pad(date.getDate()),
-    ' ',
+    '_',
     pad(date.getHours()),
     ':',
     pad(date.getMinutes()),

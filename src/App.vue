@@ -1,6 +1,6 @@
 <template>
   <div class="app-container">
-    <div class="main-content">
+    <div v-if="editorReady" class="main-content">
       <div class="player-section">
         <Player />
       </div>
@@ -11,8 +11,8 @@
         <EditorPanel />
       </div>
     </div>
-    <div 
-      v-if="!store.screenRecordingMode"
+    <div
+      v-if="editorReady && !store.screenRecordingMode"
       class="timeline-container"
       :style="{ height: timelineHeight + 'px' }"
       @mousedown="onTimelineDragStart"
@@ -21,11 +21,17 @@
       <div class="timeline-resize-handle" @mousedown.stop="onResizeStart" />
     </div>
 
-    <TopSidebar />
+    <TopSidebar v-if="editorReady" />
 
     <CreationTools
-      :visible="store.showCreationTools && !store.screenRecordingMode"
+      :visible="editorReady && store.showCreationTools && !store.screenRecordingMode"
       @update:visible="store.showCreationTools = $event"
+    />
+    <ProjectManager
+      v-if="nativeRuntime"
+      :visible="store.showProjectManager"
+      @close="store.showProjectManager = false"
+      @loaded="editorReady = true"
     />
     <About />
     <GlobalNotice />
@@ -41,14 +47,18 @@ import Timeline from './components/timeline/timeline.vue'
 import ToolBar from './components/editor/ToolBar.vue'
 import CreationTools from './components/editor/creationTools.vue'
 import About from './components/preference/about.vue'
+import ProjectManager from './components/preference/projectManager.vue'
 import GlobalNotice from './components/notice/GlobalNotice.vue'
 import { useEditorStore } from './store/editor'
 import { useNoticeStore } from './store/notice'
 import { useHelpStore } from './store/help.ts'
+import { isTauriRuntime } from './utils/tauriBackend'
 
 const store = useEditorStore()
 const notice = useNoticeStore()
 const help = useHelpStore()
+const nativeRuntime = isTauriRuntime()
+const editorReady = ref(!nativeRuntime)
 const timelineHeight = ref(Math.max(100, window.innerHeight - store.screenHeight * store.screenScale / 100 - 80))
 const screenScaleBeforeRecording = ref(store.screenScale)
 const currentTimeBeforeRecording = ref(store.currentTime)
@@ -74,12 +84,68 @@ async function handleKeyDown(e: KeyboardEvent) {
   const isAlt = e.altKey
   const isShift = e.shiftKey
 
+  if (isTextEditingTarget(e.target) || notice.isVisible) {
+    return
+  }
+
+  if (e.code === 'Backquote' && !isCtrl && !isAlt && !isShift && nativeRuntime && !store.InitializationPhase) {
+    e.preventDefault()
+    store.showProjectManager = !store.showProjectManager
+    return
+  }
+
   if ((e.code === 'KeyR' && isCtrl && !isAlt && isShift) || (e.key === 'F5' && isCtrl && !isAlt && !isShift)) {
     e.preventDefault()
+    if (store.InitializationPhase) {
+      return
+    }
     const confirmed = await notice.confirm('确定要重载页面吗？这将丢失未保存的进度')
     if (confirmed) {
       window.location.reload()
     }
+    return
+  }
+
+  if (e.key === 'h' && !isCtrl && !isAlt && !isShift && !store.screenRecordingMode) {
+    e.preventDefault()
+    if (store.showCreationTools) {
+      if (!help.isVisible) {
+        help.show('interface-creation')
+      } else {
+        help.hide()
+      }
+      return
+    } 
+    
+    if (store.selectedIds.length !== 0) {
+      if (!help.isVisible) {
+        help.show('interface-editor')
+      } else {
+        help.hide()
+      }
+      return
+    }
+
+    if (store.showProjectManager) {
+      if (!help.isVisible) {
+        help.show('interface-project-manager')
+      } else {
+        help.hide()
+      }
+      return
+    }
+    
+    help.toggle()
+    return
+  }
+
+  if (!editorReady.value) {
+    return
+  }
+
+  if (e.key === 'Escape' && store.showProjectManager) {
+    e.preventDefault()
+    store.showProjectManager = false
     return
   }
 
@@ -106,15 +172,6 @@ async function handleKeyDown(e: KeyboardEvent) {
     return
   }
 
-  if (notice.isVisible) {
-    return
-  }
-
-  // 避免在输入框中触发快捷键
-  if (isTextEditingTarget(e.target)) {
-    return
-  }
-
   // 空格播放/暂停
   if (e.code === 'Space' && !isCtrl && !isAlt && !isShift && !store.screenRecordingMode) {
     e.preventDefault()
@@ -129,9 +186,15 @@ async function handleKeyDown(e: KeyboardEvent) {
   }
   
   // Ctrl+S 导出JSON
-  if (e.key === 's' && isCtrl) {
+  if (e.key === 's' && isCtrl && !isAlt && !isShift) {
     e.preventDefault()
     void store.downloadProject()
+  }
+
+  if (e.key === 's' && isCtrl && !isAlt && isShift) {
+    e.preventDefault()
+    void store.backupActiveFolderProject()
+    return
   }
 
   // `ctrl+d` 保存工程
@@ -157,29 +220,6 @@ async function handleKeyDown(e: KeyboardEvent) {
       localStorage.clear()
       notice.log('[快捷键] 清空所有缓存', 'success')
     }
-    return
-  }
-
-  if (e.key === 'h' && !isCtrl && !isAlt && !isShift && !store.screenRecordingMode) {
-    e.preventDefault()
-    if (store.showCreationTools) {
-      if (!help.isVisible) {
-        help.show('interface-creation-panel')
-      } else {
-        help.hide()
-      }
-      return
-    } else {
-      if (store.selectedIds.length !== 0) {
-        if (!help.isVisible) {
-          help.show('interface-editor')
-        } else {
-          help.hide()
-        }
-        return
-      }
-    }
-    help.toggle()
     return
   }
 

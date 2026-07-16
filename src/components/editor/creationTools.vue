@@ -9,7 +9,7 @@
         <header class="modal-header">
           <div>
             <h2>高级创建工具</h2>
-            <p>Ctrl + ; 开关面板</p>
+            <p>Ctrl + ; 开关面板，按下 h 以获取帮助</p>
           </div>
           <button class="icon-btn" type="button" @click="closePanel">关闭</button>
         </header>
@@ -1203,7 +1203,7 @@ defineExpose({
 .creation-tools-overlay {
   position: fixed;
   inset: 0;
-  z-index: 9998;
+  z-index: 9996;
   display: flex;
   align-items: center;
   justify-content: center;

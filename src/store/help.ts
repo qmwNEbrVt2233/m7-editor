@@ -10,6 +10,14 @@ export interface DocSection {
 export const docSections: DocSection[] = [
   { id: 'about', title: '关于' },
   {
+    id: 'interface-project-manager',
+    title: '工程管理',
+    children: [
+      { id: 'interface-create-project', title: '新建工程' },
+      { id: 'interface-edit-project-info', title: '编辑现有工程信息' }
+    ]
+  },
+  {
     id: 'interface-player-area',
     title: '设置面板',
     children: [
@@ -34,10 +42,9 @@ export const docSections: DocSection[] = [
     id: 'interface-creation',
     title: '高级创建工具',
     children: [
-      { id: 'interface-creation-data', title: '预备弹幕数据区' },
-      { id: 'interface-creation-panel', title: '工具面板' },
       { id: 'interface-creation-presets', title: '预设管理器' },
-      { id: 'interface-creation-expressions', title: '表达式规范' }
+      { id: 'interface-creation-expressions', title: '表达式规范' },
+      { id: 'interface-creation-shortcut', title: '快捷键' }
     ]
   },
   {
@@ -63,6 +70,9 @@ export const docSections: DocSection[] = [
 // 拥有自身文档内容的 section ID 集合
 const sectionsWithContent = new Set([
   'about',
+  'interface-project-manager',
+  'interface-create-project',
+  'interface-edit-project-info',
   'interface-file',
   'interface-config',
   'interface-player',
@@ -72,10 +82,10 @@ const sectionsWithContent = new Set([
   'interface-tools-list',
   'interface-advanced-tools',
   'interface-timeline',
-  'interface-creation-data',
-  'interface-creation-panel',
+  'interface-creation',
   'interface-creation-presets',
   'interface-creation-expressions',
+  'interface-creation-shortcut',
   'import-export-json',
   'import-export-xml',
   'import-export-paste',

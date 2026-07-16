@@ -29,7 +29,7 @@
 
     <div class="log-current">
       <span class="log-current-text" @click.stop="toggleLog">
-        {{ notice.logMessage }}
+        {{ notice.logMessage || '点击展开'}}
       </span>
       <button
         type="button"
@@ -230,7 +230,7 @@ watch(
   display: flex;
   justify-content: center;
   align-items: center;
-  z-index: 10001;
+  z-index: 10000;
 }
 
 .custom-modal-container {
@@ -288,16 +288,5 @@ button:hover {
 .btn-cancel {
   background: #eee;
   color: #333;
-}
-
-/* 动画效果 */
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.2s ease;
-}
-
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
 }
 </style>

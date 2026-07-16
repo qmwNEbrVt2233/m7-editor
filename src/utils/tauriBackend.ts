@@ -13,7 +13,62 @@ export type RegisteredMediaFile = {
   url: string
 }
 
-type BackendMediaFile = {
+export type FolderProjectMediaConfig = {
+  name?: string | null
+  useExternalLink: boolean
+  externalPath?: string | null
+}
+
+export type FolderProjectConfig = {
+  version: string
+  name: string
+  createdAt: number
+  lastChangeAt: number
+  lastBackUpAt?: number | null
+  projectFile: string
+  media?: FolderProjectMediaConfig | null
+  description: string
+}
+
+export type FolderProjectSummary = {
+  path: string
+  config: FolderProjectConfig
+  projectExists: boolean
+  mediaPath?: string | null
+  mediaExists: boolean
+}
+
+export type FileSystemState = {
+  configPath: string
+  documentsDataDir: string
+  logsDir: string
+  defaultProjectsDir: string
+  projects: FolderProjectSummary[]
+}
+
+export type FolderProjectPayload = {
+  path: string
+  config: FolderProjectConfig
+  project: any
+  mediaFile?: BackendMediaFile | null
+  warnings: string[]
+}
+
+export type FolderProjectCreateInput = {
+  parentDir: string
+  name: string
+  fromProject?: any
+  mediaPath?: string
+  copyMedia: boolean
+  description?: string
+}
+
+export type ProjectPathCheck = {
+  path: string
+  exists: boolean
+}
+
+export type BackendMediaFile = {
   path: string
 }
 
@@ -115,4 +170,110 @@ export async function openMediaFileWithTauri(): Promise<RegisteredMediaFile | nu
     path: media.path,
     url: convertMediaPathToUrl(media.path)
   }
+}
+
+function withRegisteredMedia(payload: FolderProjectPayload): FolderProjectPayload {
+  if (!payload.mediaFile?.path) {
+    return payload
+  }
+
+  return {
+    ...payload,
+    project: {
+      ...payload.project,
+      media: {
+        path: payload.mediaFile.path,
+        url: convertMediaPathToUrl(payload.mediaFile.path)
+      }
+    }
+  }
+}
+
+export async function getFileSystemState(): Promise<FileSystemState> {
+  return invokeTauri<FileSystemState>('get_file_system_state')
+}
+
+export async function checkFolderProjectPath(parentDir: string, name: string): Promise<ProjectPathCheck> {
+  return invokeTauri<ProjectPathCheck>('check_folder_project_path', { parentDir, name })
+}
+
+export async function createFolderProject(input: FolderProjectCreateInput): Promise<FolderProjectPayload> {
+  const payload = await invokeTauri<FolderProjectPayload>('create_folder_project', { request: input })
+  return withRegisteredMedia(payload)
+}
+
+export async function loadFolderProject(projectPath: string): Promise<FolderProjectPayload> {
+  const payload = await invokeTauri<FolderProjectPayload>('load_folder_project', { projectPath })
+  return withRegisteredMedia(payload)
+}
+
+export async function saveFolderProject(
+  projectPath: string,
+  project: any,
+  pendingMediaPath?: string
+): Promise<FolderProjectPayload> {
+  const payload = await invokeTauri<FolderProjectPayload>('save_folder_project', {
+    request: {
+      projectPath,
+      project,
+      pendingMediaPath: pendingMediaPath || null
+    }
+  })
+  return withRegisteredMedia(payload)
+}
+
+export async function backupFolderProject(
+  projectPath: string,
+  project: any,
+  pendingMediaPath?: string
+): Promise<FolderProjectPayload> {
+  const payload = await invokeTauri<FolderProjectPayload>('backup_folder_project', {
+    request: {
+      projectPath,
+      project,
+      pendingMediaPath: pendingMediaPath || null
+    }
+  })
+  return withRegisteredMedia(payload)
+}
+
+export async function updateFolderProjectConfig(
+  projectPath: string,
+  config: FolderProjectConfig
+): Promise<FolderProjectSummary> {
+  return invokeTauri<FolderProjectSummary>('update_folder_project_config', { request: { projectPath, config } })
+}
+
+export async function removeFolderProject(projectPath: string): Promise<void> {
+  await invokeTauri<void>('remove_folder_project', { projectPath })
+}
+
+export async function chooseProjectFolder(): Promise<string | null> {
+  return invokeTauri<string | null>('choose_project_folder')
+}
+
+export type EditFolderProjectInput = {
+  projectPath: string
+  name?: string
+  newParentDir?: string
+  mediaUseExternalLink?: boolean
+  mediaExternalPath?: string
+  description?: string
+}
+
+export async function importFolderProject(): Promise<FolderProjectPayload | null> {
+  const payload = await invokeTauri<FolderProjectPayload | null>('import_folder_project')
+  return payload ? withRegisteredMedia(payload) : null
+}
+
+export async function editFolderProject(input: EditFolderProjectInput): Promise<FolderProjectSummary> {
+  return invokeTauri<FolderProjectSummary>('edit_folder_project', { request: input })
+}
+
+export async function openProjectFile(): Promise<any | null> {
+  return invokeTauri<any | null>('open_project_file')
+}
+
+export async function appendLogToFile(line: string): Promise<void> {
+  await invokeTauri<void>('append_log', { line })
 }
