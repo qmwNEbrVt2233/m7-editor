@@ -6,10 +6,10 @@ import { saveProject, loadProject, clearProject } from '@/localStorage/projectSt
 import { historyManager } from '@/core/history'
 import { parseXML, toXML } from '@/core/converter'
 import {
-  getProjectVideoPath,
+  getProjectMediaPath,
   isTauriRuntime,
   registerMediaPath
-} from '@/utils/tauriMedia'
+} from '@/utils/tauriBackend'
 
 type SavePickerAcceptType = {
   description: string
@@ -148,15 +148,15 @@ export function parsePastedDanmakusText(text: string): DanmakuItem[] {
 export const useEditorStore = defineStore('editor', {
   state: () => {
     const saved = loadProject()
-    const savedVideoPath = getProjectVideoPath(saved?.video)
+    const savedMediaPath = getProjectMediaPath(saved?.media)
     historyManager.recordSnapshot(saved?.danmakus || [], `加载工程(${(saved?.danmakus || []).length}条弹幕)`)
 
     return {
-      // 视频相关状态
-      videoUrl: savedVideoPath ? '' : saved?.video?.url || '',
-      videoDuration: saved?.video?.duration || 0,
-      videoElement: null as HTMLVideoElement | null,
-      videoFilePath: savedVideoPath, // 记录视频文件的磁盘路径
+      version: '1.8.0',
+      mediaUrl: savedMediaPath ? '' : saved?.media?.url || '',
+      mediaDuration: 0,
+      mediaElement: null as HTMLMediaElement | null,
+      mediaFilePath: savedMediaPath,
 
       danmakus: saved?.danmakus || [
         {
@@ -550,61 +550,46 @@ export const useEditorStore = defineStore('editor', {
       }
     },
 
-    // 视频相关操作
-    setVideoUrl(url: string) {
-      this.videoUrl = url
+    setMediaSource(url: string, path = '') {
+      this.mediaUrl = url
+      this.mediaFilePath = path
     },
 
-    setVideoSource(url: string, path = '') {
-      this.videoUrl = url
-      this.videoFilePath = path
+    setMediaDuration(duration: number) {
+      this.mediaDuration = duration
     },
 
-    setVideoDuration(duration: number) {
-      this.videoDuration = duration
-    },
-    
-    /**
-     * 设置视频文件路径
-     */
-    setVideoFilePath(path: string) {
-      this.videoFilePath = path
+    setMediaFilePath(path: string) {
+      this.mediaFilePath = path
     },
 
-    async resolveVideoPath(path?: string) {
+    async resolveMediaPath(path?: string) {
       const notice = useNoticeStore()
-      path = path ?? this.videoFilePath
+      path = path ?? this.mediaFilePath
       if (!path) return
 
-      this.videoFilePath = path
+      this.mediaFilePath = path
 
       if (!isTauriRuntime()) {
         if (path.startsWith('file://')) {
-          this.videoUrl = path
+          this.mediaUrl = path
         }
         return
       }
 
       try {
         const media = await registerMediaPath(path)
-        this.videoFilePath = media.path
-        this.videoUrl = media.url
+        this.mediaFilePath = media.path
+        this.mediaUrl = media.url
         notice.log('成功读取媒体文件', 'success')
       } catch (error) {
         notice.alert('无法读取工程中指向的媒体文件，请重新选择', 'error', '错误', path + error)
-        this.videoUrl = ''
+        this.mediaUrl = ''
       }
     },
 
-    setVideoElement(element: HTMLVideoElement | null) {
-      this.videoElement = element
-    },
-
-    // 同步视频与播放头位置
-    syncVideoToCurrentTime() {
-      if (this.videoElement && this.videoUrl) {
-        this.videoElement.currentTime = this.currentTime / 1000 // 将ms转换为秒
-      }
+    setMediaElement(element: HTMLMediaElement | null) {
+      this.mediaElement = element
     },
     
     // 时间轴视图相关操作
@@ -627,20 +612,16 @@ export const useEditorStore = defineStore('editor', {
       this.danmakus = project.danmakus || []
       this.selectedIds = []
 
-      const videoPath = getProjectVideoPath(project.video)
+      const mediaPath = getProjectMediaPath(project.media)
 
-      if (videoPath) {
-        await this.resolveVideoPath(videoPath)
-      } else if (project.video?.url) {
-        this.videoFilePath = ''
-        this.videoUrl = project.video.url
+      if (mediaPath) {
+        await this.resolveMediaPath(mediaPath)
+      } else if (project.media?.url) {
+        this.mediaFilePath = ''
+        this.mediaUrl = project.media.url
       } else {
-        this.videoFilePath = ''
-        this.videoUrl = ''
-      }
-
-      if (typeof project.video?.duration === 'number') {
-        this.videoDuration = project.video.duration
+        this.mediaFilePath = ''
+        this.mediaUrl = ''
       }
 
       if (typeof project.player?.screenWidth === 'number') {
@@ -686,7 +667,7 @@ export const useEditorStore = defineStore('editor', {
     exportProject() {
       return {
         meta: {
-          version: '1.7.0',
+          version: this.version,
           createdAt: Date.now()
         },
         timeline: {
@@ -699,10 +680,9 @@ export const useEditorStore = defineStore('editor', {
           spectrogramCustomColor: this.spectrogramCustomColor,
           danmakuColorForBlock: this.danmakuColorForBlock
         },
-        video: {
-          path: this.videoFilePath,
-          url: this.videoFilePath || this.videoUrl, // 优先使用文件路径
-          duration: this.videoDuration
+        media: {
+          path: this.mediaFilePath,
+          url: this.mediaFilePath || this.mediaUrl,
         },
         player: {
           screenWidth: this.screenWidth,

@@ -1,3 +1,4 @@
+import { useEditorStore } from '@/store/editor'
 import { useNoticeStore } from '@/store/notice'
 import type {
   ColorRuleState,
@@ -9,7 +10,6 @@ import type {
 
 const PRESET_STORAGE_KEY = 'm7-editor.creation-tool-presets'
 const PRESET_EXPORT_TYPE = 'm7-editor.creation-tool-presets'
-const PRESET_EXPORT_VERSION = '1.7.0'
 
 export type CreationToolPanelState = {
   quantityInput: string
@@ -30,7 +30,7 @@ export type CreationToolPreset = {
 export type CreationToolPresetExport = {
   meta: {
     type: typeof PRESET_EXPORT_TYPE
-    version: typeof PRESET_EXPORT_VERSION
+    version: string
     exportedAt: number
   }
   presets: CreationToolPreset[]
@@ -56,10 +56,11 @@ export function saveCreationToolPresets(presets: CreationToolPreset[]) {
 }
 
 export function serializePresetExport(presets: CreationToolPreset[]): CreationToolPresetExport {
+  const store = useEditorStore()
   return {
     meta: {
       type: PRESET_EXPORT_TYPE,
-      version: PRESET_EXPORT_VERSION,
+      version: store.version,
       exportedAt: Date.now()
     },
     presets: deepClone(presets)

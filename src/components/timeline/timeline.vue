@@ -288,13 +288,13 @@ function initSpectrogram() {
   destroySpectrogramWaveSurfer()
   resetSpectrogramData()
 
-  if (!store.videoUrl) {
+  if (!store.mediaUrl) {
     return
   }
 
   const ws = WaveSurfer.create({
     container: document.createElement('div'),
-    url: store.videoUrl,
+    url: store.mediaUrl,
     height: 1,
     interact: false
   })
@@ -1170,7 +1170,7 @@ watch(
 )
 
 watch(
-  () => store.videoUrl,
+  () => store.mediaUrl,
   () => {
     initSpectrogram()
   }

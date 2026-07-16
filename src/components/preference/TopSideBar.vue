@@ -131,7 +131,7 @@
     </select>
 
     <div v-if="activeMenu === 'file'" class="menu-panel">
-      <button @click="importVideo" class="btn">导入媒体</button>
+      <button @click="importMedia" class="btn">导入媒体</button>
       <button @click="saveProject" class="btn">导出工程</button>
       <button @click="importProject" class="btn">导入工程</button>
       <button @click="exportXml" class="btn">导出XML</button>
@@ -317,8 +317,8 @@
     
     <input
       type="file"
-      ref="videoInput"
-      @change="onVideoFileChange"
+      ref="mediaInput"
+      @change="onMediaFileChange"
       style="display: none"
       accept="video/*,audio/*"
     />
@@ -349,12 +349,12 @@ import {
   isTauriRuntime,
   openMediaFileWithTauri,
   registerMediaPath
-} from '@/utils/tauriMedia'
+} from '@/utils/tauriBackend'
 
 const store = useEditorStore()
 const notice = useNoticeStore()
 const help = useHelpStore()
-const videoInput = ref<HTMLInputElement | null>(null)
+const mediaInput = ref<HTMLInputElement | null>(null)
 const projectInput = ref<HTMLInputElement | null>(null)
 const xmlInput = ref<HTMLInputElement | null>(null)
 const activeMenu = ref<'file' | 'config' | 'player' | 'preprocess'| 'assistant' >('file')
@@ -519,13 +519,13 @@ function toggle() {
 
 // ── 文件操作 ──
 
-async function importVideo() {
+async function importMedia() {
   if (isTauriRuntime()) {
     try {
       const media = await openMediaFileWithTauri()
 
       if (media) {
-        store.setVideoSource(media.url, media.path)
+        store.setMediaSource(media.url, media.path)
         notice.log('媒体文件路径已设置:' + media.path, 'success')
       }
 
@@ -535,7 +535,7 @@ async function importVideo() {
     }
   }
 
-  videoInput.value?.click()
+  mediaInput.value?.click()
 }
 
 function importProject() {
@@ -546,7 +546,7 @@ function importXml() {
   xmlInput.value?.click()
 }
 
-async function onVideoFileChange(e: Event) {
+async function onMediaFileChange(e: Event) {
   const input = e.target as HTMLInputElement
   const file = input.files?.[0]
 
@@ -556,7 +556,7 @@ async function onVideoFileChange(e: Event) {
     if (nativePath && isTauriRuntime()) {
       try {
         const media = await registerMediaPath(nativePath)
-        store.setVideoSource(media.url, media.path)
+        store.setMediaSource(media.url, media.path)
         notice.log('媒体文件路径已设置:' + media.path, 'success')
         input.value = ''
         return
@@ -566,7 +566,7 @@ async function onVideoFileChange(e: Event) {
     }
 
     const url = URL.createObjectURL(file)
-    store.setVideoSource(url, '')
+    store.setMediaSource(url, '')
     notice.log('媒体文件成功载入:' + file.name, 'success')
   }
 

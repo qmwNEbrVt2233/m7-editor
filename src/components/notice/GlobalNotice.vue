@@ -34,7 +34,7 @@
       <button
         type="button"
         class="log-export-btn"
-        @click.stop="downloadLogs"
+        @click.stop="notice.exportLogs"
       >
         导出
       </button>
@@ -61,9 +61,8 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useEditorStore } from '@/store/editor';
+import { useEditorStore } from '@/store/editor'
 import { useNoticeStore } from '@/store/notice'
-import { saveBlobWithFallback } from '@/store/editor'
 const store = useEditorStore()
 const notice = useNoticeStore()
 
@@ -83,158 +82,6 @@ const shouldFade = computed(() => {
 
 const toggleLog = () => {
   logExpanded.value = !logExpanded.value
-}
-
-const pad = (value: number) => String(value).padStart(2, '0')
-
-const formatDateTime = (value: number | Date) => {
-  const date = value instanceof Date ? value : new Date(value)
-  return [
-    date.getFullYear(),
-    '-',
-    pad(date.getMonth() + 1),
-    '-',
-    pad(date.getDate()),
-    ' ',
-    pad(date.getHours()),
-    ':',
-    pad(date.getMinutes()),
-    ':',
-    pad(date.getSeconds())
-  ].join('')
-}
-
-const formatDuration = (ms: number) => {
-  const totalSeconds = Math.max(0, Math.round(ms / 1000))
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  const seconds = totalSeconds % 60
-
-  if (hours > 0) {
-    return `${hours}时${minutes}分${seconds}秒`
-  }
-
-  if (minutes > 0) {
-    return `${minutes}分${seconds}秒`
-  }
-
-  return `${seconds}秒`
-}
-
-const safeStringify = (value: unknown) => {
-  const seen = new WeakSet<object>()
-
-  return JSON.stringify(
-    value,
-    (_key, currentValue) => {
-      if (typeof currentValue === 'bigint') {
-        return `${currentValue}n`
-      }
-
-      if (currentValue instanceof Error) {
-        return {
-          name: currentValue.name,
-          message: currentValue.message,
-          stack: currentValue.stack
-        }
-      }
-
-      if (currentValue && typeof currentValue === 'object') {
-        if (seen.has(currentValue)) {
-          return '[Circular]'
-        }
-        seen.add(currentValue)
-      }
-
-      return currentValue
-    },
-    2
-  )
-}
-
-const serializeAdditionalInfo = (value: unknown) => {
-  if (value == null) {
-    return ''
-  }
-
-  if (typeof value === 'string') {
-    return value
-  }
-
-  if (
-    typeof value === 'number' ||
-    typeof value === 'boolean' ||
-    typeof value === 'bigint'
-  ) {
-    return String(value)
-  }
-
-  if (value instanceof Error) {
-    return value.stack || `${value.name}: ${value.message}`
-  }
-
-  try {
-    return safeStringify(value) || ''
-  } catch {
-    return String(value)
-  }
-}
-
-const buildLogMarkdown = () => {
-  const logs = [...notice.logList]
-  const createdAt = formatDateTime(Date.now())
-
-  const timestamps = logs
-    .map((item) => item.id)
-    .filter((value): value is number => Number.isFinite(value))
-
-  const firstTimestamp = timestamps.length > 0 ? Math.min(...timestamps) : null
-  const lastTimestamp = timestamps.length > 0 ? Math.max(...timestamps) : null
-  const timeSpan = firstTimestamp !== null && lastTimestamp !== null
-    ? formatDuration(lastTimestamp - firstTimestamp)
-    : '0秒'
-
-  const lines: string[] = [
-    '# 日志信息',
-    '## 日志文件头',
-    `- 文件生成时间：${createdAt}`,
-    `- 日志数量：${logs.length}`,
-    `- 起始时间：${firstTimestamp !== null ? formatDateTime(firstTimestamp) : '无'}`,
-    `- 结束时间：${lastTimestamp !== null ? formatDateTime(lastTimestamp) : '无'}`,
-    `- 时间跨度：${timeSpan}`,
-    ''
-  ]
-
-  logs.forEach((item) => {
-    const type = item.type ?? 'log'
-    const extraInfo = serializeAdditionalInfo(item.AdditionalInfo)
-
-    lines.push(`### 时间：${item.timestamp} id：${item.id}`)
-    lines.push(`[${type}] ${item.message}`)
-
-    if (extraInfo.trim()) {
-      lines.push('')
-      lines.push('```text')
-      lines.push(extraInfo)
-      lines.push('```')
-    }
-
-    lines.push('')
-  })
-
-  return lines.join('\n').trimEnd() + '\n'
-}
-
-const downloadLogs = async () => {
-  const markdown = buildLogMarkdown()
-  const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
-
-  await saveBlobWithFallback(blob, `notice-logs ${formatDateTime(Date.now())}.md`, {
-    description: 'Markdown 日志文件',
-    accept: {
-      'text/markdown': ['.md']
-    }
-  })
 }
 
 const handleClickOutside = (e: MouseEvent) => {

@@ -25,3 +25,22 @@ export function parseTimeString(timeStr: string): number {
 
   return minutes * 60 * 1000 + seconds * 1000 + ms
 }
+
+const pad = (value: number) => String(value).padStart(2, '0')
+
+export function formatDateTime(value: number | Date) {
+  const date = value instanceof Date ? value : new Date(value)
+  return [
+    date.getFullYear(),
+    '-',
+    pad(date.getMonth() + 1),
+    '-',
+    pad(date.getDate()),
+    ' ',
+    pad(date.getHours()),
+    ':',
+    pad(date.getMinutes()),
+    ':',
+    pad(date.getSeconds())
+  ].join('')
+}

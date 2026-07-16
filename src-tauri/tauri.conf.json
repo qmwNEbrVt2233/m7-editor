@@ -1,6 +1,6 @@
 {
   "productName": "m7-editor",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "identifier": "com.jerryeee.m7-editor",
   "build": {
     "beforeDevCommand": "npm run dev -- --port 2388",

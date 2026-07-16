@@ -69,10 +69,10 @@ export function isPersistentMediaPath(value: unknown): value is string {
   return Boolean(normalized && !normalized.startsWith('blob:') && !/^https?:\/\//i.test(normalized))
 }
 
-export function getProjectVideoPath(video: unknown): string {
-  if (!video || typeof video !== 'object') return ''
+export function getProjectMediaPath(media: unknown): string {
+  if (!media || typeof media !== 'object') return ''
 
-  const record = video as Record<string, unknown>
+  const record = media as Record<string, unknown>
 
   if (isPersistentMediaPath(record.path)) {
     return normalizeMediaPath(record.path)
