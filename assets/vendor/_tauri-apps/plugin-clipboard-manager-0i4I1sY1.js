@@ -1,0 +1,1 @@
+import{t as a}from"./api-DMVwqRyJ.js";async function t(t,n){await a("plugin:clipboard-manager|write_text",{label:n?.label,text:t})}async function n(){return await a("plugin:clipboard-manager|read_text")}export{t as n,n as t};
