@@ -80,11 +80,11 @@ const sectionContents: Record<string, string> = {
     <subtitle>关于</subtitle>
     <img src="/favicon.svg" alt="m7-editor" style="width: 150px; height: 150px;">
     <p>m7-editor是一个面向 M7 / B 站特效弹幕场景的可视化编辑器，由jerryeee开发</p>
+    <p><strong>您所在的版本：</strong><kbd>1.8.0</kbd></p>
     <h3>获取帮助</h3>
     <p>按下<code>h</code>随时唤出帮助</p>
     <p>鼠标在左上角图标处悬停以获取快捷键帮助</p>
-    <p>您所在的版本：<kbd>1.8.0</kbd></p>
-    <p>反馈渠道:</p>
+    <h3>反馈渠道:</h3>
     <ul>
       <li><a href="https://github.com/qmwNEbrVt2233/m7-editor/issues" target="_blank">github issues</a></li>
       <li><a href="https://space.bilibili.com/108382388" target="_blank">bilibili profile</a></li>
@@ -629,7 +629,7 @@ const sectionContents: Record<string, string> = {
   'import-export-json': `
     <subtitle>工程 JSON</subtitle>
 
-    <p>单工程文件内部结构：</p>
+    <p>工程文件内部结构：</p>
     <kbd style="display: block; max-width: 270px">{
   meta: {
     version: string,

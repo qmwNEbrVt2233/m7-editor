@@ -1370,7 +1370,40 @@ fn move_path_to_recycle_bin(path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn move_path_to_recycle_bin(path: &Path) -> Result<(), String> {
+    use std::process::Command;
+
+    let abs_path = std::fs::canonicalize(path).map_err(|error| format!("路径无效: {error}"))?;
+    let path_str = abs_path.to_string_lossy().into_owned();
+    let escaped_path = path_str.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(r#"tell application "Finder" to delete POSIX file "{}""#, escaped_path);
+
+    let output = Command::new("/usr/bin/osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .map_err(|error| format!("调用 macOS 回收站失败: {error}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let detail = String::from_utf8_lossy(&output.stderr);
+    let detail = detail.trim();
+    let detail = if detail.is_empty() {
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    } else {
+        detail.to_string()
+    };
+
+    Err(format!(
+        "移动到废纸篓失败: {}",
+        if detail.is_empty() { "未知错误" } else { &detail }
+    ))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn move_path_to_recycle_bin(path: &Path) -> Result<(), String> {
     fs::remove_dir_all(path).map_err(|error| format!("删除失败: {error}"))
 }
