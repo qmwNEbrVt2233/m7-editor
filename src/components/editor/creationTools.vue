@@ -319,14 +319,74 @@
                   </div>
 
                   <div v-else-if="field.kind === 'font'" class="field-card-body">
-                    <label v-if="directRules.font.mode === 'assign'" class="stack-field">
+                    <div v-if="directRules.font.mode === 'assign'" class="stack-field">
                       <span>字体名称</span>
-                      <input
-                        v-model="directRules.font.value"
-                        type="text"
-                        placeholder="Microsoft YaHei"
-                      />
-                    </label>
+                      <div ref="fontPickerRef" class="font-picker">
+                        <button
+                          type="button"
+                          class="font-trigger"
+                          :class="{ 'font-trigger-open': isFontDropdownOpen }"
+                          @click="toggleFontDropdown"
+                        >
+                          <span class="font-trigger-label">{{ selectedFontLabel }}</span>
+                          <span class="font-trigger-arrow">
+                            <svg v-if="!isFontDropdownOpen" viewBox="0 0 272.59 177.2" aria-hidden="true">
+                              <path d="M134.46,133.04L31.8,17.79s-9.12-2.85-13.67,1.44c-4.55,4.29-1.81,14.49-1.81,14.49l104.44,119.59s8.6,8.39,13.13,8.39c4.53,0,12.14-9.14,12.14-9.14l110.56-122.42s2.31-9.77-3.09-13.5c-4.85-3.34-13.88,1.7-13.88,1.7l-105.17,114.7Z" />
+                            </svg>
+                            <svg v-else viewBox="0 0 272.59 177.2" aria-hidden="true">
+                              <path d="M134.46,44.15L31.8,159.41s-9.12,2.85-13.67-1.44c-4.55-4.29-1.81-14.49-1.81-14.49L120.76,23.89s8.6-8.39,13.13-8.39c4.53,0,12.14,9.14,12.14,9.14l110.56,122.42s2.31,9.77-3.09,13.5c-4.85,3.34-13.88,1.7-13.88,1.7l-105.17-114.7Z" />
+                            </svg>
+                          </span>
+                        </button>
+
+                        <div v-show="isFontDropdownOpen" class="font-dropdown">
+                          <div class="font-section">
+                            <div class="font-section-title">常用字体</div>
+                            <button
+                              v-for="option in builtInFontOptions"
+                              :key="option.value"
+                              type="button"
+                              class="font-option"
+                              :class="{ 'font-option-selected': isSelectedFont(option.value) }"
+                              @click="selectFontOption(option.value)"
+                            >
+                              {{ option.label }}
+                            </button>
+                          </div>
+
+                          <div class="font-section">
+                            <div class="font-section-title">本地字体</div>
+                            <div v-if="isLoadingLocalFonts" class="font-status">正在读取本地字体...</div>
+                            <div v-else-if="!localFontsSupported" class="font-status">当前环境不支持本地字体访问</div>
+                            <div v-else-if="localFontsPermissionDenied" class="font-status">未授予本地字体访问权限</div>
+                            <div v-else-if="localFontOptions.length === 0" class="font-status">未发现可用的本地字体</div>
+                            <div
+                              v-else
+                              class="font-virtual-list have-scrollbar"
+                              @scroll="onLocalFontListScroll"
+                            >
+                              <div class="font-virtual-spacer" :style="{ height: `${localFontListTotalHeight}px` }">
+                                <div
+                                  class="font-virtual-content"
+                                  :style="{ transform: `translateY(${localFontListOffset}px)` }"
+                                >
+                                  <button
+                                    v-for="option in visibleLocalFontOptions"
+                                    :key="option.value"
+                                    type="button"
+                                    class="font-option"
+                                    :class="{ 'font-option-selected': isSelectedFont(option.value) }"
+                                    @click="selectFontOption(option.value)"
+                                  >
+                                    {{ option.label }}
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                     <label v-else class="stack-field">
                       <span>字体循环列表</span>
                       <textarea
@@ -429,6 +489,20 @@ import { useNoticeStore } from '@/store/notice.ts'
 type FieldPath = NumericFieldPath | ColorFieldPath | DirectFieldPath
 type ColorInputTarget = 'start' | 'target'
 type FieldMode = RuleMode | DirectRuleMode
+type FontOption = {
+  value: string
+  label: string
+}
+
+type LocalFontData = {
+  family: string
+}
+
+type QueryLocalFontsFn = () => Promise<LocalFontData[]>
+
+const LOCAL_FONT_ITEM_HEIGHT = 32
+const LOCAL_FONT_LIST_HEIGHT = 224
+const LOCAL_FONT_OVERSCAN = 6
 
 type NumericFieldConfig = {
   path: NumericFieldPath
@@ -526,6 +600,22 @@ function createDefaultDirectRules() {
 const numericRules = ref(createDefaultNumericRules())
 const colorRule = ref(createDefaultColorRule())
 const directRules = ref(createDefaultDirectRules())
+const builtInFontOptions: FontOption[] = [
+  { value: 'SimHei', label: '黑体' },
+  { value: 'Microsoft YaHei', label: '微软雅黑' },
+  { value: 'SimSun', label: '宋体' },
+  { value: 'NSimSun', label: '新宋体' },
+  { value: 'FangSong', label: '仿宋' }
+]
+const fontPickerRef = ref<HTMLElement | null>(null)
+const localFontOptions = ref<FontOption[]>([])
+const localFontKeySet = ref<Set<string>>(new Set())
+const localFontsLoaded = ref(false)
+const localFontsSupported = ref(true)
+const localFontsPermissionDenied = ref(false)
+const isLoadingLocalFonts = ref(false)
+const isFontDropdownOpen = ref(false)
+const localFontListScrollTop = ref(0)
 
 const toolSections: ToolSection[] = [
   {
@@ -614,10 +704,14 @@ watch(
 
 onMounted(() => {
   document.addEventListener('keydown', handleCreationToolsShortcut)
+  document.addEventListener('pointerdown', onFontDropdownPointerDown)
+  document.addEventListener('keydown', onFontDropdownKeydown)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', handleCreationToolsShortcut)
+  document.removeEventListener('pointerdown', onFontDropdownPointerDown)
+  document.removeEventListener('keydown', onFontDropdownKeydown)
 })
 
 function isTextEditingTarget(target: EventTarget | null): boolean {
@@ -820,6 +914,184 @@ function createDirectRule<T>(value: T): DirectRuleState<T> {
     mode: 'assign',
     value,
     cycleList: ''
+  }
+}
+
+const builtInFontKeys = new Set(builtInFontOptions.map(option => normalizeFontKey(option.value)))
+
+const currentFontOption = computed<FontOption | null>(() => {
+  const currentFontValue = directRules.value.font.value.trim()
+  if (!currentFontValue) {
+    return null
+  }
+
+  const currentFontKey = normalizeFontKey(currentFontValue)
+  if (builtInFontKeys.has(currentFontKey) || localFontKeySet.value.has(currentFontKey)) {
+    return null
+  }
+
+  return {
+    value: currentFontValue,
+    label: `${currentFontValue} (当前)`
+  }
+})
+
+const selectedFontLabel = computed(() => {
+  const currentFontValue = directRules.value.font.value.trim()
+  if (!currentFontValue) {
+    return '请选择字体'
+  }
+
+  const builtInMatch = builtInFontOptions.find(option => option.value === currentFontValue)
+  return builtInMatch?.label || currentFontOption.value?.label || currentFontValue
+})
+
+const localFontListStartIndex = computed(() => {
+  const startIndex = Math.floor(localFontListScrollTop.value / LOCAL_FONT_ITEM_HEIGHT) - LOCAL_FONT_OVERSCAN
+  return Math.max(0, startIndex)
+})
+
+const localFontListEndIndex = computed(() => {
+  const visibleCount = Math.ceil(LOCAL_FONT_LIST_HEIGHT / LOCAL_FONT_ITEM_HEIGHT) + LOCAL_FONT_OVERSCAN * 2
+  return Math.min(localFontOptions.value.length, localFontListStartIndex.value + visibleCount)
+})
+
+const localFontListOffset = computed(() => localFontListStartIndex.value * LOCAL_FONT_ITEM_HEIGHT)
+const localFontListTotalHeight = computed(() => localFontOptions.value.length * LOCAL_FONT_ITEM_HEIGHT)
+const visibleLocalFontOptions = computed(() => {
+  return localFontOptions.value.slice(localFontListStartIndex.value, localFontListEndIndex.value)
+})
+
+function normalizeFontKey(value: string): string {
+  return value.trim().toLocaleLowerCase()
+}
+
+function isSelectedFont(value: string): boolean {
+  return normalizeFontKey(directRules.value.font.value) === normalizeFontKey(value)
+}
+
+function buildLocalFontOptions(fonts: LocalFontData[]): { options: FontOption[]; keys: Set<string> } {
+  const uniqueFamilies = new Map<string, string>()
+
+  for (const fontData of fonts) {
+    const family = fontData.family?.trim()
+    if (!family) {
+      continue
+    }
+
+    const familyKey = normalizeFontKey(family)
+    if (builtInFontKeys.has(familyKey) || uniqueFamilies.has(familyKey)) {
+      continue
+    }
+
+    uniqueFamilies.set(familyKey, family)
+  }
+
+  const sortedFamilies = Array.from(uniqueFamilies.values()).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'))
+  return {
+    options: sortedFamilies.map(family => ({ value: family, label: family })),
+    keys: new Set(uniqueFamilies.keys())
+  }
+}
+
+function getQueryLocalFonts(): QueryLocalFontsFn | null {
+  const globalScope = globalThis as typeof globalThis & { queryLocalFonts?: QueryLocalFontsFn }
+  return typeof globalScope.queryLocalFonts === 'function'
+    ? globalScope.queryLocalFonts.bind(globalScope)
+    : null
+}
+
+async function loadLocalFonts() {
+  if (
+    localFontsLoaded.value ||
+    !localFontsSupported.value ||
+    localFontsPermissionDenied.value ||
+    isLoadingLocalFonts.value
+  ) {
+    return
+  }
+
+  const queryLocalFonts = getQueryLocalFonts()
+  if (!queryLocalFonts) {
+    localFontsSupported.value = false
+    return
+  }
+
+  isLoadingLocalFonts.value = true
+
+  try {
+    const fonts = await queryLocalFonts()
+    const { options, keys } = buildLocalFontOptions(fonts)
+    localFontOptions.value = options
+    localFontKeySet.value = keys
+    localFontsLoaded.value = true
+  } catch (error) {
+    if (error instanceof DOMException) {
+      if (error.name === 'NotAllowedError') {
+        localFontsPermissionDenied.value = true
+        return
+      }
+
+      if (error.name === 'SecurityError') {
+        localFontsSupported.value = false
+        return
+      }
+    }
+
+    notice.alert('读取本地字体失败:', 'error', '功能不可用', error)
+  } finally {
+    isLoadingLocalFonts.value = false
+  }
+}
+
+async function openFontDropdown() {
+  if (isFontDropdownOpen.value) {
+    return
+  }
+
+  isFontDropdownOpen.value = true
+  localFontListScrollTop.value = 0
+  await loadLocalFonts()
+}
+
+function closeFontDropdown() {
+  isFontDropdownOpen.value = false
+}
+
+function toggleFontDropdown() {
+  if (isFontDropdownOpen.value) {
+    closeFontDropdown()
+    return
+  }
+
+  void openFontDropdown()
+}
+
+function selectFontOption(value: string) {
+  directRules.value.font.value = value
+  closeFontDropdown()
+}
+
+function onLocalFontListScroll(event: Event) {
+  localFontListScrollTop.value = (event.target as HTMLElement).scrollTop
+}
+
+function onFontDropdownPointerDown(event: PointerEvent) {
+  if (!isFontDropdownOpen.value) {
+    return
+  }
+
+  const targetNode = event.target as Node | null
+  if (targetNode && fontPickerRef.value?.contains(targetNode)) {
+    return
+  }
+
+  closeFontDropdown()
+}
+
+function onFontDropdownKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && isFontDropdownOpen.value) {
+    closeFontDropdown()
   }
 }
 
@@ -1446,6 +1718,124 @@ defineExpose({
 .checkbox-field span {
   font-size: 12px;
   color: #cfcfcf;
+}
+
+.font-picker {
+  position: relative;
+}
+
+.font-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  background: #3c3c3c;
+  color: #e0e0e0;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+
+.font-trigger:hover,
+.font-trigger-open {
+  border-color: #4ec9b0;
+  background: #444;
+}
+
+.font-trigger-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.font-trigger-arrow {
+  flex-shrink: 0;
+  display: flex;
+}
+
+.font-trigger-arrow svg {
+  width: 10px;
+  height: 10px;
+  fill: #fff;
+  stroke: #d4d4d4;
+  stroke-miterlimit: 10;
+  stroke-width: 31px;
+}
+
+.font-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  padding: 8px;
+  border: 1px solid #3e3e42;
+  border-radius: 6px;
+  background: #252526;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+}
+
+.font-section + .font-section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #333;
+}
+
+.font-section-title {
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: #888;
+}
+
+.font-option {
+  height: 32px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #e0e0e0;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.font-option:hover {
+  background: #2d2d30;
+}
+
+.font-option-selected {
+  background: rgba(78, 201, 176, 0.18);
+  color: #7de6d2;
+}
+
+.font-status {
+  padding: 10px;
+  color: #888;
+  font-size: 12px;
+}
+
+.font-virtual-list {
+  max-height: 224px;
+  overflow-y: auto;
+}
+
+.font-virtual-spacer {
+  position: relative;
+}
+
+.font-virtual-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
 }
 
 .stack-field input,

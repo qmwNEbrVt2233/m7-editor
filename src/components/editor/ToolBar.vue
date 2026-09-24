@@ -2155,6 +2155,8 @@ watch(selectedCoordinateSnapshot, (nextSnapshot, previousSnapshot) => {
 function handleshortcuts(e: KeyboardEvent) {
   
   const isCtrl = e.ctrlKey || e.metaKey
+  const isAlt = e.altKey
+  const isShift = e.shiftKey
   
   if (store.showCreationTools || store.screenRecordingMode || notice.isVisible) {
     return
@@ -2164,57 +2166,62 @@ function handleshortcuts(e: KeyboardEvent) {
     return
   }
 
-  switch (e.key) {
-    case '0':
-      if (scopeMode.value === 'S') {
-        scopeMode.value = 'E'
-      } else if (scopeMode.value === 'E') {
-        scopeMode.value = 'B'
-      } else {
-        scopeMode.value = 'S'
-      }
-      break
-    case '1':
-      handlePickTool()
-      break
-    case '2':
-      handleVerticalCenter()
-      break
-    case '3':
-      handleHorizontalCenter()
-      break
-    case '4':
-      handleHorizontalMirror()
-      break
-    case '5':
-      handleVerticalMirror()
-      break
-    case '6':
-      handleSwapStartAndEnd()
-      break
-    case '7':
-      handleCalculateZRotation()
-      break
-    case '8':
-      handleLineSplit()
-      break
-    case '9':
-      handleLetterSplit()
-      break
-    case '\\':
-      handleTimeSplit()
-      break
-    case '/':
-      toggleAdvancedTools()
-      break
+  if (!isCtrl && !isAlt && !isShift) {
+    switch (e.key) {
+      case '0':
+        if (scopeMode.value === 'S') {
+          scopeMode.value = 'E'
+        } else if (scopeMode.value === 'E') {
+          scopeMode.value = 'B'
+        } else {
+          scopeMode.value = 'S'
+        }
+        break
+      case '1':
+        handlePickTool()
+        break
+      case '2':
+        handleVerticalCenter()
+        break
+      case '3':
+        handleHorizontalCenter()
+        break
+      case '4':
+        handleHorizontalMirror()
+        break
+      case '5':
+        handleVerticalMirror()
+        break
+      case '6':
+        handleSwapStartAndEnd()
+        break
+      case '7':
+        handleCalculateZRotation()
+        break
+      case '8':
+        handleLineSplit()
+        break
+      case '9':
+        handleLetterSplit()
+        break
+      case '\\':
+        handleTimeSplit()
+        break
+      case '/':
+        toggleAdvancedTools()
+        break
+    }
+    return
   }
 
   if (e.key === 'ArrowDown' && isCtrl ) {
     handleCopyStartToEnd()
+    return
   }
 
   if (e.key === 'ArrowUp' && isCtrl ) {
     handleCopyEndToStart()
+    return
   }
 }
 

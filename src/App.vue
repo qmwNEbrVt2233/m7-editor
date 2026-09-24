@@ -180,8 +180,10 @@ async function handleKeyDown(e: KeyboardEvent) {
     }
     if (store.playing) {
       store.pausePlayback()
+      return
     } else {
       store.startPlayback()
+      return
     }
   }
   
@@ -189,9 +191,10 @@ async function handleKeyDown(e: KeyboardEvent) {
   if (e.key === 's' && isCtrl && !isAlt && !isShift) {
     e.preventDefault()
     void store.downloadProject()
+    return
   }
 
-  if (e.key === 's' && isCtrl && !isAlt && isShift) {
+  if (e.key === 's' && isCtrl && isAlt && !isShift) {
     e.preventDefault()
     void store.backupActiveFolderProject()
     return
