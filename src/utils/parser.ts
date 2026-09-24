@@ -1,3 +1,6 @@
+import { evaluate, parse } from 'mathjs'
+import type { DanmakuItem } from '@/core/danmaku'
+
 /**
  * 输入解析工具
  * 支持五种模式：
@@ -18,6 +21,69 @@ export interface ParseResult {
   randomMinOffset?: number
   randomMaxOffset?: number
   error?: string
+}
+
+export type NumericFieldKind = 'integer' | 'opacity'
+export type NumericFieldDefinition = {
+  path: string
+  kind: NumericFieldKind
+}
+
+export const NUMERIC_FIELD_DEFINITIONS: Record<string, NumericFieldDefinition> = {
+  layer: { path: 'layer', kind: 'integer' },
+  startTime: { path: 'startTime', kind: 'integer' },
+  size: { path: 'content.size', kind: 'integer' },
+  startX: { path: 'transform.start.x', kind: 'integer' },
+  startY: { path: 'transform.start.y', kind: 'integer' },
+  endX: { path: 'transform.end.x', kind: 'integer' },
+  endY: { path: 'transform.end.y', kind: 'integer' },
+  zRotate: { path: 'transform.zRotate', kind: 'integer' },
+  yRotate: { path: 'transform.yRotate', kind: 'integer' },
+  opacityFrom: { path: 'opacity.from', kind: 'opacity' },
+  opacityTo: { path: 'opacity.to', kind: 'opacity' },
+  duration: { path: 'animation.duration', kind: 'integer' },
+  moveDuration: { path: 'animation.moveDuration', kind: 'integer' },
+  delay: { path: 'animation.delay', kind: 'integer' }
+}
+
+function getValueByPath(target: Record<string, unknown>, path: string): unknown {
+  return path.split('.').reduce<unknown>((current, key) => {
+    if (!current || typeof current !== 'object') {
+      return undefined
+    }
+
+    return (current as Record<string, unknown>)[key]
+  }, target)
+}
+
+export function createNumericVariableContext(danmaku: DanmakuItem): Record<string, number> {
+  const variables: Record<string, number> = {}
+
+  Object.entries(NUMERIC_FIELD_DEFINITIONS).forEach(([fieldName, definition]) => {
+    const value = getValueByPath(danmaku as unknown as Record<string, unknown>, definition.path)
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      variables[fieldName] = value
+    }
+  })
+
+  return variables
+}
+
+export function parseMathExpression(expression: string) {
+  return parse(expression)
+}
+
+export function evaluateMathExpressionValue(expression: string, variables: Record<string, unknown>): unknown {
+  return evaluate(expression, variables)
+}
+
+export function evaluateMathExpression(expression: string, variables: Record<string, unknown>): number {
+  const result = evaluateMathExpressionValue(expression, variables)
+  if (typeof result !== 'number' || !Number.isFinite(result)) {
+    throw new Error('表达式结果不是有效数字')
+  }
+
+  return result
 }
 
 /**

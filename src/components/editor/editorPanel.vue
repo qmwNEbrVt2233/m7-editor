@@ -362,7 +362,16 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useEditorStore } from '@/store/editor'
 import { useNoticeStore } from '@/store/notice'
-import { parseInput, applyOperation, formatInputDisplay, parseColorWithAlpha, blendColor } from '@/utils/parser'
+import {
+  parseInput,
+  applyOperation,
+  formatInputDisplay,
+  parseColorWithAlpha,
+  blendColor,
+  NUMERIC_FIELD_DEFINITIONS,
+  createNumericVariableContext,
+  evaluateMathExpression
+} from '@/utils/parser'
 import type { ParseResult } from '@/utils/parser'
 import { validateField, roundToInteger, roundOpacityValue, normalizeAngle, normalizeColor, validateRange, M7_RULES } from '@/utils/validation'
 import { formatTime } from '@/utils/time'
@@ -869,6 +878,10 @@ function getValidationFieldName(path: string): string {
   return path.split('.').pop() || ''
 }
 
+function isMathExpressionInput(input: string): boolean {
+  return input.trimStart().startsWith('$')
+}
+
 function parseOpacityInput(input: string): ParseResult | { error: string } {
   const trimmed = input.trim()
   if (!trimmed) {
@@ -915,6 +928,48 @@ function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
     
     store.updateSelectedDanmakus({ 'content.color': normalized })
     delete editCache.value[path]
+    return
+  }
+
+  const inputText = String(inputValue).trim()
+  if (isMathExpressionInput(inputText)) {
+    const expression = inputText.slice(1).trim()
+    const definition = Object.values(NUMERIC_FIELD_DEFINITIONS).find(item => item.path === path)
+
+    if (!definition || !expression) {
+      notice.alert(`字段 ${path} 的表达式格式无效`, 'warn')
+      return
+    }
+
+    try {
+      selectedDanmakus.value.forEach((danmaku) => {
+        const result = evaluateMathExpression(expression, createNumericVariableContext(danmaku))
+        let normalizedValue: number
+
+        if (definition.kind === 'opacity') {
+          normalizedValue = roundOpacityValue(validateRange(result, 0, 1))
+        } else if (isRotatePath(path)) {
+          normalizedValue = normalizeAngle(result)
+        } else {
+          normalizedValue = roundToInteger(result, store.allowNegativeValues)
+          const validation = validateField(getValidationFieldName(path), normalizedValue)
+          if (!validation.valid) {
+            const rule = M7_RULES[getValidationFieldName(path) as keyof typeof M7_RULES]
+            if (rule) {
+              normalizedValue = roundToInteger(
+                validateRange(normalizedValue, rule.min, rule.max),
+                store.allowNegativeValues
+              )
+            }
+          }
+        }
+
+        store.updateDanmaku(danmaku.id, { [path]: normalizedValue })
+      })
+      delete editCache.value[path]
+    } catch (error) {
+      notice.alert(error instanceof Error ? error.message : `字段 ${path} 表达式执行失败`, 'warn')
+    }
     return
   }
 

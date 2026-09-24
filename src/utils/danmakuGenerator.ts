@@ -1,39 +1,14 @@
 import { useEditorStore } from '@/store/editor'
 import type { DanmakuItem } from '@/core/danmaku'
-import { applyOperation, blendColor, parseColorWithAlpha, parseInput } from '@/utils/parser'
+import {
+  applyOperation,
+  blendColor,
+  evaluateMathExpressionValue,
+  parseColorWithAlpha,
+  parseInput,
+  parseMathExpression
+} from '@/utils/parser'
 import { M7_RULES, normalizeAngle, normalizeColor, validateRange } from '@/utils/validation'
-import { compileDependencies, create } from 'mathjs/number'
-
-const math = create(compileDependencies)
-
-math.import({
-  add: (a: number, b: number) => a + b,
-  subtract: (a: number, b: number) => a - b,
-  multiply: (a: number, b: number) => a * b,
-  divide: (a: number, b: number) => a / b,
-  mod: (a: number, b: number) => a % b,
-  pow: (a: number, b: number) => a ** b,
-  unaryMinus: (value: number) => -value,
-  unaryPlus: (value: number) => +value,
-  random: Math.random,
-  sin: Math.sin,
-  cos: Math.cos,
-  tan: Math.tan,
-  abs: Math.abs,
-  sqrt: Math.sqrt,
-  min: Math.min,
-  max: Math.max,
-  floor: Math.floor,
-  ceil: Math.ceil,
-  round: Math.round,
-  log: Math.log,
-  exp: Math.exp,
-  pi: Math.PI,
-  e: Math.E
-}, {
-  override: true,
-  silent: true
-})
 
 export type RuleMode = 'cycle' | 'range' | 'relative'
 export type WriteMode = 'append' | 'replace'
@@ -569,7 +544,7 @@ function buildCycleNumericSeries(
 
   const compiledEntries = entries.map((rawValue, entryIndex) => {
     try {
-      return math.compile(rawValue)
+      return compileMathExpression(rawValue, `${path} 循环值 ${entryIndex + 1} `)
     } catch (error) {
       throw new Error(`${path} 循环值 ${entryIndex + 1} 表达式解析失败: ${getErrorMessage(error)}`)
     }
@@ -831,7 +806,8 @@ function renderTextTemplate(
 
 function compileMathExpression(expression: string, label: string): any {
   try {
-    return math.compile(expression)
+    parseMathExpression(expression)
+    return expression
   } catch (error) {
     throw new Error(`${label}表达式解析失败: ${getErrorMessage(error)}`)
   }
@@ -839,7 +815,7 @@ function compileMathExpression(expression: string, label: string): any {
 
 function extractExpressionDependencies(expression: string, label: string): Set<AllFieldPath> {
   try {
-    const node = math.parse(expression) as any
+    const node = parseMathExpression(expression) as any
     const dependencies = new Set<AllFieldPath>()
 
     node.traverse((childNode: any) => {
@@ -867,7 +843,7 @@ function evaluateCompiledExpression(
   }
 ): unknown {
   try {
-    return compiledExpression.evaluate(createExpressionScope(params))
+    return evaluateMathExpressionValue(compiledExpression, createExpressionScope(params))
   } catch (error) {
     if (params.label !== undefined) {
       throw new Error(`${params.label}表达式解析失败: ${getErrorMessage(error)}`)
@@ -1202,7 +1178,7 @@ export function evaluateRangeExpression(params: RangeEvaluationParams): number[]
   if (quantity < 2) return [startVal];
 
   try {
-    const compiledExpr = math.compile(expression);
+    const compiledExpr = compileMathExpression(expression, '表达式')
 
     // 循环为每条弹幕求值
     for (let i = 0; i < quantity; i++) {

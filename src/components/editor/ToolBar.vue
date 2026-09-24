@@ -288,6 +288,11 @@ import { historyManager } from '@/core/history'
 import { useEditorStore } from '@/store/editor'
 import { useNoticeStore } from '@/store/notice'
 import { roundToInteger, roundOpacityValue, normalizeAngle, normalizeColor } from '@/utils/validation'
+import {
+  NUMERIC_FIELD_DEFINITIONS,
+  createNumericVariableContext,
+  evaluateMathExpression
+} from '@/utils/parser'
 
 /**
  * 工具栏作用范围模式：
@@ -299,11 +304,6 @@ type ScopeMode = 'S' | 'E' | 'B'
 type TransformTarget = 'start' | 'end'
 type Axis = 'x' | 'y'
 type AdvancedPanel = 'stroke' | 'calculator' | 'command'
-type NumericFieldKind = 'integer' | 'opacity'
-type NumericFieldDefinition = {
-  path: string
-  kind: NumericFieldKind
-}
 type SelectionFieldKind = 'number' | 'string' | 'boolean'
 type SelectionFieldDefinition = {
   path: string
@@ -333,11 +333,6 @@ type SelectionFilterRule =
   | { type: 'selecting' }
   | { type: 'field'; field: string; definition: SelectionFieldDefinition; criteria: SelectionCriterion[] }
 type SelectionRuleGroup = SelectionFilterRule[]
-type ExpressionToken =
-  | { type: 'number'; value: number }
-  | { type: 'identifier'; value: string }
-  | { type: 'operator'; value: '+' | '-' | '*' | '/' }
-  | { type: 'paren'; value: '(' | ')' }
 type ToolbarMeasureRequest = {
   requestId: string
   danmaku: DanmakuItem
@@ -365,22 +360,6 @@ const STROKE_OFFSETS = [
   { x: 0, y: 1 },
   { x: 1, y: 1 }
 ]
-const NUMERIC_FIELD_DEFINITIONS: Record<string, NumericFieldDefinition> = {
-  layer: { path: 'layer', kind: 'integer' },
-  startTime: { path: 'startTime', kind: 'integer' },
-  size: { path: 'content.size', kind: 'integer' },
-  startX: { path: 'transform.start.x', kind: 'integer' },
-  startY: { path: 'transform.start.y', kind: 'integer' },
-  endX: { path: 'transform.end.x', kind: 'integer' },
-  endY: { path: 'transform.end.y', kind: 'integer' },
-  zRotate: { path: 'transform.zRotate', kind: 'integer' },
-  yRotate: { path: 'transform.yRotate', kind: 'integer' },
-  opacityFrom: { path: 'opacity.from', kind: 'opacity' },
-  opacityTo: { path: 'opacity.to', kind: 'opacity' },
-  duration: { path: 'animation.duration', kind: 'integer' },
-  moveDuration: { path: 'animation.moveDuration', kind: 'integer' },
-  delay: { path: 'animation.delay', kind: 'integer' }
-}
 const SELECTION_FIELD_DEFINITIONS: Record<string, SelectionFieldDefinition> = {
   id: { path: 'id', kind: 'string' },
   layer: { path: 'layer', kind: 'number' },
@@ -553,170 +532,6 @@ function getRotatedBoundingBox(rawWidth: number, rawHeight: number, zRotate: num
     width: maxX - minX,
     height: maxY - minY
   }
-}
-
-// 解析用户输入的命令表达式
-function tokenizeCommandExpression(expression: string): ExpressionToken[] {
-  const tokens: ExpressionToken[] = []
-  let index = 0
-
-  while (index < expression.length) {
-    const char = expression[index]
-
-    if (/\s/.test(char)) {
-      index++
-      continue
-    }
-
-    if (/[+\-*/]/.test(char)) {
-      tokens.push({ type: 'operator', value: char as '+' | '-' | '*' | '/' })
-      index++
-      continue
-    }
-
-    if (/[()]/.test(char)) {
-      tokens.push({ type: 'paren', value: char as '(' | ')' })
-      index++
-      continue
-    }
-
-    if (/\d|\./.test(char)) {
-      let end = index + 1
-      while (end < expression.length && /[\d.]/.test(expression[end])) {
-        end++
-      }
-
-      const rawNumber = expression.slice(index, end)
-      const parsedNumber = Number(rawNumber)
-      if (!Number.isFinite(parsedNumber)) {
-        throw new Error(`无效数字：${rawNumber}`)
-      }
-
-      tokens.push({ type: 'number', value: parsedNumber })
-      index = end
-      continue
-    }
-
-    if (/[A-Za-z_]/.test(char)) {
-      let end = index + 1
-      while (end < expression.length && /[A-Za-z0-9_]/.test(expression[end])) {
-        end++
-      }
-
-      tokens.push({
-        type: 'identifier',
-        value: expression.slice(index, end)
-      })
-      index = end
-      continue
-    }
-
-    throw new Error(`不支持的字符：${char}`)
-  }
-
-  return tokens
-}
-
-// 命令表达式求值函数，支持基本算术运算、括号和变量，使用递归下降解析方法实现
-function evaluateCommandExpression(expression: string, variables: Record<string, number>): number {
-  const tokens = tokenizeCommandExpression(expression)
-  let index = 0
-
-  function peekToken() {
-    return tokens[index]
-  }
-
-  function consumeToken() {
-    const token = tokens[index]
-    index++
-    return token
-  }
-
-  function parseExpression(): number {
-    let value = parseTerm()
-
-    while (true) {
-      const token = peekToken()
-      if (!token || token.type !== 'operator' || (token.value !== '+' && token.value !== '-')) {
-        break
-      }
-
-      consumeToken()
-      const right = parseTerm()
-      value = token.value === '+' ? value + right : value - right
-    }
-
-    return value
-  }
-
-  function parseTerm(): number {
-    let value = parseFactor()
-
-    while (true) {
-      const token = peekToken()
-      if (!token || token.type !== 'operator' || (token.value !== '*' && token.value !== '/')) {
-        break
-      }
-
-      consumeToken()
-      const right = parseFactor()
-      if (token.value === '/') {
-        if (right === 0) {
-          throw new Error('不允许除以 0')
-        }
-        value = value / right
-      } else {
-        value = value * right
-      }
-    }
-
-    return value
-  }
-
-  function parseFactor(): number {
-    const token = consumeToken()
-    if (!token) {
-      throw new Error('表达式不完整')
-    }
-
-    if (token.type === 'operator' && (token.value === '+' || token.value === '-')) {
-      const value = parseFactor()
-      return token.value === '+' ? value : -value
-    }
-
-    if (token.type === 'number') {
-      return token.value
-    }
-
-    if (token.type === 'identifier') {
-      if (!(token.value in variables)) {
-        throw new Error(`变量 ${token.value} 不存在或不是数值字段`)
-      }
-      return variables[token.value]
-    }
-
-    if (token.type === 'paren' && token.value === '(') {
-      const value = parseExpression()
-      const closeToken = consumeToken()
-      if (!closeToken || closeToken.type !== 'paren' || closeToken.value !== ')') {
-        throw new Error('括号未闭合')
-      }
-      return value
-    }
-
-    throw new Error('表达式格式无效')
-  }
-
-  const result = parseExpression()
-  if (index < tokens.length) {
-    throw new Error('表达式中存在无法解析的多余内容')
-  }
-
-  if (!Number.isFinite(result)) {
-    throw new Error('表达式结果不是有效数字')
-  }
-
-  return result
 }
 
 function parseCommandRules(commandText: string): CommandRule[] {
@@ -906,19 +721,6 @@ function parseSelectionCommand(commandText: string): SelectionRuleGroup[] {
   })
 }
 
-function createNumericVariableContext(danmaku: DanmakuItem): Record<string, number> {
-  const variables: Record<string, number> = {}
-
-  Object.entries(NUMERIC_FIELD_DEFINITIONS).forEach(([fieldName, definition]) => {
-    const value = getValueByPath(danmaku as Record<string, any>, definition.path)
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      variables[fieldName] = value
-    }
-  })
-
-  return variables
-}
-
 function matchesExactSelectionCriterion(value: unknown, criterionValue: string): boolean {
   if (typeof value === 'boolean') {
     return String(value) === criterionValue
@@ -952,8 +754,8 @@ function matchesSelectionFieldRule(danmaku: DanmakuItem, rule: Extract<Selection
     }
 
     const variables = createNumericVariableContext(danmaku)
-    const fromValue = evaluateCommandExpression(criterion.fromExpression, variables)
-    const toValue = evaluateCommandExpression(criterion.toExpression, variables)
+    const fromValue = evaluateMathExpression(criterion.fromExpression, variables)
+    const toValue = evaluateMathExpression(criterion.toExpression, variables)
     const minValue = Math.min(fromValue, toValue)
     const maxValue = Math.max(fromValue, toValue)
     return value >= minValue && value <= maxValue
@@ -1381,7 +1183,7 @@ function handleCommandSubmit() {
       }
 
       workingDanmakus.forEach((danmaku, index) => {
-        const result = evaluateCommandExpression(rule.expression || '', baseVariableContexts[index])
+        const result = evaluateMathExpression(rule.expression || '', baseVariableContexts[index])
         const normalizedValue = definition.kind === 'opacity'
           ? roundOpacityValue(result)
           : roundToInteger(result, store.allowNegativeValues)
