@@ -49,14 +49,14 @@
               v-model="text"
               @change="onTextChange"
               @keydown="onTextInputKeydown"
-              placeholder="输入弹幕文本内容"
+              :placeholder="isTextMixed ? '内容不一致' : '输入弹幕文本内容'"
               class="text-input  have-scrollbar"
             ></textarea>
             <div 
               class="char-counter"
               :class="{ 'char-counter-exceeded': !isTextLengthValid(text) }"
             >
-              已占用: {{ calculateTextLength(text) }}/255
+              已占用: {{ isTextMixed ? '--' : calculateTextLength(text) }}/255
             </div>
           </div>
 
@@ -69,7 +69,7 @@
                 :class="{ 'font-trigger-open': isFontDropdownOpen }"
                 @click="toggleFontDropdown"
               >
-                <span class="font-trigger-label">{{ selectedFontLabel }}</span>
+                <span class="font-trigger-label">{{ isFontMixed ? '字体不一致' : selectedFontLabel }}</span>
                 <span class="font-trigger-arrow">
                   <svg v-if="!isFontDropdownOpen" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 272.59 177.2"style="width: 10px; height: 10px;">
                     <path
@@ -170,7 +170,12 @@
 
           <div class="form-group checkbox">
             <label>
-              <input type="checkbox" v-model="stroke" @change="updateField('content.stroke', stroke)" />
+              <input
+                type="checkbox"
+                :checked="stroke === true"
+                :indeterminate="stroke === null"
+                @change="onStrokeChange"
+              />
               描边 (Stroke)
             </label>
           </div>
@@ -338,6 +343,7 @@
           <div class="form-group">
             <label>运动方式 (Easing)</label>
             <select v-model="easing" @change="updateField('animation.easing', easing)">
+              <option value="" disabled>{{ isEasingMixed ? '不一致' : '请选择运动方式' }}</option>
               <option value="speedup">加速 (Speedup)</option>
               <option value="speeddown">减速 (Speeddown)</option>
             </select>
@@ -425,6 +431,11 @@ function getNumericFieldValues(path: string): number[] {
     .filter(v => typeof v === 'number' && !isNaN(v))
 }
 
+function hasMixedFieldValues(path: string): boolean {
+  const values = getFieldValues(path)
+  return values.length > 1 && values.some(value => value !== values[0])
+}
+
 // 基础信息
 const layer = computed<string>({
   get: () => editCache.value['layer'] !== undefined ? String(editCache.value['layer']) : formatInputDisplay(getNumericFieldValues('layer')),
@@ -454,12 +465,20 @@ const text = computed<string>({
   }
 })
 
+const isTextMixed = computed(() => editCache.value['content.text'] === undefined && hasMixedFieldValues('content.text'))
+
 const font = computed<string>({
-  get: () => editCache.value['content.font'] !== undefined ? editCache.value['content.font'] : (selectedDanmakus.value[0]?.content.font || 'Microsoft YaHei'),
+  get: () => {
+    if (editCache.value['content.font'] !== undefined) return editCache.value['content.font']
+    if (hasMixedFieldValues('content.font')) return ''
+    return selectedDanmakus.value[0]?.content.font || 'Microsoft YaHei'
+  },
   set: (v) => {
     editCache.value['content.font'] = v
   }
 })
+
+const isFontMixed = computed(() => editCache.value['content.font'] === undefined && hasMixedFieldValues('content.font'))
 
 const size = computed<string>({
   get: () => editCache.value['content.size'] !== undefined ? String(editCache.value['content.size']) : formatInputDisplay(getNumericFieldValues('content.size')),
@@ -502,7 +521,7 @@ const colorPicker = computed<string>({
   }
 })
 
-const stroke = computed<boolean>({
+const stroke = computed<boolean | null>({
   get: () => {
     //优先从缓存中获取当前正在编辑的值
     if (editCache.value['content.stroke'] !== undefined) {
@@ -514,8 +533,9 @@ const stroke = computed<boolean>({
       return selectedDanmakus.value[0]?.content.stroke || false
     }
     
-    const values = getFieldValues('content.stroke').filter(v => v !== null)
-    return values.length > 0 && values.every(v => v === true)
+    const values = getFieldValues('content.stroke')
+    if (values.length > 1 && values.some(v => v !== values[0])) return null
+    return values.length > 0 && values[0] === true
   },
   set: (v) => {
     editCache.value['content.stroke'] = v
@@ -603,11 +623,17 @@ const delay = computed<string>({
 })
 
 const easing = computed<string>({
-  get: () => editCache.value['animation.easing'] !== undefined ? editCache.value['animation.easing'] : (selectedDanmakus.value[0]?.animation.easing || 'speedup'),
+  get: () => {
+    if (editCache.value['animation.easing'] !== undefined) return editCache.value['animation.easing']
+    if (hasMixedFieldValues('animation.easing')) return ''
+    return selectedDanmakus.value[0]?.animation.easing || 'speedup'
+  },
   set: (v) => {
     editCache.value['animation.easing'] = v
   }
 })
+
+const isEasingMixed = computed(() => editCache.value['animation.easing'] === undefined && hasMixedFieldValues('animation.easing'))
 
 const builtInFontKeys = new Set(builtInFontOptions.map(option => normalizeFontKey(option.value)))
 
@@ -1071,6 +1097,10 @@ function onOpacityFieldChange(path: 'opacity.from' | 'opacity.to', value: string
   }
 
   updateField(path, textValue)
+}
+
+function onStrokeChange(event: Event) {
+  updateField('content.stroke', (event.target as HTMLInputElement).checked)
 }
 
 // 解析时间值（支持±*/ 操作）
