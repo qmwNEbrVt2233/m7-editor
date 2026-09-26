@@ -154,7 +154,7 @@
           class="tool-btn"
           :class="{ active: isPicking }"
           :disabled="!hasSelection"
-          :title="isPicking ? '点击播放器画面以拾取坐标，再次点击可取消' : '拾取定位'"
+          :title="isPicking ? '点击播放器画面以拾取坐标，再次点击可取消' : '拾取定位 (1)'"
           @click="handlePickTool"
         >
           <img src="/src/icon/Pick_and_locate.svg" alt="拾取定位" />
@@ -162,18 +162,18 @@
         <button
           class="tool-btn"
           :disabled="!hasSelection"
-          title="垂直居中"
+          title="垂直居中 (2)"
           @click="handleVerticalCenter"
         >
-          <img src="/src/icon/horizontal_centering.svg" alt="水平居中" />
+          <img src="/src/icon/horizontal_centering.svg" alt="垂直居中" />
         </button>
         <button
           class="tool-btn"
           :disabled="!hasSelection"
-          title="水平居中"
+          title="水平居中 (3)"
           @click="handleHorizontalCenter"
         >
-          <img src="/src/icon/vertical_centering.svg" alt="垂直居中" />
+          <img src="/src/icon/vertical_centering.svg" alt="水平居中" />
         </button>
       </div>
     </div>
@@ -184,7 +184,7 @@
       <button
         class="tool-btn"
         :disabled="!hasSelection"
-        title="水平镜像"
+        title="水平镜像 (4)"
         @click="handleHorizontalMirror"
       >
         <img src="/src/icon/horizontal_mirror.svg" alt="水平镜像" />
@@ -193,7 +193,7 @@
       <button
         class="tool-btn"
         :disabled="!hasSelection"
-        title="垂直镜像"
+        title="垂直镜像 (5)"
         @click="handleVerticalMirror"
       >
         <img src="/src/icon/vertical_mirror.svg" alt="垂直镜像" />
@@ -204,7 +204,7 @@
       <button
         class="tool-btn"
         :disabled="!hasSelection"
-        title="将起始坐标应用至结束坐标"
+        title="将起始坐标应用至结束坐标 (Ctrl + ArrowDown)"
         @click="handleCopyStartToEnd"
       >
         <img src="/src/icon/S_to_E.svg" alt="起始坐标应用至结束坐标" />
@@ -212,7 +212,7 @@
       <button
         class="tool-btn"
         :disabled="!hasSelection"
-        title="将结束坐标应用至起始坐标"
+        title="将结束坐标应用至起始坐标 (Ctrl + ArrowUp)"
         @click="handleCopyEndToStart"
       >
         <img src="/src/icon/E_to_S.svg" alt="结束坐标应用至起始坐标" />
@@ -222,7 +222,7 @@
     <button
       class="tool-btn"
       :disabled="!hasSelection"
-      title="互换结束与起始坐标"
+      title="互换结束与起始坐标 (6)"
       @click="handleSwapStartAndEnd"
     >
       <img src="/src/icon/S_E_exchange.svg" alt="互换结束与起始坐标" />
@@ -231,7 +231,7 @@
     <button
       class="tool-btn"
       :disabled="!hasSelection"
-      title="根据坐标计算z轴旋转角度"
+      title="根据坐标计算z轴旋转角度 (7)"
       @click="handleCalculateZRotation"
     >
       <img src="/src/icon/zRotate_calculate.svg" alt="计算Z轴旋转" />
@@ -243,7 +243,7 @@
       <button
         class="tool-btn"
         :disabled="!hasSelection"
-        title="行分隔"
+        title="行分隔 (8)"
         @click="handleLineSplit"
       >
         <img src="/src/icon/Split_by_line.svg" alt="行分隔" />
@@ -252,7 +252,7 @@
       <button
         class="tool-btn"
         :disabled="!hasSelection"
-        title="字分隔"
+        title="字分隔 (9)"
         @click="handleLetterSplit"
       >
         <img src="/src/icon/Split_by_letter.svg" alt="字分隔" />
@@ -262,7 +262,7 @@
     <button
       class="tool-btn"
       :disabled="!hasSelection"
-      title="时间分割"
+      title="时间分割 (\)"
       @click="handleTimeSplit"
     >
       <img src="/src/icon/cut.svg" alt="时间分割" />
@@ -273,7 +273,7 @@
     <button
       class="advanced-tool-btn"
       :class="{ active: showAdvancedTools }"
-      title="高级工具"
+      title="高级工具 (/)"
       @click="toggleAdvancedTools"
     >
       <img src="/src/icon/advanced_tools.svg" alt="高级工具" />

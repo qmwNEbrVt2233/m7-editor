@@ -15,7 +15,7 @@
                 <tr><td>Space</td><td>播放 / 暂停</td></tr>
                 <tr><td>`</td><td>开启 / 关闭 工程管理</td></tr>
                 <tr><td>Ctrl + S</td><td>{{ store.projectMode === 'folder' ? '保存文件夹工程' : '导出工程 JSON' }}</td></tr>
-                <tr v-if="store.projectMode === 'folder'"><td>Ctrl + Shift + S</td><td>保存并备份文件夹工程</td></tr>
+                <tr v-if="store.projectMode === 'folder'"><td>Ctrl + Alt + S</td><td>保存并备份文件夹工程</td></tr>
                 <tr v-if="store.projectMode === 'single'"><td>Ctrl + D</td><td>保存工程到本地缓存</td></tr>
                 <tr v-if="store.projectMode === 'single'"><td>Ctrl + Delete</td><td>清空本地缓存工程</td></tr>
                 <tr><td>Ctrl + Shift + Delete</td><td>清空所有缓存</td></tr>
@@ -49,8 +49,8 @@
                 <tr><td>1</td><td>拾取定位工具</td></tr>
                 <tr><td>2</td><td>垂直居中工具</td></tr>
                 <tr><td>3</td><td>水平居中工具</td></tr>
-                <tr><td>4</td><td>垂直镜像工具</td></tr>
-                <tr><td>5</td><td>水平镜像工具</td></tr>
+                <tr><td>4</td><td>水平镜像工具</td></tr>
+                <tr><td>5</td><td>垂直镜像工具</td></tr>
                 <tr><td>6</td><td>互换结束与起始坐标工具</td></tr>
                 <tr><td>7</td><td>z轴旋转计算工具</td></tr>
                 <tr><td>8</td><td>行分隔工具</td></tr>

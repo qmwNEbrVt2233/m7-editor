@@ -134,7 +134,7 @@ export class HistoryManager {
     this.lastSnapshotTime = now
 
     // 日志
-    this.logOperation(`记录新快照: ${description || '操作'} [ID: ${snapshot.id}]（存储槽位: ${this.state.currentIndex + 1}/${this.state.snapshots.length}）`)
+    this.logOperation(`记录新快照: ${description || '操作'} [ID: ${snapshot.id}]（存储槽位: ${this.state.currentIndex + 1}/${this.state.snapshots.length}/${this.maxSnapshots}）`)
   }
 
   /**
@@ -160,7 +160,7 @@ export class HistoryManager {
     const prevSnapshot = this.state.snapshots[this.state.currentIndex]
     this.state.navigationHistory.push(prevSnapshot.id)
 
-    this.logOperation(`撤销操作（跃迁至快照 ID: ${prevSnapshot.id}）`)
+    this.logOperation(`撤销操作（跃迁至快照 ID: ${prevSnapshot.id} 存储槽位: ${this.state.currentIndex + 1}/${this.state.snapshots.length}/${this.maxSnapshots}）`)
 
     return {
       danmakus: this.exportCurrentData(),

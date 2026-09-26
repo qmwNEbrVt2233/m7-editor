@@ -63,7 +63,7 @@ const timelineHeight = ref(Math.max(100, window.innerHeight - store.screenHeight
 const screenScaleBeforeRecording = ref(store.screenScale)
 const currentTimeBeforeRecording = ref(store.currentTime)
 const timeLineOffsetBeforeRecording =ref(store.timelineOffset) 
-const H_LONG_PRESS_MS = 100
+const H_LONG_PRESS_MS = 150
 const DANMAKU_VISIBILITY_EVENT = 'danmaku-selection-visibility'
 
 type DanmakuVisibilityMode = 'hide' | 'only'
@@ -197,15 +197,23 @@ async function handleKeyDown(e: KeyboardEvent) {
   const isAlt = e.altKey
   const isShift = e.shiftKey
 
-  if (isTextEditingTarget(e.target) || notice.isVisible) {
+  if (isTextEditingTarget(e.target)) {
     return
   }
 
   if (e.code === 'KeyH' && !isCtrl && !isAlt) {
     e.preventDefault()
     if (!e.repeat) {
-      beginHPress(e)
+      if (canApplyDanmakuVisibilityShortcut()) {
+        beginHPress(e)
+      } else {
+        showContextualHelp()
+      }
     }
+    return
+  }
+
+  if (notice.isVisible) {
     return
   }
 
