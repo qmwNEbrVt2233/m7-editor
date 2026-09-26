@@ -63,6 +63,16 @@ const timelineHeight = ref(Math.max(100, window.innerHeight - store.screenHeight
 const screenScaleBeforeRecording = ref(store.screenScale)
 const currentTimeBeforeRecording = ref(store.currentTime)
 const timeLineOffsetBeforeRecording =ref(store.timelineOffset) 
+const H_LONG_PRESS_MS = 100
+const DANMAKU_VISIBILITY_EVENT = 'danmaku-selection-visibility'
+
+type DanmakuVisibilityMode = 'hide' | 'only'
+
+let activeHMode: DanmakuVisibilityMode | null = null
+let hPressTimer: ReturnType<typeof setTimeout> | null = null
+let hPressWasLong = false
+let hPressCanShowHelp = false
+let hPressCanApplyVisibility = false
 
 function isTextEditingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -77,6 +87,109 @@ function isTextEditingTarget(target: EventTarget | null): boolean {
   )
 }
 
+function canApplyDanmakuVisibilityShortcut() {
+  return (
+    editorReady.value &&
+    store.selectedIds.length > 0 &&
+    !store.screenRecordingMode &&
+    !store.showCreationTools &&
+    !store.showProjectManager &&
+    !help.isVisible &&
+    !notice.isVisible &&
+    !isTextEditingTarget(document.activeElement)
+  )
+}
+
+function dispatchDanmakuVisibility(mode: DanmakuVisibilityMode | null) {
+  window.dispatchEvent(new CustomEvent(DANMAKU_VISIBILITY_EVENT, { detail: mode }))
+}
+
+function beginHPress(event: KeyboardEvent) {
+  if (activeHMode !== null) {
+    return
+  }
+
+  activeHMode = event.shiftKey ? 'only' : 'hide'
+  hPressWasLong = false
+  hPressCanShowHelp = !event.shiftKey && !store.screenRecordingMode
+  hPressCanApplyVisibility = canApplyDanmakuVisibilityShortcut()
+  hPressTimer = setTimeout(() => {
+    hPressWasLong = true
+    if (hPressCanApplyVisibility && canApplyDanmakuVisibilityShortcut()) {
+      dispatchDanmakuVisibility(activeHMode)
+    }
+  }, H_LONG_PRESS_MS)
+}
+
+function showContextualHelp() {
+  if (store.showCreationTools) {
+    if (!help.isVisible) {
+      help.show('interface-creation')
+    } else {
+      help.hide()
+    }
+    return
+  }
+
+  if (store.selectedIds.length !== 0) {
+    if (!help.isVisible) {
+      help.show('interface-editor')
+    } else {
+      help.hide()
+    }
+    return
+  }
+
+  if (store.showProjectManager) {
+    if (!help.isVisible) {
+      help.show('interface-project-manager')
+    } else {
+      help.hide()
+    }
+    return
+  }
+
+  help.toggle()
+}
+
+function handleKeyUp(event: KeyboardEvent) {
+  if (event.code !== 'KeyH' || activeHMode === null) {
+    return
+  }
+
+  if (hPressTimer) {
+    clearTimeout(hPressTimer)
+    hPressTimer = null
+  }
+
+  const wasLong = hPressWasLong
+  const canShowHelp = hPressCanShowHelp
+  activeHMode = null
+  hPressWasLong = false
+  hPressCanShowHelp = false
+  hPressCanApplyVisibility = false
+
+  if (wasLong) {
+    dispatchDanmakuVisibility(null)
+  } else if (canShowHelp) {
+    showContextualHelp()
+  }
+}
+
+function handleWindowBlur() {
+  if (hPressTimer) {
+    clearTimeout(hPressTimer)
+    hPressTimer = null
+  }
+  if (hPressWasLong) {
+    dispatchDanmakuVisibility(null)
+  }
+  activeHMode = null
+  hPressWasLong = false
+  hPressCanShowHelp = false
+  hPressCanApplyVisibility = false
+}
+
 // 全局快捷键
 async function handleKeyDown(e: KeyboardEvent) {
   
@@ -85,6 +198,14 @@ async function handleKeyDown(e: KeyboardEvent) {
   const isShift = e.shiftKey
 
   if (isTextEditingTarget(e.target) || notice.isVisible) {
+    return
+  }
+
+  if (e.code === 'KeyH' && !isCtrl && !isAlt) {
+    e.preventDefault()
+    if (!e.repeat) {
+      beginHPress(e)
+    }
     return
   }
 
@@ -103,39 +224,6 @@ async function handleKeyDown(e: KeyboardEvent) {
     if (confirmed) {
       window.location.reload()
     }
-    return
-  }
-
-  if (e.key === 'h' && !isCtrl && !isAlt && !isShift && !store.screenRecordingMode) {
-    e.preventDefault()
-    if (store.showCreationTools) {
-      if (!help.isVisible) {
-        help.show('interface-creation')
-      } else {
-        help.hide()
-      }
-      return
-    } 
-    
-    if (store.selectedIds.length !== 0) {
-      if (!help.isVisible) {
-        help.show('interface-editor')
-      } else {
-        help.hide()
-      }
-      return
-    }
-
-    if (store.showProjectManager) {
-      if (!help.isVisible) {
-        help.show('interface-project-manager')
-      } else {
-        help.hide()
-      }
-      return
-    }
-    
-    help.toggle()
     return
   }
 
@@ -263,11 +351,37 @@ async function handleKeyDown(e: KeyboardEvent) {
 
 onMounted(() => {
   window.addEventListener('keydown', handleKeyDown)
+  window.addEventListener('keyup', handleKeyUp)
+  window.addEventListener('blur', handleWindowBlur)
 })
 
 onUnmounted(() => {
+  if (hPressTimer) {
+    clearTimeout(hPressTimer)
+  }
   window.removeEventListener('keydown', handleKeyDown)
+  window.removeEventListener('keyup', handleKeyUp)
+  window.removeEventListener('blur', handleWindowBlur)
 })
+
+watch(
+  () =>
+    editorReady.value &&
+    store.selectedIds.length > 0 &&
+    !store.screenRecordingMode &&
+    !store.showCreationTools &&
+    !store.showProjectManager &&
+    !help.isVisible &&
+    !notice.isVisible,
+  (available) => {
+    if (!available) {
+      hPressCanApplyVisibility = false
+      if (hPressWasLong) {
+        dispatchDanmakuVisibility(null)
+      }
+    }
+  }
+)
 
 // 时间轴高度拖动
 function onResizeStart(e: MouseEvent) {

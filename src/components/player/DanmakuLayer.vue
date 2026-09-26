@@ -50,6 +50,9 @@ const BUFFER_WINDOW = 10000 // 缓存窗口：10秒
 const PRELOAD_THRESHOLD = 1000 // 预加载阈值：1秒
 const JITTER_TOLERANCE = 500 // 抖动容差：500ms（解决视频时间微小倒退导致的频繁重算）
 const TOOLBAR_MEASURE_EVENT = 'toolbar-measure-danmakus'
+const DANMAKU_VISIBILITY_EVENT = 'danmaku-selection-visibility'
+
+type DanmakuVisibilityMode = 'hide' | 'only'
 
 type ToolbarMeasureRequest = {
   requestId: string
@@ -73,6 +76,7 @@ type ToolbarMeasureEventDetail = {
 const activeBuffer = shallowRef<DanmakuItem[]>([])
 const standardDanmakus = shallowRef<DanmakuItem[]>([])
 const ghostRequests = ref<ToolbarMeasureRequest[]>([])
+const selectionVisibilityMode = ref<DanmakuVisibilityMode | null>(null)
 const playbackLayer = ref<HTMLDivElement | null>(null)
 const ghostElements = new Map<string, HTMLDivElement>()
 
@@ -116,9 +120,19 @@ function isVisibleAtTime(d: DanmakuItem, time: number) {
   return time >= d.startTime && time <= getDanmakuEndTime(d)
 }
 
+function shouldRenderDanmaku(d: DanmakuItem) {
+  if (selectionVisibilityMode.value === 'hide') {
+    return !store.selectedIds.includes(d.id)
+  }
+  if (selectionVisibilityMode.value === 'only') {
+    return store.selectedIds.includes(d.id)
+  }
+  return true
+}
+
 function syncStandardRenderList(time: number) {
   standardDanmakus.value = activeBuffer.value.filter((d: DanmakuItem) => {
-    return isVisibleAtTime(d, time)
+    return isVisibleAtTime(d, time) && shouldRenderDanmaku(d)
   })
 }
 
@@ -162,6 +176,25 @@ watch(() => store.currentTime, (newTime) => {
     syncStandardRenderList(newTime)
   }
 }, { immediate: true })
+
+watch(selectionVisibilityMode, () => {
+  if (isAggressivePlaybackActive.value) {
+    requestPlaybackResync()
+    return
+  }
+  syncStandardRenderList(store.currentTime)
+})
+
+watch(() => store.selectedIds.join('\0'), () => {
+  if (!selectionVisibilityMode.value) {
+    return
+  }
+  if (isAggressivePlaybackActive.value) {
+    requestPlaybackResync()
+    return
+  }
+  syncStandardRenderList(store.currentTime)
+})
 
 // 对编辑器修改引发的全量重算进行防抖（Debounce）
 let editTimeout: ReturnType<typeof setTimeout> | null = null
@@ -395,7 +428,7 @@ function rebuildPlaybackNodes(time: number) {
 
   for (let index = 0; index < activeBuffer.value.length; index += 1) {
     const danmaku = activeBuffer.value[index]
-    if (!isVisibleAtTime(danmaku, time)) {
+    if (!isVisibleAtTime(danmaku, time) || !shouldRenderDanmaku(danmaku)) {
       continue
     }
 
@@ -423,7 +456,7 @@ function syncPlaybackVisibility(time: number) {
 
   const nextVisibleDanmakus: DanmakuItem[] = []
   playbackVisibleDanmakus.forEach((d: DanmakuItem) => {
-    if (time <= getDanmakuEndTime(d)) {
+    if (time <= getDanmakuEndTime(d) && shouldRenderDanmaku(d)) {
       nextVisibleDanmakus.push(d)
       return
     }
@@ -437,7 +470,7 @@ function syncPlaybackVisibility(time: number) {
     activeBuffer.value[playbackNextStartIndex].startTime <= time
   ) {
     const danmaku = activeBuffer.value[playbackNextStartIndex]
-    if (time <= getDanmakuEndTime(danmaku)) {
+    if (time <= getDanmakuEndTime(danmaku) && shouldRenderDanmaku(danmaku)) {
       mountPlaybackDanmaku(danmaku, playbackNextStartIndex, time)
       playbackVisibleDanmakus.push(danmaku)
     }
@@ -575,8 +608,14 @@ function handleUpdateBufferRequest(event: Event) {
   updateBuffer(customEvent.detail.time)
 }
 
+function handleDanmakuVisibilityRequest(event: Event) {
+  const customEvent = event as CustomEvent<DanmakuVisibilityMode | null>
+  selectionVisibilityMode.value = customEvent.detail
+}
+
 onMounted(() => {
   window.addEventListener(TOOLBAR_MEASURE_EVENT, handleToolbarMeasure as EventListener)
+  window.addEventListener(DANMAKU_VISIBILITY_EVENT, handleDanmakuVisibilityRequest as EventListener)
   window.addEventListener('keydown', handleTabKeyPress)
   window.addEventListener('danmaku-update-buffer', handleUpdateBufferRequest as EventListener)
 })
@@ -592,6 +631,7 @@ onBeforeUnmount(() => {
 
   clearPlaybackNodes()
   window.removeEventListener(TOOLBAR_MEASURE_EVENT, handleToolbarMeasure as EventListener)
+  window.removeEventListener(DANMAKU_VISIBILITY_EVENT, handleDanmakuVisibilityRequest as EventListener)
   window.removeEventListener('keydown', handleTabKeyPress)
   window.removeEventListener('danmaku-update-buffer', handleUpdateBufferRequest as EventListener)
 })
