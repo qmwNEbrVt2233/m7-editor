@@ -37,6 +37,48 @@ struct FileSystemRuntime {
 struct AppConfig {
     version: String,
     projects: Vec<String>,
+    #[serde(default)]
+    global_settings: GlobalSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GlobalSettings {
+    playhead_step_ms: f64,
+    danmaku_duration: DanmakuDurationSettings,
+    aggressive_optimization: bool,
+    #[serde(default)]
+    selected_danmaku_template_name: Option<String>,
+    #[serde(default)]
+    replace_default_danmaku_with_template: bool,
+}
+
+impl Default for GlobalSettings {
+    fn default() -> Self {
+        Self {
+            playhead_step_ms: 16.666667,
+            danmaku_duration: DanmakuDurationSettings::default(),
+            aggressive_optimization: false,
+            selected_danmaku_template_name: None,
+            replace_default_danmaku_with_template: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DanmakuDurationSettings {
+    mode: String,
+    value: f64,
+}
+
+impl Default for DanmakuDurationSettings {
+    fn default() -> Self {
+        Self {
+            mode: "ms".to_string(),
+            value: 1000.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +110,7 @@ struct FileSystemStateDto {
     logs_dir: String,
     default_projects_dir: String,
     projects: Vec<ProjectSummary>,
+    global_settings: GlobalSettings,
 }
 
 #[derive(Serialize)]
@@ -134,6 +177,15 @@ struct FolderProjectPayload {
     warnings: Vec<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DanmakuTemplateRecord {
+    name: String,
+    created_at: i64,
+    last_change_at: i64,
+    danmakus: Vec<Value>,
+}
+
 #[cfg(desktop)]
 const MAIN_WINDOW_LABEL: &str = "main";
 
@@ -191,9 +243,11 @@ fn documents_data_dirs(app: &AppHandle) -> Result<(PathBuf, PathBuf, PathBuf), S
     let data_dir = documents.join(APP_DIR_NAME);
     let logs_dir = data_dir.join("logs");
     let projects_dir = data_dir.join("projects");
+    let templates_dir = data_dir.join("templates");
 
     fs::create_dir_all(&logs_dir).map_err(|error| format!("无法创建日志目录: {error}"))?;
     fs::create_dir_all(&projects_dir).map_err(|error| format!("无法创建默认工程目录: {error}"))?;
+    fs::create_dir_all(&templates_dir).map_err(|error| format!("无法创建模板目录: {error}"))?;
 
     Ok((data_dir, logs_dir, projects_dir))
 }
@@ -202,6 +256,7 @@ fn default_app_config() -> AppConfig {
     AppConfig {
         version: APP_VERSION.to_string(),
         projects: Vec::new(),
+        global_settings: GlobalSettings::default(),
     }
 }
 
@@ -573,7 +628,130 @@ fn get_file_system_state(app: AppHandle) -> Result<FileSystemStateDto, String> {
         logs_dir: logs_dir.to_string_lossy().into_owned(),
         default_projects_dir: default_projects_dir.to_string_lossy().into_owned(),
         projects,
+        global_settings: config.global_settings,
     })
+}
+
+#[tauri::command]
+fn update_global_settings(app: AppHandle, settings: GlobalSettings) -> Result<(), String> {
+    let mut config = load_app_config(&app)?;
+    config.global_settings = settings;
+    save_app_config(&app, &config)
+}
+
+fn template_file_path(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
+    let normalized_name = name.trim();
+    if normalized_name.is_empty() {
+        return Err("模板名称不能为空".to_string());
+    }
+    let (data_dir, _, _) = documents_data_dirs(app)?;
+    Ok(data_dir
+        .join("templates")
+        .join(format!("{}.json", sanitize_file_name(normalized_name))))
+}
+
+#[tauri::command]
+fn list_danmaku_templates(app: AppHandle) -> Result<Vec<DanmakuTemplateRecord>, String> {
+    let (data_dir, _, _) = documents_data_dirs(&app)?;
+    let templates_dir = data_dir.join("templates");
+    let mut entries = fs::read_dir(&templates_dir)
+        .map_err(|error| format!("无法读取模板目录: {error}"))?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.file_name());
+
+    entries
+        .into_iter()
+        .map(|entry| {
+            let name = entry
+                .path()
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| "模板文件名无效".to_string())?
+                .to_string();
+            let value = read_json::<Value>(&entry.path())?;
+            let danmakus = value
+                .get("danmakus")
+                .and_then(Value::as_array)
+                .cloned()
+                .ok_or_else(|| format!("模板 {name} 缺少有效的 danmakus 数组"))?;
+            Ok(DanmakuTemplateRecord {
+                name,
+                created_at: value.get("createdAt").and_then(Value::as_i64).unwrap_or(0),
+                last_change_at: value
+                    .get("lastChangeAt")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+                danmakus,
+            })
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn create_danmaku_template(
+    app: AppHandle,
+    name: String,
+    danmakus: Vec<Value>,
+) -> Result<(), String> {
+    let path = template_file_path(&app, &name)?;
+    if path.exists() {
+        return Err("同名模板已存在".to_string());
+    }
+    let now = now_millis();
+    write_json(
+        &path,
+        &json!({
+            "version": APP_VERSION,
+            "createdAt": now,
+            "lastChangeAt": now,
+            "danmakus": danmakus
+        }),
+    )
+}
+
+#[tauri::command]
+fn update_danmaku_template(
+    app: AppHandle,
+    name: String,
+    danmakus: Vec<Value>,
+) -> Result<(), String> {
+    let path = template_file_path(&app, &name)?;
+    let mut value = read_json::<Value>(&path)?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "模板文件内容必须是 JSON 对象".to_string())?;
+    object.insert("danmakus".to_string(), Value::Array(danmakus));
+    object.insert("lastChangeAt".to_string(), json!(now_millis()));
+    write_json(&path, &value)
+}
+
+#[tauri::command]
+fn rename_danmaku_template(app: AppHandle, name: String, new_name: String) -> Result<(), String> {
+    let old_path = template_file_path(&app, &name)?;
+    let new_path = template_file_path(&app, &new_name)?;
+    if !old_path.is_file() {
+        return Err("模板不存在".to_string());
+    }
+    if old_path != new_path && new_path.exists() {
+        return Err("同名模板已存在".to_string());
+    }
+    fs::rename(old_path, new_path).map_err(|error| format!("无法重命名模板: {error}"))
+}
+
+#[tauri::command]
+fn delete_danmaku_template(app: AppHandle, name: String) -> Result<(), String> {
+    let path = template_file_path(&app, &name)?;
+    if !path.is_file() {
+        return Err("模板不存在".to_string());
+    }
+    move_path_to_recycle_bin(&path)
 }
 
 #[tauri::command]
@@ -1405,7 +1583,12 @@ fn move_path_to_recycle_bin(path: &Path) -> Result<(), String> {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 fn move_path_to_recycle_bin(path: &Path) -> Result<(), String> {
-    fs::remove_dir_all(path).map_err(|error| format!("删除失败: {error}"))
+    let result = if path.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    };
+    result.map_err(|error| format!("删除失败: {error}"))
 }
 
 #[cfg(windows)]
@@ -1459,6 +1642,12 @@ pub fn run() {
             register_media_file,
             open_media_file,
             get_file_system_state,
+            update_global_settings,
+            list_danmaku_templates,
+            create_danmaku_template,
+            update_danmaku_template,
+            rename_danmaku_template,
+            delete_danmaku_template,
             check_folder_project_path,
             create_folder_project,
             load_folder_project,

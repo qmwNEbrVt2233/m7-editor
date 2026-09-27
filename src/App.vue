@@ -27,6 +27,7 @@
       :visible="editorReady && store.showCreationTools && !store.screenRecordingMode"
       @update:visible="store.showCreationTools = $event"
     />
+    <DanmakuTemplateManager v-if="editorReady && store.showTemplateManager && !store.screenRecordingMode" />
     <ProjectManager
       v-if="nativeRuntime"
       :visible="store.showProjectManager"
@@ -46,6 +47,7 @@ import EditorPanel from './components/editor/editorPanel.vue'
 import Timeline from './components/timeline/timeline.vue'
 import ToolBar from './components/editor/ToolBar.vue'
 import CreationTools from './components/editor/creationTools.vue'
+import DanmakuTemplateManager from './components/editor/TemplateManager.vue'
 import About from './components/preference/about.vue'
 import ProjectManager from './components/preference/projectManager.vue'
 import GlobalNotice from './components/notice/GlobalNotice.vue'
@@ -192,10 +194,17 @@ function handleWindowBlur() {
 
 // 全局快捷键
 async function handleKeyDown(e: KeyboardEvent) {
-  
   const isCtrl = e.ctrlKey || e.metaKey
   const isAlt = e.altKey
   const isShift = e.shiftKey
+
+  if (store.showTemplateManager) {
+    if (e.key === 'Escape' || (e.key === "'" && !isTextEditingTarget(e.target))) {
+      e.preventDefault()
+      store.showTemplateManager = false
+    }
+    return
+  }
 
   if (isTextEditingTarget(e.target)) {
     return
@@ -236,6 +245,13 @@ async function handleKeyDown(e: KeyboardEvent) {
   }
 
   if (!editorReady.value) {
+    return
+  }
+
+  if (e.key === "'" && !isCtrl && !isAlt && !isShift) {
+    e.preventDefault()
+    store.showTemplateManager = !store.showTemplateManager
+    help.hide()
     return
   }
 
@@ -358,6 +374,7 @@ async function handleKeyDown(e: KeyboardEvent) {
 }
 
 onMounted(() => {
+  void store.loadDanmakuTemplates().catch((error) => console.error('[模板] 加载失败:', error))
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('keyup', handleKeyUp)
   window.addEventListener('blur', handleWindowBlur)

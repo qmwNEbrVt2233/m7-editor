@@ -8,12 +8,20 @@ import { parseXML, toXML } from '@/core/converter'
 import {
   backupFolderProject,
   convertMediaPathToUrl,
+  type GlobalSettings,
   type FolderProjectConfig,
   type FolderProjectPayload,
   getProjectMediaPath,
   isTauriRuntime,
   registerMediaPath,
-  saveFolderProject
+  saveFolderProject,
+  updateGlobalSettings,
+  listDanmakuTemplates,
+  createDanmakuTemplate,
+  updateDanmakuTemplate,
+  renameDanmakuTemplate,
+  deleteDanmakuTemplate,
+  type DanmakuTemplateRecord
 } from '@/utils/tauriBackend'
 
 type SavePickerAcceptType = {
@@ -115,6 +123,70 @@ function tryParseDanmakusJson(text: string): DanmakuItem[] | null {
   return extractDanmakusFromParsedJson(parsed)
 }
 
+const DANMAKU_TEMPLATES_STORAGE_KEY = 'm7-editor-danmaku-templates'
+const GLOBAL_SETTINGS_STORAGE_KEY = 'm7-editor-global-settings'
+const LEGACY_TEMPLATE_REPLACEMENT_KEY = 'm7-editor-danmaku-template-replacement'
+let globalSettingsSaveQueue = Promise.resolve()
+
+function readLocalDanmakuTemplates(): DanmakuTemplateRecord[] {
+  try {
+    const saved = localStorage.getItem(DANMAKU_TEMPLATES_STORAGE_KEY)
+    const parsed: unknown = saved ? JSON.parse(saved) : []
+    return Array.isArray(parsed) ? parsed as DanmakuTemplateRecord[] : []
+  } catch {
+    return []
+  }
+}
+
+function writeLocalDanmakuTemplates(templates: DanmakuTemplateRecord[]) {
+  localStorage.setItem(DANMAKU_TEMPLATES_STORAGE_KEY, JSON.stringify(templates))
+}
+
+function readLocalGlobalSettings(): Partial<GlobalSettings> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(GLOBAL_SETTINGS_STORAGE_KEY) || '{}')
+    if (!parsed || typeof parsed !== 'object') return {}
+    const settings = parsed as Partial<GlobalSettings>
+    if (typeof settings.replaceDefaultDanmakuWithTemplate !== 'boolean') {
+      settings.replaceDefaultDanmakuWithTemplate = localStorage.getItem(LEGACY_TEMPLATE_REPLACEMENT_KEY) === 'true'
+    }
+    return settings
+  } catch {
+    return {
+      replaceDefaultDanmakuWithTemplate: localStorage.getItem(LEGACY_TEMPLATE_REPLACEMENT_KEY) === 'true'
+    }
+  }
+}
+
+function normalizeDanmakuTemplateName(name: string): string {
+  return name
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+    .trim()
+    .replace(/^\.+|\.+$/g, '')
+}
+
+function isValidTemplateDanmaku(value: unknown): value is DanmakuItem {
+  if (!isDanmakuLike(value)) return false
+  const danmaku = value as Record<string, any>
+  const isFiniteNumber = (candidate: unknown) => typeof candidate === 'number' && Number.isFinite(candidate)
+  const content = danmaku.content
+  const transform = danmaku.transform
+  const opacity = danmaku.opacity
+  const animation = danmaku.animation
+
+  return typeof danmaku.id === 'string' && isFiniteNumber(danmaku.startTime) && isFiniteNumber(danmaku.layer) &&
+    typeof content.text === 'string' && typeof content.font === 'string' &&
+    isFiniteNumber(content.size) && typeof content.color === 'string' && typeof content.stroke === 'boolean' &&
+    isFiniteNumber(transform.start?.x) && isFiniteNumber(transform.start?.y) &&
+    isFiniteNumber(transform.end?.x) && isFiniteNumber(transform.end?.y) &&
+    isFiniteNumber(transform.zRotate) && isFiniteNumber(transform.yRotate) &&
+    isFiniteNumber(opacity.from) && isFiniteNumber(opacity.to) &&
+    (animation.duration === undefined || isFiniteNumber(animation.duration)) &&
+    isFiniteNumber(animation.moveDuration) && isFiniteNumber(animation.delay) &&
+    (animation.easing === 'speedup' || animation.easing === 'speeddown')
+}
+
 export function parsePastedDanmakusText(text: string): DanmakuItem[] {
   const trimmed = text.trim().replace(/^\uFEFF/, '')
   if (!trimmed) {
@@ -153,6 +225,7 @@ export function parsePastedDanmakusText(text: string): DanmakuItem[] {
 export const useEditorStore = defineStore('editor', {
   state: () => {
     const saved = isTauriRuntime() ? null : loadProject()
+    const savedGlobalSettings = isTauriRuntime() ? null : readLocalGlobalSettings()
     const savedMediaPath = getProjectMediaPath(saved?.media)
     historyManager.recordSnapshot(saved?.danmakus || [], `加载工程(${(saved?.danmakus || []).length}条弹幕)`)
 
@@ -232,6 +305,7 @@ export const useEditorStore = defineStore('editor', {
       screenRecordingMode: false,
       // 快捷键配置：播放头移动的步长（毫秒）
       playheadStepMs: 16.666667,  // 默认60fps对应的毫秒值
+      globalSettingsLoaded: false,
       // 弹幕生存时间配置
       danmakuDuration: {
         mode: 'ms' as 'ms' | 'multiplier',
@@ -247,6 +321,11 @@ export const useEditorStore = defineStore('editor', {
       exportXmlDurationOffsetEnabled: true,
       allowNegativeValues: saved?.preprocess?.allowNegativeValues || false,
       showCreationTools: false,
+      showTemplateManager: false,
+      danmakuTemplates: [] as DanmakuTemplateRecord[],
+      selectedDanmakuTemplateName: savedGlobalSettings?.selectedDanmakuTemplateName || '',
+      replaceDefaultDanmakuWithTemplate: savedGlobalSettings?.replaceDefaultDanmakuWithTemplate || false,
+      danmakuTemplatesLoaded: false,
       showSpectrogram: saved?.timeline?.showSpectrogram || false,
       spectrogramColorScheme: saved?.timeline?.spectrogramColorScheme || 'default',
       spectrogramCustomColor: saved?.timeline?.spectrogramCustomColor || '#00bbff',
@@ -279,6 +358,44 @@ export const useEditorStore = defineStore('editor', {
   actions: {
     setTime(time: number) {
       this.currentTime = time
+    },
+
+    applyGlobalSettings(settings: GlobalSettings) {
+      this.playheadStepMs = settings.playheadStepMs
+      this.danmakuDuration = { ...settings.danmakuDuration }
+      this.aggressiveOptimization = settings.aggressiveOptimization
+      this.selectedDanmakuTemplateName = settings.selectedDanmakuTemplateName || ''
+      this.replaceDefaultDanmakuWithTemplate = settings.replaceDefaultDanmakuWithTemplate || false
+      this.globalSettingsLoaded = true
+      if (this.danmakuTemplatesLoaded && !this.danmakuTemplates.some(
+        (template) => template.name === this.selectedDanmakuTemplateName
+      )) {
+        this.selectedDanmakuTemplateName = this.danmakuTemplates[0]?.name || ''
+        this.persistGlobalSettings()
+      }
+    },
+
+    persistGlobalSettings() {
+      const settings: GlobalSettings = {
+        playheadStepMs: this.playheadStepMs,
+        danmakuDuration: { ...this.danmakuDuration },
+        aggressiveOptimization: this.aggressiveOptimization,
+        selectedDanmakuTemplateName: this.selectedDanmakuTemplateName || null,
+        replaceDefaultDanmakuWithTemplate: this.replaceDefaultDanmakuWithTemplate
+      }
+
+      if (isTauriRuntime()) {
+        globalSettingsSaveQueue = globalSettingsSaveQueue
+          .then(() => updateGlobalSettings(settings))
+          .catch((error) => useNoticeStore().log('[配置] 保存全局设置失败', 'error', error))
+      } else {
+        localStorage.setItem(GLOBAL_SETTINGS_STORAGE_KEY, JSON.stringify(settings))
+      }
+    },
+
+    setPlayheadStepMs(value: number) {
+      this.playheadStepMs = value
+      this.persistGlobalSettings()
     },
      
     startPlayback() {
@@ -857,6 +974,7 @@ export const useEditorStore = defineStore('editor', {
 
     setAggressiveOptimization(enabled: boolean) {
       this.aggressiveOptimization = enabled
+      this.persistGlobalSettings()
     },
 
     setShowSpectrogram(enabled: boolean) {
@@ -946,15 +1064,7 @@ export const useEditorStore = defineStore('editor', {
      * 创建单条弹幕
      */
     createSingleDanmaku(): void {
-      let duration = 1000
-
-      if (this.danmakuDuration.mode === 'ms') {
-        duration = Math.max(100, this.danmakuDuration.value)
-      } else if (this.danmakuDuration.mode === 'multiplier') {
-        // 倍数模式：基于playheadStepMs计算
-        const playheadStepMs = this.playheadStepMs || 16.666667
-        duration = Math.round(Math.max(100, playheadStepMs * this.danmakuDuration.value))
-      }
+      const duration = this.getDefaultDanmakuDuration()
 
       const newDanmaku: DanmakuItem = {
         id: this.generateNewId(),
@@ -995,6 +1105,202 @@ export const useEditorStore = defineStore('editor', {
       historyManager.recordSnapshot(this.danmakus, '创建弹幕')
 
       console.log('创建单条弹幕:', newDanmaku.id)
+    },
+
+    getDefaultDanmakuDuration(): number {
+      if (this.danmakuDuration.mode === 'multiplier') {
+        const playheadStepMs = this.playheadStepMs || 16.666667
+        return Math.round(Math.max(100, playheadStepMs * this.danmakuDuration.value))
+      }
+      return Math.max(100, this.danmakuDuration.value)
+    },
+
+    async loadDanmakuTemplates(): Promise<void> {
+      if (this.danmakuTemplatesLoaded) return
+
+      try {
+        await this.refreshDanmakuTemplates()
+      } catch (error) {
+        this.danmakuTemplatesLoaded = false
+        throw error
+      }
+    },
+
+    async refreshDanmakuTemplates(): Promise<void> {
+      const previousSelection = this.selectedDanmakuTemplateName
+      this.danmakuTemplates = isTauriRuntime()
+        ? await listDanmakuTemplates()
+        : readLocalDanmakuTemplates()
+      if (!this.danmakuTemplates.some((template) => template.name === previousSelection)) {
+        this.selectedDanmakuTemplateName = this.danmakuTemplates[0]?.name || ''
+      }
+      this.danmakuTemplatesLoaded = true
+      if (this.selectedDanmakuTemplateName !== previousSelection &&
+          (!isTauriRuntime() || this.globalSettingsLoaded)) {
+        this.persistGlobalSettings()
+      }
+    },
+
+    selectDanmakuTemplate(name: string): void {
+      if (!this.danmakuTemplates.some((template) => template.name === name)) return
+      this.selectedDanmakuTemplateName = name
+      this.persistGlobalSettings()
+    },
+
+    isValidDanmakuTemplateContent(danmakuList: unknown): boolean {
+      return Array.isArray(danmakuList) && danmakuList.length > 0 && danmakuList.every(isValidTemplateDanmaku)
+    },
+
+    async createDanmakuTemplateFromSelection(): Promise<void> {
+      const selected = this.getSelectedDanmakus
+      if (selected.length === 0) throw new Error('请先选择要保存为模板的弹幕')
+      await this.loadDanmakuTemplates()
+
+      const baseName = `模板 ${Date.now()}`
+      let name = normalizeDanmakuTemplateName(baseName)
+      let suffix = 2
+      while (this.danmakuTemplates.some((template) => template.name === name)) {
+        name = `${baseName} (${suffix++})`
+      }
+
+      const now = Date.now()
+      const template: DanmakuTemplateRecord = {
+        name,
+        createdAt: now,
+        lastChangeAt: now,
+        danmakus: JSON.parse(JSON.stringify(selected)) as DanmakuItem[]
+      }
+      if (isTauriRuntime()) {
+        await createDanmakuTemplate(name, template.danmakus)
+      } else {
+        writeLocalDanmakuTemplates([...this.danmakuTemplates, template])
+      }
+      this.danmakuTemplates.push(template)
+      this.selectedDanmakuTemplateName = name
+      this.persistGlobalSettings()
+    },
+
+    async updateDanmakuTemplateContent(name: string, danmakus: unknown): Promise<void> {
+      if (!Array.isArray(danmakus) || !danmakus.every(isValidTemplateDanmaku)) {
+        throw new Error('模板内容必须是有效的弹幕对象数组')
+      }
+      const template = this.danmakuTemplates.find((item) => item.name === name)
+      if (!template) throw new Error('模板不存在')
+
+      const cloned = JSON.parse(JSON.stringify(danmakus)) as DanmakuItem[]
+      if (isTauriRuntime()) {
+        await updateDanmakuTemplate(name, cloned)
+      } else {
+        writeLocalDanmakuTemplates(this.danmakuTemplates.map((item) => item.name === name
+          ? { ...item, danmakus: cloned, lastChangeAt: Date.now() }
+          : item))
+      }
+      template.danmakus = cloned
+      template.lastChangeAt = Date.now()
+    },
+
+    async renameDanmakuTemplateByName(name: string, newName: string): Promise<void> {
+      const normalizedName = normalizeDanmakuTemplateName(newName)
+      if (!normalizedName) throw new Error('模板名称不能为空')
+      if (normalizedName === name) return
+      if (this.danmakuTemplates.some((item) => item.name === normalizedName && item.name !== name)) {
+        throw new Error('模板名称已存在')
+      }
+      if (isTauriRuntime()) {
+        await renameDanmakuTemplate(name, normalizedName)
+      }
+      this.danmakuTemplates = this.danmakuTemplates.map((item) => item.name === name
+        ? { ...item, name: normalizedName }
+        : item)
+      if (!isTauriRuntime()) writeLocalDanmakuTemplates(this.danmakuTemplates)
+      if (this.selectedDanmakuTemplateName === name) {
+        this.selectedDanmakuTemplateName = normalizedName
+        this.persistGlobalSettings()
+      }
+    },
+
+    async saveDanmakuTemplate(name: string, newName: string, danmakus: unknown): Promise<void> {
+      if (!this.isValidDanmakuTemplateContent(danmakus)) {
+        throw new Error('模板内容必须是有效的弹幕对象数组')
+      }
+      const normalizedName = normalizeDanmakuTemplateName(newName)
+      if (!normalizedName) throw new Error('模板名称不能为空')
+      if (this.danmakuTemplates.some((item) => item.name === normalizedName && item.name !== name)) {
+        throw new Error('模板名称已存在')
+      }
+      const template = this.danmakuTemplates.find((item) => item.name === name)
+      if (!template) throw new Error('模板不存在')
+      const cloned = JSON.parse(JSON.stringify(danmakus)) as DanmakuItem[]
+
+      if (isTauriRuntime()) {
+        await updateDanmakuTemplate(name, cloned)
+        template.danmakus = cloned
+        template.lastChangeAt = Date.now()
+        if (normalizedName !== name) {
+          await renameDanmakuTemplate(name, normalizedName)
+          template.name = normalizedName
+        }
+      } else {
+        const now = Date.now()
+        const updated = this.danmakuTemplates.map((item) => item.name === name
+          ? { ...item, name: normalizedName, danmakus: cloned, lastChangeAt: now }
+          : item)
+        writeLocalDanmakuTemplates(updated)
+        this.danmakuTemplates = updated
+      }
+      if (this.selectedDanmakuTemplateName === name) {
+        this.selectedDanmakuTemplateName = normalizedName
+        this.persistGlobalSettings()
+      }
+    },
+
+    async deleteDanmakuTemplateByName(name: string): Promise<void> {
+      if (isTauriRuntime()) {
+        await deleteDanmakuTemplate(name)
+      }
+      this.danmakuTemplates = this.danmakuTemplates.filter((item) => item.name !== name)
+      if (!isTauriRuntime()) writeLocalDanmakuTemplates(this.danmakuTemplates)
+      if (this.selectedDanmakuTemplateName === name) {
+        this.selectedDanmakuTemplateName = this.danmakuTemplates[0]?.name || ''
+        this.persistGlobalSettings()
+      }
+    },
+
+    setDanmakuTemplateReplacement(enabled: boolean): void {
+      this.replaceDefaultDanmakuWithTemplate = enabled
+      this.persistGlobalSettings()
+    },
+
+    insertDanmakus(drafts: DanmakuItem[], historyLabel = '插入弹幕'): DanmakuItem[] {
+      const danmakusToAdd = JSON.parse(JSON.stringify(drafts)) as DanmakuItem[]
+      const duration = this.getDefaultDanmakuDuration()
+      danmakusToAdd.forEach((danmaku) => {
+        if (!Number.isFinite(danmaku.animation?.duration)) {
+          danmaku.animation.duration = duration
+        }
+      })
+
+      let currentMaxId = this.danmakus.reduce((max: number, danmaku: DanmakuItem) => {
+        const id = Number.parseInt(danmaku.id, 10)
+        return Number.isFinite(id) ? Math.max(max, id) : max
+      }, 0)
+      danmakusToAdd.forEach((danmaku) => {
+        danmaku.id = String(++currentMaxId)
+      })
+
+      this.adjustStartTimesForDanmakus(danmakusToAdd)
+      this.assignLayersForDanmakusSequentially(danmakusToAdd)
+      this.danmakus.push(...danmakusToAdd)
+      this.selectedIds = danmakusToAdd.map((danmaku) => danmaku.id)
+      historyManager.recordSnapshot(this.danmakus, `${historyLabel}${danmakusToAdd.length}条`)
+      return danmakusToAdd
+    },
+
+    insertSelectedDanmakuTemplate(): boolean {
+      const template = this.danmakuTemplates.find((item) => item.name === this.selectedDanmakuTemplateName)
+      if (!template) return false
+      this.insertDanmakus(template.danmakus, '插入模板')
+      return true
     },
 
     /**
@@ -1200,36 +1506,7 @@ export const useEditorStore = defineStore('editor', {
           return
         }
 
-        // 依次逐个为每条弹幕生成新ID
-        // 关键：逐个生成ID时，需要确保每个ID都是新的
-        let currentMaxId = 0
-        this.danmakus.forEach((d: DanmakuItem) => {
-          const id = parseInt(d.id)
-          if (!isNaN(id) && id > currentMaxId) {
-            currentMaxId = id
-          }
-        })
-        
-        // 为每条弹幕逐个递推分配ID
-        danmakusToAdd.forEach((d) => {
-          currentMaxId++
-          d.id = String(currentMaxId)
-        })
-
-        // 调整startTime：以最小的startTime作为基准，调整到播放头位置
-        this.adjustStartTimesForDanmakus(danmakusToAdd)
-
-        // 按layer排序，然后逐个分配layer，避免弹幕之间的冲突
-        this.assignLayersForDanmakusSequentially(danmakusToAdd)
-
-        // 添加到弹幕列表
-        this.danmakus.push(...danmakusToAdd)
-
-        // 更新选中状态为新粘贴的弹幕
-        this.selectedIds = danmakusToAdd.map((d) => d.id)
-
-        // 记录历史
-        historyManager.recordSnapshot(this.danmakus, `粘贴${danmakusToAdd.length}条弹幕`)
+        this.insertDanmakus(danmakusToAdd, '粘贴')
 
         notice.log('粘贴弹幕:' + danmakusToAdd.length + '条', 'success')
       } catch (error) {
@@ -1319,6 +1596,7 @@ export const useEditorStore = defineStore('editor', {
     setDanmakuDuration(mode: 'ms' | 'multiplier', value: number): void {
       this.danmakuDuration.mode = mode
       this.danmakuDuration.value = value
+      this.persistGlobalSettings()
     },
     
     /**

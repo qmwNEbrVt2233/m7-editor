@@ -14,6 +14,7 @@
                 <tr><td>H</td><td>开启 / 关闭 帮助文档</td></tr>
                 <tr><td>Space</td><td>播放 / 暂停</td></tr>
                 <tr><td>`</td><td>开启 / 关闭 工程管理</td></tr>
+                <tr><td>'</td><td>打开 / 关闭 弹幕模板</td></tr>
                 <tr><td>Ctrl + S</td><td>{{ store.projectMode === 'folder' ? '保存文件夹工程' : '导出工程 JSON' }}</td></tr>
                 <tr v-if="store.projectMode === 'folder'"><td>Ctrl + Alt + S</td><td>保存并备份文件夹工程</td></tr>
                 <tr v-if="store.projectMode === 'single'"><td>Ctrl + D</td><td>保存工程到本地缓存</td></tr>
@@ -410,7 +411,7 @@ function onPlayheadStepChange(e: Event) {
   }
   
   if (stepMs > 0 && stepMs <= 10000) {
-    store.playheadStepMs = stepMs
+    store.setPlayheadStepMs(stepMs)
     playheadStepInput.value = `${stepMs.toFixed(6)}`
   }
 }

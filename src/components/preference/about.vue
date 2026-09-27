@@ -108,7 +108,7 @@ const sectionContents: Record<string, string> = {
 
     <h3>编辑工程时（新）</h3>
     <p>使用 ctrl + s 以保存工程</p>
-    <p>使用 ctrl + shift + s 在保存的同时备份工程</p>
+    <p>使用 ctrl + alt + s 在保存的同时备份工程</p>
 
     <h3>编辑单文件工程时（旧）</h3>
     <p>使用 ctrl + s 手动选择路径保存工程</p>

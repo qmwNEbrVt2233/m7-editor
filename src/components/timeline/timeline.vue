@@ -924,7 +924,7 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   const isAlt = e.altKey
   const isShift = e.shiftKey
   
-  if (store.showCreationTools || store.screenRecordingMode || notice.isVisible || help.isVisible || store.showProjectManager || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+  if (store.showCreationTools || store.showTemplateManager || store.screenRecordingMode || notice.isVisible || help.isVisible || store.showProjectManager || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
     if ((e.code === 'KeyR' && (isCtrl || isShift) && !isAlt) || (e.key === 'F5' && isCtrl && !isAlt && !isShift)) {
       e.preventDefault()
       return
@@ -972,8 +972,12 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   // `;` 创建单条弹幕
   if (e.key === ';' && !isCtrl && !isAlt && !isShift) {
     e.preventDefault()
-    store.createSingleDanmaku()
-    console.log('[快捷键] 创建单条弹幕')
+    if (store.replaceDefaultDanmakuWithTemplate && store.insertSelectedDanmakuTemplate()) {
+      console.log('[快捷键] 插入选中模板')
+    } else {
+      store.createSingleDanmaku()
+      console.log('[快捷键] 创建单条弹幕')
+    }
     return
   }
   

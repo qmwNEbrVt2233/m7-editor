@@ -44,6 +44,18 @@ export type FileSystemState = {
   logsDir: string
   defaultProjectsDir: string
   projects: FolderProjectSummary[]
+  globalSettings: GlobalSettings
+}
+
+export type GlobalSettings = {
+  playheadStepMs: number
+  danmakuDuration: {
+    mode: 'ms' | 'multiplier'
+    value: number
+  }
+  aggressiveOptimization: boolean
+  selectedDanmakuTemplateName?: string | null
+  replaceDefaultDanmakuWithTemplate?: boolean
 }
 
 export type FolderProjectPayload = {
@@ -70,6 +82,13 @@ export type ProjectPathCheck = {
 
 export type BackendMediaFile = {
   path: string
+}
+
+export type DanmakuTemplateRecord = {
+  name: string
+  createdAt: number
+  lastChangeAt: number
+  danmakus: any[]
 }
 
 function getTauriInternals(): TauriInternals | undefined {
@@ -191,6 +210,30 @@ function withRegisteredMedia(payload: FolderProjectPayload): FolderProjectPayloa
 
 export async function getFileSystemState(): Promise<FileSystemState> {
   return invokeTauri<FileSystemState>('get_file_system_state')
+}
+
+export async function updateGlobalSettings(settings: GlobalSettings): Promise<void> {
+  await invokeTauri<void>('update_global_settings', { settings })
+}
+
+export async function listDanmakuTemplates(): Promise<DanmakuTemplateRecord[]> {
+  return invokeTauri<DanmakuTemplateRecord[]>('list_danmaku_templates')
+}
+
+export async function createDanmakuTemplate(name: string, danmakus: any[]): Promise<void> {
+  await invokeTauri<void>('create_danmaku_template', { name, danmakus })
+}
+
+export async function updateDanmakuTemplate(name: string, danmakus: any[]): Promise<void> {
+  await invokeTauri<void>('update_danmaku_template', { name, danmakus })
+}
+
+export async function renameDanmakuTemplate(name: string, newName: string): Promise<void> {
+  await invokeTauri<void>('rename_danmaku_template', { name, newName })
+}
+
+export async function deleteDanmakuTemplate(name: string): Promise<void> {
+  await invokeTauri<void>('delete_danmaku_template', { name })
 }
 
 export async function checkFolderProjectPath(parentDir: string, name: string): Promise<ProjectPathCheck> {

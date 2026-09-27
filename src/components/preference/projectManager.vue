@@ -250,6 +250,9 @@ async function refreshProjects() {
   loading.value = true
   try {
     fileSystemState.value = await getFileSystemState()
+    if (!store.globalSettingsLoaded) {
+      store.applyGlobalSettings(fileSystemState.value.globalSettings)
+    }
     parentDir.value ||= fileSystemState.value.defaultProjectsDir
     await checkProjectPathNow()
   } catch (error) {
