@@ -17,7 +17,7 @@ use tauri::{
     WindowEvent,
 };
 
-const APP_VERSION: &str = "1.8.0";
+const APP_VERSION: &str = "1.9.0";
 const APP_DIR_NAME: &str = "m7-editor";
 const APP_CONFIG_FILE: &str = "config.json";
 const PROJECT_CONFIG_FILE: &str = "project_config.json";

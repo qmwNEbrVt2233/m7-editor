@@ -901,6 +901,7 @@ function parseOpacityInput(input: string): ParseResult | { error: string } {
 }
 
 function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
+  notice.log(`操作字段：${path} 输入：${inputValue}`)
   // 优先处理颜色字段（拦截常规输入和 Alpha 混合）
   if (path === 'content.color') {
     const inputStr = String(inputValue)

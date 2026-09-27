@@ -80,7 +80,7 @@ const sectionContents: Record<string, string> = {
     <subtitle>关于</subtitle>
     <img src="/favicon.svg" alt="m7-editor" style="width: 150px; height: 150px;">
     <p>m7-editor是一个面向 M7 / B 站特效弹幕场景的可视化编辑器，由jerryeee开发</p>
-    <p><strong>您所在的版本：</strong><kbd>1.8.0</kbd></p>
+    <p><strong>您所在的版本：</strong><kbd>1.9.0</kbd></p>
     <h3>获取帮助</h3>
     <p>按下<code>h</code>随时唤出帮助</p>
     <p>鼠标在左上角图标处悬停以获取快捷键帮助</p>
@@ -96,14 +96,15 @@ const sectionContents: Record<string, string> = {
 
   'interface-project-manager': `
     <subtitle>工程管理</subtitle>
-    <p style="color: red;">注意！此面板及其相关功能只在应用中有效，网页版无此项</p>
+    <p style="color: red;">注意！此面板及其相关功能只在桌面应用中有效，网页无此项</p>
     <img src="./oi2neu10df-92emusioa-2ei1jb.jpg" style="width: 100%;">
     <p style="color: #aaa; font-style: italic;">开启应用时你应该看到这个</p>
     <p>应用会在系统文档中创建一个文件夹，结构如下</p>
-    <kbd style="white-space: pre; display: block; width: 110px">└───m7-editor</br>    ├───logs</br>    └───projects</kbd>
+    <kbd style="white-space: pre; display: block; width: 110px">└───m7-editor</br>    ├───logs</br>    ├───projects</br>    └───templates</kbd>
     <ul>
       <li>logs用于实时存放日志，每次打开都会创建一个新文件用于记录</li>
       <li>projects是默认的工程创建目录</li>
+      <li>templates为模板读取目录</li>
     </ul>
 
     <h3>编辑工程时（新）</h3>
@@ -297,6 +298,7 @@ const sectionContents: Record<string, string> = {
     <ul><li>设置使用<code>;</code>创建弹幕时的默认生存时间，可使用<code>*倍率</code>设置相对移动步长的倍率</li></ul>
     <p>maxLayer 最大层数</p>
     <ul><li>设置轨道数量，此选项影响自动分配层级的上限</li></ul>
+    <p>播放头移动步长、新建弹幕生存时间和激进优化状态会自动保存为全局设置；应用中保存在文档目录的应用配置，网页版保存在浏览器本地存储。</p>
   `,
 
   'interface-player': `
@@ -380,10 +382,18 @@ const sectionContents: Record<string, string> = {
     </ul>
 
     <h3>数值表达式支持</h3>
-    <p>所有<strong>数值</strong>输入框均支持直接输入运算表达式且支持批量操作：</p>
+    <p>数值字段支持直接赋值、增量和倍率运算，也支持随机范围，并可批量应用：</p>
     <p><strong>直接赋值：</strong><code>1000</code></p>
     <p><strong>四则运算：</strong><code>+100</code>、<code>-50</code>、<code>*2</code>、<code>/2</code></p>
     <p><strong>随机赋值范围：</strong><code>r+50</code>、<code>r-30</code>、<code>r100</code></p>
+    <p><strong>数学表达式：</strong>需要根据每条弹幕当前字段计算时，在表达式前加 <code>$</code>，例如 <code>$startTime + duration / 2</code>。表达式使用 math.js 求值，支持括号、乘方和函数；可用变量包括所有数值字段。批量编辑时会针对每条弹幕分别计算。</p>
+    <p><strong>可用变量（可识别名称）：</strong></p>
+    <p>layer、startTime、size、startX、startY、endX、endY、zRotate、yRotate、opacityFrom、opacityTo、duration、moveDuration、delay</p>
+    <p><strong>可用函数：</strong></p>
+    <p>本项目当前版本基于math.js的表达式解析引擎，支持几乎所有标准函数</p>
+
+    <h3>多选时的不同值</h3>
+    <p>所选弹幕的文本、字体、描边或缓动方式不同时，编辑面板会显示“不一致”状态；输入或选择新值后，该值会应用到所有选中弹幕。</p>
 
     <h3>颜色字段</h3>
     <ul>
@@ -391,6 +401,31 @@ const sectionContents: Record<string, string> = {
       <li>不带 # 的颜色：<code>FFFFFF</code></li>
       <li>Alpha 混合格式：<code>目标颜色@ALPHA值 -> 例：FFFFFF@0.5</code></li>
     </ul>
+  `,
+
+  'interface-template-manager': `
+    <subtitle>模板管理器</subtitle>
+    <img src="./zjih13u7128nsjuwio2w.jpg" style="width: 100%;">
+    <p>按 <kbd>'</kbd> 打开或关闭模板管理器；打开后按 <kbd>Escape</kbd> 也可关闭</p>
+
+    <h3>管理模板</h3>
+    <ul>
+      <li><strong>从选中弹幕创建</strong>：先在编辑器中选择弹幕，再创建模板</li>
+      <li><strong>编辑模板</strong>：修改名称或 JSON 弹幕数组。内容必须是有效且非空的弹幕数组，保存时会检查格式。</li>
+      <li><strong>插入</strong>：将所选模板中的弹幕加入当前工程，自动分配新 ID、将最早的开始时间对齐到播放头并分配轨道；缺少生存时间时使用设置中的默认值。</li>
+      <li><strong>删除</strong>：删除当前选中的模板。</li>
+      <li><strong>使用选中的模板代替默认创建弹幕</strong>：启用后，使用 <kbd>;</kbd> 新建弹幕会采用选中模板。</li>
+    </ul>
+
+    <h3>保存位置</h3>
+    <ul>
+      <li>桌面应用将模板保存到 <code>文档/m7-editor/templates</code>。</li>
+      <li>网页版将模板保存到浏览器本地存储。</li>
+      <li>选中的模板和“代替默认创建弹幕”选项会作为全局设置保存。</li>
+    </ul>
+
+    <h3>快捷键</h3>
+    <p>模板管理器打开且焦点不在输入框时，可使用 <kbd>C</kbd> 从选中弹幕创建、<kbd>R</kbd> 刷新列表、<kbd>Delete</kbd> 删除、<kbd>Enter</kbd> 插入、<kbd>S</kbd> 保存当前模板。</p>
   `,
 
   'interface-tools-list': `
@@ -404,7 +439,7 @@ const sectionContents: Record<string, string> = {
       <li>支持选择作用范围</li>
     </ul>
 
-    <h3>垂直/水平 居中工具（ 2 / 3 ）</h3>
+    <h3>垂直（2）/水平（3） 居中工具</h3>
     <ul>
       <li>支持 Z 轴旋转</li>
       <li><strong>不支持 Y 轴翻转</strong>，若有 Y 轴翻转会导致偏移，不建议使用</li>
@@ -420,7 +455,7 @@ const sectionContents: Record<string, string> = {
       <li><strong>B（Both）</strong>：作用于起始与结束坐标（默认）</li>
     </ul>
 
-    <h3>垂直/水平 镜像工具（ 4 / 5 ）</h3>
+    <h3>垂直（5）/水平（4） 镜像工具</h3>
     <ul>
       <li>若弹幕坐标经处理后小于 0 则弹窗提醒并钳至 0（勾选"允许负值"则不执行此操作）</li>
     </ul>
@@ -479,9 +514,9 @@ const sectionContents: Record<string, string> = {
     <p><strong>锁定角度功能：</strong>勾选后在修改结束坐标 X/Y 时会根据设置的目标角度计算另一个 X/Y 坐标，结果钳至 0~10000，支持批量操作。</p>
 
     <h3>命令工具</h3>
-    <p><strong>可用于计算与筛选的字段：</strong></p>
+    <p><strong>可用于计算与筛选的字段（名称）：</strong></p>
     <p>layer、startTime、size、startX、startY、endX、endY、zRotate、yRotate、opacityFrom、opacityTo、duration、moveDuration、delay</p>
-    <p><strong>仅筛选时可用的字段：</strong></p>
+    <p><strong>仅筛选时可用的字段（名称）：</strong></p>
     <p>id、text、font、color、stroke、easing</p>
 
     <p><strong>赋值计算命令：</strong></p>
@@ -550,6 +585,7 @@ const sectionContents: Record<string, string> = {
       <li>开启"表达式"且数值字段处于"范围"模式时，会额外显示该字段专属的表达式输入区</li>
       <li>颜色字段支持三种模式：循环、范围（Alpha 混合）、相对（Alpha 递增混合）</li>
       <li>text、font、stroke、easing 支持"赋值"和"循环"两种模式</li>
+      <li>字体赋值可从常用字体中选择，也可在支持且获准访问时读取本地字体</li>
       <li>text 文本字段支持 JS 字符串拼接格式：<code>\`当前：\${round(t * 100)}%\`</code> → 输出例：<code>当前：25%</code></li>
       <li>循环列表统一使用 <code>;</code> 加换行分隔</li>
       <li>点击"写入"后先生成 JSON 到预览框，确认无误后再点击"创建"</li>
@@ -589,7 +625,7 @@ const sectionContents: Record<string, string> = {
     <h3>可用运算与函数</h3>
     <ul>
       <li>基础运算：<code>+ - * / ^ () %</code></li>
-      <li>常用函数：<code>random sin cos tan abs sqrt min max floor ceil round log exp</code></li>
+      <li>常用函数：<code>random sin cos tan abs sqrt min max floor ceil round log exp</code>等等<br>　　　　　本项目当前版本基于math.js的表达式解析引擎，支持几乎所有标准函数</li>
       <li>特殊函数：<code>bezier(x1, y1, x2, y2, t)</code> - 三阶贝塞尔曲线缓动进度</li>
     </ul>
 

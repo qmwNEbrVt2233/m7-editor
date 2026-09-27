@@ -29,6 +29,7 @@ export const docSections: DocSection[] = [
     ]
   },
   { id: 'interface-editor', title: '编辑面板' },
+  { id: 'interface-template-manager', title: '弹幕模板管理器' },
   {
     id: 'interface-tools',
     title: '工具栏',
@@ -79,6 +80,7 @@ const sectionsWithContent = new Set([
   'interface-preprocess',
   'interface-assistant',
   'interface-editor',
+  'interface-template-manager',
   'interface-tools-list',
   'interface-advanced-tools',
   'interface-timeline',

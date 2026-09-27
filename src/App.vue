@@ -96,6 +96,7 @@ function canApplyDanmakuVisibilityShortcut() {
     !store.screenRecordingMode &&
     !store.showCreationTools &&
     !store.showProjectManager &&
+    !store.showTemplateManager &&
     !help.isVisible &&
     !notice.isVisible &&
     !isTextEditingTarget(document.activeElement)
@@ -124,6 +125,24 @@ function beginHPress(event: KeyboardEvent) {
 }
 
 function showContextualHelp() {
+  if (store.showProjectManager) {
+    if (!help.isVisible) {
+      help.show('interface-project-manager')
+    } else {
+      help.hide()
+    }
+    return
+  }
+
+  if (store.showTemplateManager) {
+    if (!help.isVisible) {
+      help.show('interface-template-manager')
+    } else {
+      help.hide()
+    }
+    return
+  }
+
   if (store.showCreationTools) {
     if (!help.isVisible) {
       help.show('interface-creation')
@@ -136,15 +155,6 @@ function showContextualHelp() {
   if (store.selectedIds.length !== 0) {
     if (!help.isVisible) {
       help.show('interface-editor')
-    } else {
-      help.hide()
-    }
-    return
-  }
-
-  if (store.showProjectManager) {
-    if (!help.isVisible) {
-      help.show('interface-project-manager')
     } else {
       help.hide()
     }
@@ -198,27 +208,7 @@ async function handleKeyDown(e: KeyboardEvent) {
   const isAlt = e.altKey
   const isShift = e.shiftKey
 
-  if (store.showTemplateManager) {
-    if (e.key === 'Escape' || (e.key === "'" && !isTextEditingTarget(e.target))) {
-      e.preventDefault()
-      store.showTemplateManager = false
-    }
-    return
-  }
-
   if (isTextEditingTarget(e.target)) {
-    return
-  }
-
-  if (e.code === 'KeyH' && !isCtrl && !isAlt) {
-    e.preventDefault()
-    if (!e.repeat) {
-      if (canApplyDanmakuVisibilityShortcut()) {
-        beginHPress(e)
-      } else {
-        showContextualHelp()
-      }
-    }
     return
   }
 
@@ -244,13 +234,32 @@ async function handleKeyDown(e: KeyboardEvent) {
     return
   }
 
+  if (e.code === 'KeyH' && !isCtrl && !isAlt) {
+    e.preventDefault()
+    if (!e.repeat) {
+      if (canApplyDanmakuVisibilityShortcut()) {
+        beginHPress(e)
+      } else {
+        showContextualHelp()
+      }
+    }
+    return
+  }
+
   if (!editorReady.value) {
     return
   }
 
-  if (e.key === "'" && !isCtrl && !isAlt && !isShift) {
+  if (e.key === "'" && !isCtrl && !isAlt && !isShift && !store.screenRecordingMode && !store.showProjectManager) {
     e.preventDefault()
     store.showTemplateManager = !store.showTemplateManager
+    store.showCreationTools = false
+    help.hide()
+    return
+  }
+
+  if (e.key === 'Escape' && help.isVisible) {
+    e.preventDefault()
     help.hide()
     return
   }
@@ -261,14 +270,21 @@ async function handleKeyDown(e: KeyboardEvent) {
     return
   }
 
-  if ((e.ctrlKey || e.metaKey) && e.code === 'Semicolon') {
+  if (e.key === 'Escape' && store.showTemplateManager) {
+    e.preventDefault()
+    store.showTemplateManager = false
+    return
+  }
+
+  if (e.code === 'Semicolon' && isCtrl && !isAlt && !isShift && !store.screenRecordingMode && !store.showProjectManager) {
     e.preventDefault()
     store.showCreationTools = !store.showCreationTools
+    store.showTemplateManager = false
     help.hide()
     return
   }
 
-  if (store.showCreationTools && e.code === 'Escape') {
+  if (e.code === 'Escape' && store.showCreationTools) {
     e.preventDefault()
     if (help.isVisible) {
       help.hide()

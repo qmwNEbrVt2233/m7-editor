@@ -11,7 +11,9 @@
             <h4>播放与工程</h4>
             <table class="shortcuts-table">
               <tbody>
-                <tr><td>H</td><td>开启 / 关闭 帮助文档</td></tr>
+                <tr><td>H（短按）</td><td>打开 / 关闭当前上下文帮助</td></tr>
+                <tr><td>H（按住）</td><td>临时隐藏选中弹幕；松开恢复</td></tr>
+                <tr><td>Shift + H（按住）</td><td>仅显示选中弹幕；松开恢复</td></tr>
                 <tr><td>Space</td><td>播放 / 暂停</td></tr>
                 <tr><td>`</td><td>开启 / 关闭 工程管理</td></tr>
                 <tr><td>'</td><td>打开 / 关闭 弹幕模板</td></tr>
@@ -33,7 +35,7 @@
             <table class="shortcuts-table">
               <tbody>
                 <tr><td>;</td><td>在当前播放头创建一条新弹幕</td></tr>
-                <tr><td>Delete</td><td>删除当前选中的 弹幕 / 预设</td></tr>
+                <tr><td>Delete</td><td>删除当前选中的弹幕</td></tr>
                 <tr><td>Ctrl + C</td><td>复制选中的弹幕</td></tr>
                 <tr><td>Ctrl + Alt + C</td><td>复制当前帧的弹幕，保留当前状态</td></tr>
                 <tr><td>Ctrl + V</td><td>粘贴弹幕</td></tr>
@@ -91,6 +93,7 @@
             <table class="shortcuts-table">
               <tbody>
                 <tr><td>Ctrl + ;</td><td>唤出高级创建工具</td></tr>
+                <tr><td>Delete</td><td>删除当前选中的预设</td></tr>
                 <tr><td>0</td><td>高级创建工具创建</td></tr>
                 <tr><td>1</td><td>高级创建工具面板写入</td></tr>
                 <tr><td>2</td><td>解析剪贴板中的弹幕并对应到高级创建工具面板起始参数</td></tr>
@@ -101,6 +104,21 @@
                 <tr><td>7</td><td>切换高级创建工具面板写入模式</td></tr>
                 <tr><td>8</td><td>切换是否使用表达式</td></tr>
                 <tr><td>9</td><td>重置高级创建工具面板</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="shortcuts-section">
+            <h4>弹幕模板管理器</h4>
+            <table class="shortcuts-table">
+              <tbody>
+                <tr><td>'</td><td>打开 / 关闭弹幕模板管理器</td></tr>
+                <tr><td>C</td><td>从选中弹幕创建模板</td></tr>
+                <tr><td>R</td><td>刷新模板列表</td></tr>
+                <tr><td>Delete</td><td>删除选中的模板</td></tr>
+                <tr><td>Enter</td><td>插入选中的模板</td></tr>
+                <tr><td>S</td><td>保存当前模板</td></tr>
+                <tr><td>Escape</td><td>关闭模板管理器</td></tr>
               </tbody>
             </table>
           </div>
