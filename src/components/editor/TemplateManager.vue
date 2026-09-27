@@ -97,7 +97,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useEditorStore } from '@/store/editor'
 import { isTauriRuntime } from '@/utils/tauriBackend'
 import { useNoticeStore } from '@/store/notice'
@@ -109,6 +109,9 @@ const statusTone = ref<'success' | 'error'>('success')
 const editedName = ref('')
 const editedDanmakus = ref('[]')
 const refreshing = ref(false)
+
+onMounted(() => window.addEventListener('keydown', handleTemplateShortcuts))
+onBeforeUnmount(() => window.removeEventListener('keydown', handleTemplateShortcuts))
 
 const jsonValidation = computed(() => {
   try {
@@ -148,6 +151,32 @@ function showStatus(message: string, tone: 'success' | 'error') {
 
 function close() {
   store.showTemplateManager = false
+}
+
+function handleTemplateShortcuts(e: KeyboardEvent) {
+  if (!store.showTemplateManager || isTextEditingTarget(e.target)) return
+
+  const isCtrl = e.ctrlKey || e.metaKey
+  const isAlt = e.altKey
+  const isShift = e.shiftKey
+  if (isCtrl || isAlt || isShift || e.repeat) return
+
+  const key = e.key.toLowerCase()
+  const action = key === 'c' ? createFromSelection
+    : key === 'r' ? refreshTemplates
+      : e.key === 'Delete' ? deleteSelected
+        : e.key === 'Enter' ? insertSelected
+          : key === 's' ? saveSelected
+            : null
+
+  if (!action) return
+  e.preventDefault()
+  void action()
+}
+
+function isTextEditingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  return target.isContentEditable || target.matches('input, textarea, select')
 }
 
 function selectTemplate(name: string) {

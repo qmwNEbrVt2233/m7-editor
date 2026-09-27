@@ -287,6 +287,7 @@ import type { DanmakuItem } from '@/core/danmaku'
 import { historyManager } from '@/core/history'
 import { useEditorStore } from '@/store/editor'
 import { useNoticeStore } from '@/store/notice'
+import { useHelpStore } from '@/store/help'
 import { roundToInteger, roundOpacityValue, normalizeAngle, normalizeColor } from '@/utils/validation'
 import {
   NUMERIC_FIELD_DEFINITIONS,
@@ -1960,7 +1961,7 @@ function handleshortcuts(e: KeyboardEvent) {
   const isAlt = e.altKey
   const isShift = e.shiftKey
   
-  if (store.showCreationTools || store.screenRecordingMode || notice.isVisible) {
+  if (store.showCreationTools || store.showTemplateManager || store.showProjectManager || store.screenRecordingMode || notice.isVisible || useHelpStore().isVisible) {
     return
   }
 
@@ -2016,12 +2017,12 @@ function handleshortcuts(e: KeyboardEvent) {
     return
   }
 
-  if (e.key === 'ArrowDown' && isCtrl ) {
+  if (e.key === 'ArrowDown' && isCtrl && !isAlt && !isShift) {
     handleCopyStartToEnd()
     return
   }
 
-  if (e.key === 'ArrowUp' && isCtrl ) {
+  if (e.key === 'ArrowUp' && isCtrl && !isAlt && !isShift) {
     handleCopyEndToStart()
     return
   }
