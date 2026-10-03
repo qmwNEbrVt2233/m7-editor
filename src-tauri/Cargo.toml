@@ -25,9 +25,12 @@ serde_json = "1"
 tauri-plugin-clipboard-manager = "2.3.2"
 
 [target.'cfg(windows)'.dependencies]
+webview2-com = "0.38.2"
 windows = { version = "0.61.3", features = [
   "Win32_Foundation",
   "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Memory",
   "Win32_UI_Shell",
   "Win32_UI_Shell_Common",
   "Win32_UI_WindowsAndMessaging"
@@ -35,5 +38,11 @@ windows = { version = "0.61.3", features = [
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6.4" }
+block2 = "0.6.2"
 objc2-foundation = { version = "0.3.2" }
-objc2-app-kit = { version = "0.3.2" }
+objc2-app-kit = { version = "0.3.2", features = ["NSBitmapImageRep", "NSImage", "NSImageRep"] }
+objc2-web-kit = { version = "0.3.2", features = ["block2", "objc2-app-kit", "WKSnapshotConfiguration", "WKWebView"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+glib = "0.18.5"
+webkit2gtk = "2.0.2"

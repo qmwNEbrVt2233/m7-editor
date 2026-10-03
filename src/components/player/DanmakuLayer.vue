@@ -45,6 +45,10 @@ import type { DanmakuItem } from '@/core/danmaku'
 import { useEditorStore } from '@/store/editor'
 
 const store = useEditorStore()
+const props = defineProps<{
+  renderTimeMs?: number | null
+  renderDanmakus?: DanmakuItem[]
+}>()
 
 const BUFFER_WINDOW = 10000 // 缓存窗口：10秒
 const PRELOAD_THRESHOLD = 1000 // 预加载阈值：1秒
@@ -91,14 +95,20 @@ const playbackActiveNodes = new Map<string, HTMLDivElement>()
 const playbackNodePool: HTMLDivElement[] = []
 
 const danmakuBufferSignature = computed(() => {
-  return store.danmakus
+  return (props.renderDanmakus ?? store.danmakus)
     .map((d: DanmakuItem) => `${d.id}|${d.layer}|${d.startTime}|${d.animation.duration}`)
     .join(';')
 })
 
+const isSnapshotRender = computed(() => props.renderTimeMs !== undefined && props.renderTimeMs !== null)
 const isAggressivePlaybackActive = computed(() => {
-  return store.playing && store.aggressiveOptimization
+  return !isSnapshotRender.value && store.playing && store.aggressiveOptimization
 })
+
+const renderTime = computed(() => props.renderTimeMs ?? store.currentTime)
+const renderSource = computed(() => props.renderDanmakus
+  ? sortDanmakus(props.renderDanmakus)
+  : store.danmakus)
 
 function sortDanmakus(danmakus: DanmakuItem[]) {
   return [...danmakus].sort((a: DanmakuItem, b: DanmakuItem) => {
@@ -121,6 +131,7 @@ function isVisibleAtTime(d: DanmakuItem, time: number) {
 }
 
 function shouldRenderDanmaku(d: DanmakuItem) {
+  if (isSnapshotRender.value) return true
   if (selectionVisibilityMode.value === 'hide') {
     return !store.selectedIds.includes(d.id)
   }
@@ -131,7 +142,8 @@ function shouldRenderDanmaku(d: DanmakuItem) {
 }
 
 function syncStandardRenderList(time: number) {
-  standardDanmakus.value = activeBuffer.value.filter((d: DanmakuItem) => {
+  const source = isSnapshotRender.value ? renderSource.value : activeBuffer.value
+  standardDanmakus.value = source.filter((d: DanmakuItem) => {
     return isVisibleAtTime(d, time) && shouldRenderDanmaku(d)
   })
 }
@@ -146,7 +158,7 @@ function updateBuffer(time: number) {
   currentBufferStart = time - PRELOAD_THRESHOLD
   currentBufferEnd = time + BUFFER_WINDOW
 
-  const nextBuffer = store.danmakus.filter((d: DanmakuItem) => {
+  const nextBuffer = renderSource.value.filter((d: DanmakuItem) => {
     const dEnd = d.startTime + d.animation.duration
     return dEnd >= currentBufferStart && d.startTime <= currentBufferEnd
   })
@@ -163,6 +175,7 @@ function updateBuffer(time: number) {
 
 // 监听时间轴：加入容差判断
 watch(() => store.currentTime, (newTime) => {
+  if (isSnapshotRender.value) return
   // 减去 JITTER_TOLERANCE，忽略播放器的微小时间回退
   if (
     newTime < currentBufferStart - JITTER_TOLERANCE ||
@@ -177,12 +190,21 @@ watch(() => store.currentTime, (newTime) => {
   }
 }, { immediate: true })
 
+watch([() => props.renderTimeMs, () => props.renderDanmakus], () => {
+  if (!isSnapshotRender.value) {
+    updateBuffer(store.currentTime)
+    return
+  }
+
+  syncStandardRenderList(renderTime.value)
+}, { immediate: true })
+
 watch(selectionVisibilityMode, () => {
   if (isAggressivePlaybackActive.value) {
     requestPlaybackResync()
     return
   }
-  syncStandardRenderList(store.currentTime)
+  syncStandardRenderList(renderTime.value)
 })
 
 watch(() => store.selectedIds.join('\0'), () => {
@@ -193,7 +215,7 @@ watch(() => store.selectedIds.join('\0'), () => {
     requestPlaybackResync()
     return
   }
-  syncStandardRenderList(store.currentTime)
+  syncStandardRenderList(renderTime.value)
 })
 
 // 对编辑器修改引发的全量重算进行防抖（Debounce）
@@ -202,19 +224,19 @@ watch(danmakuBufferSignature, () => {
   // 播放期间如果 store 发生莫名其妙的微小变动，防抖可以阻止其引发高频重算
   if (editTimeout) clearTimeout(editTimeout)
   editTimeout = setTimeout(() => {
-    updateBuffer(store.currentTime)
+    updateBuffer(renderTime.value)
   }, 200) // 延迟 200ms 重建
 })
 
 // 监听 XML/JSON 导入完成标志，立即重构缓冲池
 watch(() => store.importTimestamp, (newTimestamp) => {
   if (newTimestamp > 0) {
-    updateBuffer(store.currentTime)
+    updateBuffer(renderTime.value)
   }
 })
 
 watch(() => store.screenRecordingMode, () => {
-    updateBuffer(store.currentTime)
+    updateBuffer(renderTime.value)
 })
 
 // 缓动函数
@@ -325,7 +347,7 @@ function applyBaseStyleToElement(
 }
 
 function getPausedStyle(d: DanmakuItem, index: number) {
-  const { x, y, opacity } = getRenderState(d, store.currentTime)
+  const { x, y, opacity } = getRenderState(d, renderTime.value)
   const transform = buildTransform(d, x, y)
 
   return {
@@ -522,9 +544,9 @@ function stopPlaybackMode() {
 
   clearPlaybackNodes()
   playbackNextStartIndex = 0
-  playbackLastTime = store.currentTime
+  playbackLastTime = renderTime.value
   playbackResyncRequested = false
-  syncStandardRenderList(store.currentTime)
+  syncStandardRenderList(renderTime.value)
 }
 
 watch(isAggressivePlaybackActive, (enabled) => {

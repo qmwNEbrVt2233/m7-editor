@@ -21,7 +21,8 @@
       <div class="timeline-resize-handle" @mousedown.stop="onResizeStart" />
     </div>
 
-    <TopSidebar v-if="editorReady" />
+    <TopSidebar v-if="editorReady" @export-video="showVideoExport = true" />
+    <VideoExportDialog v-model:visible="showVideoExport" />
 
     <CreationTools
       :visible="editorReady && store.showCreationTools && !store.screenRecordingMode"
@@ -42,6 +43,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import Player from './components/player/Player.vue'
+import VideoExportDialog from './components/player/VideoExportDialog.vue'
 import TopSidebar from './components/preference/TopSideBar.vue'
 import EditorPanel from './components/editor/editorPanel.vue'
 import Timeline from './components/timeline/timeline.vue'
@@ -60,6 +62,7 @@ const store = useEditorStore()
 const notice = useNoticeStore()
 const help = useHelpStore()
 const nativeRuntime = isTauriRuntime()
+const showVideoExport = ref(false)
 const editorReady = ref(!nativeRuntime)
 const timelineHeight = ref(Math.max(100, window.innerHeight - store.screenHeight * store.screenScale / 100 - 80))
 const screenScaleBeforeRecording = ref(store.screenScale)

@@ -1,3 +1,5 @@
+import { invoke } from '@tauri-apps/api/core'
+
 type TauriInternals = {
   invoke?: <T>(command: string, payload?: Record<string, unknown>) => Promise<T>
   convertFileSrc?: (filePath: string, protocol?: string) => string
@@ -100,10 +102,84 @@ export function isTauriRuntime(): boolean {
   return Boolean(tauriWindow.isTauri && getTauriInternals()?.invoke)
 }
 
-async function invokeTauri<T>(command: string, payload?: Record<string, unknown>): Promise<T> {
-  const invoke = getTauriInternals()?.invoke
+export async function captureWebviewSnapshot(): Promise<Uint8Array> {
+  const result = await invokeTauri<Uint8Array | ArrayBuffer | number[]>('capture_webview_snapshot')
+  if (result instanceof Uint8Array) return result
+  if (result instanceof ArrayBuffer) return new Uint8Array(result)
+  if (Array.isArray(result)) return new Uint8Array(result)
+  throw new Error('Tauri 截图桥接返回了无效数据')
+}
 
-  if (!invoke) {
+export async function chooseVideoExportPath(): Promise<string | null> {
+  return invokeTauri<string | null>('choose_video_export_path')
+}
+
+export async function createVideoExportRenderWindow(jobId: string, job: unknown): Promise<void> {
+  const record = job as Record<string, unknown>
+  await invokeTauri<void>('create_video_export_render_window', {
+    jobId,
+    job,
+    width: record.width,
+    height: record.height
+  })
+}
+
+export async function getVideoExportRenderJob(jobId: string): Promise<any> {
+  return invokeTauri<any>('get_video_export_render_job', { jobId })
+}
+
+export async function finishVideoExportRenderWindow(jobId: string, keepOutput: boolean): Promise<void> {
+  await invokeTauri<void>('finish_video_export_render_window', { jobId, keepOutput })
+}
+
+export async function startVideoExportFile(path: string): Promise<void> {
+  await invokeTauri<void>('start_video_export_file', { path })
+}
+
+export async function writeVideoExportChunk(path: string, position: number, data: Uint8Array): Promise<void> {
+  await invokeTauri<void>('write_video_export_chunk', { path, position, data })
+}
+
+export async function finishVideoExportFile(path: string, fileSize: number): Promise<void> {
+  await invokeTauri<void>('finish_video_export_file', { path, fileSize })
+}
+
+export async function cancelVideoExportFile(path: string): Promise<void> {
+  await invokeTauri<void>('cancel_video_export_file', { path })
+}
+
+export async function canUseFfmpegVideoEncoder(): Promise<boolean> {
+  return invokeTauri<boolean>('can_use_ffmpeg_video_encoder')
+}
+
+export async function startFfmpegVideoExport(options: {
+  outputPath: string
+  mediaPath: string | null
+  quality: 'high' | 'very-high'
+  fps: number
+  startMs: number
+  endMs: number
+  frameCount: number
+  width: number
+  height: number
+}): Promise<void> {
+  await invokeTauri<void>('start_ffmpeg_video_export', options)
+}
+
+export async function writeFfmpegVideoFrame(outputPath: string, pngFrame: Uint8Array): Promise<void> {
+  await invokeTauri<void>('write_ffmpeg_video_frame', { outputPath, pngFrame })
+}
+
+export async function finishFfmpegVideoExport(outputPath: string): Promise<void> {
+  await invokeTauri<void>('finish_ffmpeg_video_export', { outputPath })
+}
+
+export async function cancelFfmpegVideoExport(outputPath: string): Promise<void> {
+  await invokeTauri<void>('cancel_ffmpeg_video_export', { outputPath })
+}
+
+async function invokeTauri<T>(command: string, payload?: Record<string, unknown>): Promise<T> {
+  if (!isTauriRuntime()) {
     throw new Error('Tauri invoke API 不可用')
   }
 
