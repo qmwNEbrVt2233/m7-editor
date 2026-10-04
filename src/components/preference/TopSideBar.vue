@@ -153,7 +153,7 @@
 
     <div v-if="activeMenu === 'file'" class="menu-panel">
       <button @click="importMedia" class="btn">导入媒体</button>
-      <button class="btn" @click="emit('exportVideo')">导出视频</button>
+      <button v-if="isTauriRuntime()" class="btn" @click="emit('exportVideo')">导出视频</button>
       <button @click="saveProject" class="btn">{{ store.projectMode === 'folder' ? '保存工程' : '导出工程' }}</button>
       <button v-if="store.projectMode === 'folder'" @click="backupProject" class="btn">保存并备份</button>
       <button v-if="store.projectMode === 'single'" @click="importProject" class="btn">导入工程</button>

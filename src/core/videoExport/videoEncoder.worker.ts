@@ -5,18 +5,18 @@ import {
   Input,
   Mp4OutputFormat,
   Output,
-  Quality,
   StreamTarget,
   UrlSource,
   type StreamTargetChunk
 } from 'mediabunny'
+import { createVideoExportQuality, type ExportQuality } from './quality'
 
 type StartMessage = {
   type: 'start'
   mediaUrl: string
   width: number
   height: number
-  quality: 'high' | 'very-high'
+  quality: ExportQuality
   fps: number
   startMs: number
   endMs: number
@@ -76,7 +76,7 @@ async function startExport(message: StartMessage) {
 
   canvasSource = new CanvasSource(canvas, {
     codec: 'avc',
-    quality: new Quality(message.quality),
+    quality: createVideoExportQuality(message.quality, message.width, message.height, message.fps),
     keyFrameInterval: 2
   })
   output.addVideoTrack(canvasSource, { frameRate: message.fps })

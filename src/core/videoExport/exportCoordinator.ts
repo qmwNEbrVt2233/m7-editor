@@ -1,4 +1,4 @@
-import { canEncodeVideo, Quality } from 'mediabunny'
+import { canEncodeVideo } from 'mediabunny'
 import { emitTo, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { DanmakuItem } from '@/core/danmaku'
 import {
@@ -17,6 +17,7 @@ import {
   writeFfmpegVideoFrame,
   writeVideoExportChunk
 } from '@/utils/tauriBackend'
+import { createVideoExportQuality, type ExportQuality } from './quality'
 
 export type ExportBounds = {
   x: number
@@ -36,7 +37,7 @@ export type ExportJob = {
   startMs: number
   endMs: number
   fps: number
-  quality: 'high' | 'very-high'
+  quality: ExportQuality
   width: number
   height: number
   screenWidth: number
@@ -172,7 +173,7 @@ function copySnapshot(danmakus: DanmakuItem[]) {
 }
 
 async function cropExportFrame(png: Uint8Array, bounds: ExportBounds, width: number, height: number) {
-  const image = await createImageBitmap(new Blob([png], { type: 'image/png' }))
+  const image = await createImageBitmap(new Blob([png as BlobPart], { type: 'image/png' }))
   try {
     if (
       bounds.x < 0 ||
@@ -245,7 +246,7 @@ export async function runVideoExport(
     width: job.width,
     height: job.height,
     frameRate: job.fps,
-    quality: new Quality(job.quality)
+    quality: createVideoExportQuality(job.quality, job.width, job.height, job.fps)
   }).catch(() => false)
   const totalFrames = Math.ceil((job.endMs - job.startMs) * job.fps / 1000)
   if (!Number.isSafeInteger(totalFrames) || totalFrames <= 0) {
@@ -437,12 +438,13 @@ export async function runVideoExportInRenderWindow(
     throw new Error('视频导出目前需要 Tauri 桌面运行环境')
   }
 
-  const outputPath = job.outputPath ?? await chooseVideoExportPath()
+  const jobSnapshot = { ...job, danmakus: copySnapshot(job.danmakus) }
+  const outputPath = jobSnapshot.outputPath ?? await chooseVideoExportPath()
   if (!outputPath) return { canceledByUser: true as const }
   if (signal.aborted) throw makeAbortError()
 
   const jobId = crypto.randomUUID()
-  const renderJob = { ...job, outputPath }
+  const renderJob = { ...jobSnapshot, outputPath }
   let resolveReady!: () => void
   let resolveFinished!: (payload: RenderFinishedPayload) => void
   const ready = new Promise<void>((resolve) => { resolveReady = resolve })
@@ -450,7 +452,7 @@ export async function runVideoExportInRenderWindow(
   const listeners: UnlistenFn[] = []
   let createStarted = false
   let renderWindowCreated = false
-  let cancelRequested = signal.aborted
+  let cancelRequested = signal.aborted as boolean
   let keepOutput = false
   let readyTimeout: number | undefined
   const clearReadyTimeout = () => {

@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import type { ExportQuality } from '@/core/videoExport/quality'
 
 type TauriInternals = {
   invoke?: <T>(command: string, payload?: Record<string, unknown>) => Promise<T>
@@ -155,7 +156,7 @@ export async function canUseFfmpegVideoEncoder(): Promise<boolean> {
 export async function startFfmpegVideoExport(options: {
   outputPath: string
   mediaPath: string | null
-  quality: 'high' | 'very-high'
+  quality: ExportQuality
   fps: number
   startMs: number
   endMs: number

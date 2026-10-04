@@ -2274,8 +2274,10 @@ fn start_ffmpeg_video_export(
 ) -> Result<(), String> {
     let output = validate_video_export_path(&output_path)?;
     let crf = match quality.as_str() {
+        "low" => "32",
         "high" => "20",
         "very-high" => "16",
+        "near-lossless" => "0",
         _ => return Err("FFmpeg 视频质量选项无效".to_string()),
     };
     let media = media_path.map(PathBuf::from);

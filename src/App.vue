@@ -43,7 +43,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import Player from './components/player/Player.vue'
-import VideoExportDialog from './components/player/VideoExportDialog.vue'
+import VideoExportDialog from './components/preference/VideoExportDialog.vue'
 import TopSidebar from './components/preference/TopSideBar.vue'
 import EditorPanel from './components/editor/editorPanel.vue'
 import Timeline from './components/timeline/timeline.vue'

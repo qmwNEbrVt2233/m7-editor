@@ -1,9 +1,9 @@
 <template>
-  <div v-if="visible" class="video-export-dialog">
+  <div v-if="visible" class="video-export-dialog no-select">
     <section class="dialog-card">
       <header class="dialog-header">
         <strong>导出视频</strong>
-        <button class="icon-button" :disabled="busy" aria-label="关闭" @click="close">×</button>
+        <button class="icon-button" :aria-label="busy ? '隐藏导出进度' : '关闭'" @click="close">✕</button>
       </header>
 
       <div class="dialog-body">
@@ -29,18 +29,22 @@
             <option :value="24">24 fps</option>
             <option :value="30">30 fps</option>
             <option :value="60">60 fps</option>
+            <option :value="120">120 fps</option>
           </select>
         </label>
         <label>
           <span>画质</span>
           <select v-model="quality" :disabled="busy">
+            <option value="low">低质量（快速预览）</option>
             <option value="high">高质量</option>
             <option value="very-high">极高质量（速度更慢、文件更大）</option>
+            <option value="near-lossless">近无损（速度很慢、文件极大）</option>
           </select>
         </label>
         <p class="output-hint">{{ outputHint }}</p>
 
         <div v-if="busy" class="progress-section">
+          <p class="snapshot-hint">使用导出开始时的弹幕快照；期间继续编辑不会改变当前渲染</p>
           <progress :value="progress.percent" max="1"></progress>
           <div class="progress-caption">
             <span>{{ progressText }}</span>
@@ -48,7 +52,7 @@
           </div>
           <div class="render-stats">
             <div><span>总渲染时间</span><strong>{{ elapsedTimeText }}</strong></div>
-            <div><span>预计完成</span><strong>{{ estimatedFinishText }}</strong></div>
+            <div><span>预计剩余时间</span><strong>{{ estimatedFinishText }}</strong></div>
             <div><span>平均每帧</span><strong>{{ averageFrameTimeText }}</strong></div>
           </div>
           <button class="cancel-button" @click="cancelExport">取消导出</button>
@@ -58,7 +62,7 @@
       </div>
 
       <footer class="dialog-footer">
-        <button class="secondary-button" :disabled="busy" @click="close">关闭</button>
+        <button class="secondary-button" @click="close">{{ busy ? '隐藏' : '关闭' }}</button>
         <button class="primary-button" :disabled="busy" @click="startExport">
           {{ busy ? '正在导出…' : '开始导出' }}
         </button>
@@ -71,6 +75,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useEditorStore } from '@/store/editor'
 import { useNoticeStore } from '@/store/notice'
+import { formatDuration } from '@/utils/time'
 import { runVideoExportInRenderWindow, type ExportProgress } from '@/core/videoExport/exportCoordinator'
 
 const props = defineProps<{
@@ -85,8 +90,8 @@ const store = useEditorStore()
 const notice = useNoticeStore()
 const startMs = ref(0)
 const endMs = ref(store.mediaDuration)
-const fps = ref(30)
-const quality = ref<'high' | 'very-high'>('very-high')
+const fps = ref(60)
+const quality = ref<'low' | 'high' | 'very-high' | 'near-lossless'>('very-high')
 const width = ref(store.screenWidth)
 const height = ref(store.screenHeight)
 const busy = ref(false)
@@ -112,11 +117,7 @@ const estimatedFinishText = computed(() => {
   if (stage === 'finalizing') return '封装中'
   if (completedFrames >= totalFrames || averageFrameMs.value === null) return '即将完成'
   const remainingMs = averageFrameMs.value * (totalFrames - completedFrames)
-  return new Date(Date.now() + remainingMs).toLocaleTimeString(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  })
+  return formatDuration(remainingMs)
 })
 const outputHint = computed(() => store.mediaUrl
   ? 'MP4 / H.264，默认使用工程画布尺寸并保留源视频音轨；输出宽高跟随工程比例。'
@@ -128,7 +129,7 @@ const progressText = computed(() => {
 })
 
 watch(() => props.visible, (visible) => {
-  if (!visible) return
+  if (!visible || busy.value) return
   startMs.value = 0
   endMs.value = getDefaultEndMs()
   width.value = store.screenWidth
@@ -208,7 +209,7 @@ async function startExport() {
 }
 
 function getDefaultEndMs() {
-  return store.danmakus.reduce((latest, danmaku) => Math.max(
+  return store.danmakus.reduce((latest: number, danmaku: any) => Math.max(
     latest,
     danmaku.startTime + danmaku.animation.duration,
     store.mediaUrl ? store.mediaDuration : 0
@@ -249,22 +250,11 @@ function stopRenderTimer() {
   renderStartedAt = 0
 }
 
-function formatDuration(milliseconds: number) {
-  const totalSeconds = Math.floor(milliseconds / 1000)
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  const seconds = totalSeconds % 60
-  return hours > 0
-    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
-    : `${minutes}:${String(seconds).padStart(2, '0')}`
-}
-
 function cancelExport() {
   abortController.value?.abort()
 }
 
 function close() {
-  if (busy.value) return
   emit('update:visible', false)
 }
 </script>
@@ -277,7 +267,6 @@ function close() {
   z-index: 9994;
   pointer-events: none;
   color: #e8e8e8;
-  font: 14px/1.45 system-ui, sans-serif;
 }
 
 .dialog-card {
@@ -288,8 +277,8 @@ function close() {
   width: min(480px, calc(100vw - 32px));
   overflow: hidden;
   border: 1px solid #444;
-  border-radius: 10px;
-  background: #202124;
+  border-radius: 5px;
+  background: #1e1e1e;
   box-shadow: 0 18px 60px rgb(0 0 0 / 55%);
 }
 
@@ -300,6 +289,7 @@ function close() {
   justify-content: space-between;
   padding: 14px 18px;
   border-bottom: 1px solid #393a3d;
+  font-size: 14px;
 }
 
 .dialog-footer {
@@ -314,6 +304,7 @@ function close() {
   grid-template-columns: 1fr 1fr;
   gap: 12px;
   padding: 18px;
+  font-size: 13px;
 }
 
 label {
@@ -329,7 +320,7 @@ select {
   min-height: 34px;
   padding: 6px 8px;
   border: 1px solid #4b4d50;
-  border-radius: 5px;
+  border-radius: 3px;
   background: #151617;
   color: #eee;
 }
@@ -342,6 +333,12 @@ select {
 }
 
 .output-hint {
+  color: #9a9da1;
+  font-size: 12px;
+}
+
+.snapshot-hint {
+  margin: 0 0 8px;
   color: #9a9da1;
   font-size: 12px;
 }
@@ -374,7 +371,7 @@ progress {
   min-width: 0;
   padding: 8px 10px;
   border: 1px solid #393a3d;
-  border-radius: 6px;
+  border-radius: 3px;
   background: #1a1b1d;
 }
 
@@ -392,34 +389,55 @@ progress {
   white-space: nowrap;
 }
 
+.icon-button {
+  padding: 2px 8px;
+  font-size: 16px;
+  background: none;
+  border: none;
+  color: #b7b7b7;
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  color: #fff;
+}
+
 .cancel-button,
 .secondary-button,
-.primary-button,
-.icon-button {
-  border: 0;
-  border-radius: 5px;
-  padding: 7px 12px;
-  background: #383a3d;
-  color: #eee;
+.primary-button {
+  padding: 8px 13px;
+  background: #2d2d2d;
+  color: #e0e0e0;
+  border: 1px solid #444;
+  border-radius: 4px;
   cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s ease;
 }
 
 .cancel-button {
   margin-top: 10px;
 }
 
+.cancel-button:hover,
+.secondary-button:hover {
+  background: #3d3d3d;
+  border-color: #666;
+  color: #fff;
+}
+
 .primary-button {
   background: #2476d2;
+}
+
+.primary-button:hover {
+  background: #387ccb;
+  border-color: #6182b1;
 }
 
 button:disabled {
   cursor: default;
   opacity: 0.5;
-}
-
-.icon-button {
-  padding: 2px 8px;
-  font-size: 22px;
 }
 
 .error-message {
