@@ -1804,7 +1804,10 @@ async fn capture_webview_snapshot(window: WebviewWindow) -> Result<Response, Str
                     let _ = error_sender.send(Err("WKWebView 实例不可用".to_string()));
                     return;
                 };
-                let webview = unsafe { Retained::retain(webview_pointer) };
+                let Some(webview) = (unsafe { Retained::retain(webview_pointer.as_ptr()) }) else {
+                    let _ = error_sender.send(Err("无法保留 WKWebView 实例".to_string()));
+                    return;
+                };
                 let callback = RcBlock::new(move |image: *mut NSImage, error: *mut NSError| {
                     let result = if !error.is_null() {
                         Err("WKWebView 快照失败".to_string())
@@ -1876,8 +1879,8 @@ async fn await_webview_snapshot(
 
 #[cfg(target_os = "macos")]
 unsafe fn ns_image_to_png(image: &objc2_app_kit::NSImage) -> Result<Vec<u8>, String> {
-    use objc2::runtime::AnyObject;
-    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey};
+    use std::ptr::NonNull;
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep};
     use objc2_foundation::NSDictionary;
 
     let tiff = image
@@ -1885,11 +1888,15 @@ unsafe fn ns_image_to_png(image: &objc2_app_kit::NSImage) -> Result<Vec<u8>, Str
         .ok_or_else(|| "无法从 WKWebView 快照获取图像数据".to_string())?;
     let representation = NSBitmapImageRep::imageRepWithData(&tiff)
         .ok_or_else(|| "无法解码 WKWebView 快照".to_string())?;
-    let properties: NSDictionary<NSBitmapImageRepPropertyKey, AnyObject> = NSDictionary::new();
+    let properties = NSDictionary::new();
     let png = representation
         .representationUsingType_properties(NSBitmapImageFileType::PNG, &properties)
         .ok_or_else(|| "无法将 WKWebView 快照编码为 PNG".to_string())?;
-    let bytes = std::slice::from_raw_parts(png.bytes().cast::<u8>(), png.length()).to_vec();
+    let length = png.length();
+    let mut bytes = vec![0_u8; length];
+    let buffer = NonNull::new(bytes.as_mut_ptr().cast())
+        .ok_or_else(|| "无法分配 WKWebView 快照缓冲区".to_string())?;
+    png.getBytes_length(buffer, length);
     Ok(bytes)
 }
 
@@ -2143,7 +2150,7 @@ async fn choose_video_export_path(app: AppHandle) -> Result<Option<String>, Stri
         save_video_file_dialog()?
     };
 
-    Ok(selected.map(|path| path.to_string_lossy().into_owned()))
+    Ok(selected?.map(|path| path.to_string_lossy().into_owned()))
 }
 
 fn validate_video_export_path(path: &str) -> Result<PathBuf, String> {
@@ -2222,7 +2229,10 @@ fn ffmpeg_command(app: &AppHandle) -> Command {
 }
 
 fn command_without_console(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    #[cfg(windows)]
     let mut command = Command::new(program);
+    #[cfg(not(windows))]
+    let command = Command::new(program);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
