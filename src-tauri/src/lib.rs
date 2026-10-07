@@ -1677,6 +1677,10 @@ async fn create_video_export_render_window(
         return Err(format!("无法创建独立视频渲染窗口: {error}"));
     }
 
+    if let Some(window) = app.get_webview_window(VIDEO_EXPORT_RENDER_WINDOW_LABEL) {
+        window.hide().map_err(|error| format!("隐藏独立视频渲染窗口失败: {error}"))?;
+    }
+
     Ok(())
 }
 
@@ -2129,28 +2133,30 @@ fn save_video_file_dialog() -> Result<Option<PathBuf>, String> {
 #[tauri::command]
 async fn choose_video_export_path(app: AppHandle) -> Result<Option<String>, String> {
     #[cfg(target_os = "macos")]
-    let selected = {
+    let selected: Option<PathBuf> = {
         let (sender, receiver) = mpsc::sync_channel(1);
         app.run_on_main_thread(move || {
             let _ = sender.send(save_video_file_dialog());
         })
         .map_err(|error| format!("调度 macOS 视频保存对话框失败: {error}"))?;
 
-        tauri::async_runtime::spawn_blocking(move || {
+        let dialog_result: Result<Option<PathBuf>, String> = tauri::async_runtime::spawn_blocking(move || {
             receiver.recv_timeout(Duration::from_secs(300))
         })
         .await
         .map_err(|error| format!("等待 macOS 视频保存对话框失败: {error}"))?
-        .map_err(|error| format!("等待 macOS 视频保存对话框超时或失败: {error}"))?
+        .map_err(|error| format!("等待 macOS 视频保存对话框超时或失败: {error}"))?;
+
+        dialog_result?
     };
 
     #[cfg(not(target_os = "macos"))]
-    let selected = {
+    let selected: Option<PathBuf> = {
         let _ = app;
         save_video_file_dialog()?
     };
 
-    Ok(selected?.map(|path| path.to_string_lossy().into_owned()))
+    Ok(selected.map(|path| path.to_string_lossy().into_owned()))
 }
 
 fn validate_video_export_path(path: &str) -> Result<PathBuf, String> {
