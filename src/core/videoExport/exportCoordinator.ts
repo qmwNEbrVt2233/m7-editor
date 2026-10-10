@@ -68,6 +68,7 @@ export type ExportProgress = {
   totalFrames: number
   percent: number
   stage: 'preparing' | 'rendering' | 'finalizing'
+  detail?: string
 }
 
 async function runFfmpegFallback(
@@ -137,10 +138,10 @@ async function runFfmpegFallback(
 
 type WorkerMessage = {
   type: string
-  id?: number
   index?: number
   position?: number
   data?: ArrayBuffer
+  stage?: string
   message?: string
   hasAudio?: boolean
 }
@@ -311,11 +312,8 @@ export async function runVideoExport(
         await writeVideoExportChunk(path, position, data)
       })()
       pendingWrites.add(write)
-      void write.then(() => {
-        worker.postMessage({ type: 'chunk-written', id: message.id })
-      }).catch((error: unknown) => {
+      void write.catch((error: unknown) => {
         const messageText = error instanceof Error ? error.message : String(error)
-        worker.postMessage({ type: 'chunk-written', id: message.id, error: messageText })
         rejectWaiters(error instanceof Error ? error : new Error(messageText))
       }).finally(() => pendingWrites.delete(write))
       return
@@ -323,6 +321,17 @@ export async function runVideoExport(
 
     if (message.type === 'error') {
       rejectWaiters(new Error(message.message || '视频编码失败'))
+      return
+    }
+
+    if (message.type === 'finalizing-stage') {
+      onProgress({
+        completedFrames,
+        totalFrames,
+        percent: 1,
+        stage: 'finalizing',
+        detail: message.stage
+      })
       return
     }
 

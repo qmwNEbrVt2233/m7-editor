@@ -123,6 +123,7 @@ const outputHint = computed(() => store.mediaUrl
   ? 'MP4 / H.264，默认使用工程画布尺寸并保留源视频音轨；输出宽高跟随工程比例。'
   : '未导入视频时导出弹幕画布，不包含音轨；默认时长取弹幕最晚结束时间，输出宽高跟随工程比例。')
 const progressText = computed(() => {
+  if (progress.value.detail) return progress.value.detail
   if (progress.value.stage === 'preparing') return '准备编码器与输出文件'
   if (progress.value.stage === 'finalizing') return store.mediaUrl ? '正在封装 MP4 与音轨' : '正在完成无音轨 MP4'
   return `${progress.value.completedFrames.toLocaleString()} / ${progress.value.totalFrames.toLocaleString()} 帧`
@@ -167,6 +168,7 @@ async function startExport() {
   }
 
   busy.value = true
+  notice.log('开始导出视频', 'info')
   elapsedMs.value = 0
   renderStartedAt = 0
   progress.value = { completedFrames: 0, totalFrames: 0, percent: 0, stage: 'preparing' }

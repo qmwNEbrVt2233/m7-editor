@@ -89,7 +89,7 @@ async function runRenderJob() {
       screenRecordingMode: true
     })
 
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    // await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
     const viewportWidth = window.innerWidth || outputJob.width
     const viewportHeight = window.innerHeight || outputJob.height
     const recordingScale = Math.min(

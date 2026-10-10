@@ -1665,8 +1665,15 @@ async fn create_video_export_render_window(
     .decorations(false)
     .resizable(false)
     .skip_taskbar(true)
-    .always_on_bottom(true)
+    // WKWebView stops producing reliable snapshots when its window is
+    // covered on macOS. Keep the render surface above other windows without
+    // activating it; Windows is hidden immediately below because WebView2
+    // does not have the same visibility requirement.
+    .always_on_bottom(!cfg!(target_os = "macos"))
+    .always_on_top(cfg!(target_os = "macos"))
     .focused(false)
+    .focusable(!cfg!(target_os = "macos"))
+    .visible_on_all_workspaces(cfg!(target_os = "macos"))
     .visible(true)
     .build();
 
@@ -1677,8 +1684,20 @@ async fn create_video_export_render_window(
         return Err(format!("无法创建独立视频渲染窗口: {error}"));
     }
 
-    if let Some(window) = app.get_webview_window(VIDEO_EXPORT_RENDER_WINDOW_LABEL) {
-        window.hide().map_err(|error| format!("隐藏独立视频渲染窗口失败: {error}"))?;
+    if cfg!(target_os = "macos") {
+        if let Some(window) = app.get_webview_window(VIDEO_EXPORT_RENDER_WINDOW_LABEL) {
+            // `visible(true)` is applied while building the native window, but
+            // explicitly showing it here also covers macOS versions that
+            // defer ordering a non-focused window until after navigation.
+            window.show().map_err(|error| format!("显示独立视频渲染窗口失败: {error}"))?;
+            window
+                .set_always_on_top(true)
+                .map_err(|error| format!("设置独立视频渲染窗口层级失败: {error}"))?;
+        }
+    } else if cfg!(windows) {
+        if let Some(window) = app.get_webview_window(VIDEO_EXPORT_RENDER_WINDOW_LABEL) {
+            window.hide().map_err(|error| format!("隐藏独立视频渲染窗口失败: {error}"))?;
+        }
     }
 
     Ok(())
