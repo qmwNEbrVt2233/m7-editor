@@ -19,9 +19,11 @@
 [![Vite](https://img.shields.io/badge/-Vite-646CFF?style=flat-square&logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Pinia](https://img.shields.io/badge/-Pinia-FFDD5F?style=flat-square&logo=vitest&logoColor=black)](https://pinia.vuejs.org/)
 [![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-<a href="https://mathjs.org/"><img src="https://mathjs.org/css/img/mathjs.svg" style="width: 66px; height: 20px"></a>
-<a href="https://wavesurfer.xyz/"><img src="https://wavesurfer.xyz/logo-small.png" style="width: 20px; height: 20px"></a>
 <a href="https://v2.tauri.app/"><img src="https://v2.tauri.app/_astro/logo.BQPqkdSq.svg" style="width: 66px; height: 20px"></a>
+<a href="https://mathjs.org/"><img src="https://mathjs.org/css/img/mathjs.svg" style="width: 66px; height: 20px"></a>
+<a href="https://mediabunny.dev/"><img src="https://mediabunny.dev/mediabunny-logo.svg" style="width: 20px; height: 20px"></a>
+<a href="https://wavesurfer.xyz/"><img src="https://wavesurfer.xyz/logo-small.png" style="width: 20px; height: 20px"></a>
+
 原生 DOM / FileReader / Blob API
 
 # 安装依赖
@@ -40,9 +42,11 @@ npm install
 - `vite`
 - `@vitejs/plugin-vue`
 - `mathjs`
+- `mediabunny`
 - `wavesurfer.js`
 - `terser`
 - `tauri`
+- `@tauri-apps/api`
 - `@tauri-apps/cli`
 - `@tauri-apps/plugin-clipboard-manager`
 
@@ -96,7 +100,7 @@ npm run tauri dev
 │   .gitignore
 │   index.html
 │   LICENSE
-│   m7_Editor.bat                    #快速启动脚本
+│   m7_Editor.bat                             #快速启动脚本
 │   package-lock.json
 │   package.json
 │   README.md
@@ -114,66 +118,73 @@ npm run tauri dev
 │   │
 │   ├───components
 │   │   ├───editor
-│   │   │       creationTools.vue    #高级创建工具
-│   │   │       editorPanel.vue      #编辑面板
-│   │   │       PresetManager.vue    #高级创建工具预设管理器
-│   │   │       TemplateManager.vue  #模板管理器
-│   │   │       ToolBar.vue          #工具栏
+│   │   │       creationTools.vue             #高级创建工具
+│   │   │       editorPanel.vue               #编辑面板
+│   │   │       PresetManager.vue             #高级创建工具预设管理器
+│   │   │       TemplateManager.vue           #模板管理器
+│   │   │       ToolBar.vue                   #工具栏
 │   │   │
 │   │   ├───notice
-│   │   │       GlobalNotice.vue     #全局提醒弹窗与日志
+│   │   │       GlobalNotice.vue              #全局提醒弹窗与日志
 │   │   │
 │   │   ├───player
-│   │   │       DanmakuLayer.vue     #弹幕渲染
-│   │   │       Player.vue           #播放器渲染
+│   │   │       DanmakuLayer.vue              #弹幕渲染
+│   │   │       Player.vue                    #播放器渲染
+│   │   │       VideoExportRenderWindow.vue   #视频渲染窗口
 │   │   │
 │   │   ├───preference
-│   │   │       about.vue            #帮助/关于文档
-│   │   │       projectManager.vue   #工程管理
-│   │   │       TopSideBar.vue       #顶边设置栏
+│   │   │       about.vue                     #帮助/关于文档
+│   │   │       projectManager.vue            #工程管理
+│   │   │       TopSideBar.vue                #顶边设置栏
+│   │   │       VideoExportDialog.vue         #视频导出设置弹窗
 │   │   │
 │   │   └───timeline
-│   │           timeline.vue         #时间轴模块
+│   │           timeline.vue                  #时间轴模块
 │   │
 │   ├───core
-│   │       converter.ts             #解析xml
-│   │       danmaku.ts               #弹幕数据结构
-│   │       history.ts               #快照管理
-│   │       player.ts                #播放器播放状态
-│   │       project.ts               #工程文件结构
+│   │   |   converter.ts                      #解析xml
+│   │   |   danmaku.ts                        #弹幕数据结构
+│   │   |   history.ts                        #快照管理
+│   │   |   player.ts                         #播放器播放状态
+│   │   |   project.ts                        #工程文件结构
+|   |   │
+|   |   └───videoExport
+|   |           exportCoordinator.ts          #视频导出协调器
+|   |           quality.ts                    #视频质量参数
+|   |           videoEncoder.worker.ts        #编码器
 │   │
-│   ├───icon                         #工具栏图标
+│   ├───icon                                  #工具栏图标
 │   │       ...
 │   │
 │   ├───localStorage
-│   │       projectStorage.ts        #工程文件保存/加载
+│   │       projectStorage.ts                 #工程文件保存/加载
 │   │
 │   ├───store
-│   │       editor.ts                #Pinia 状态管理
-│   │       notice.ts                #日志/提醒状态管理
+│   │       editor.ts                         #编辑器状态管理
+│   │       notice.ts                         #日志/提醒状态管理
 │   │
 │   └───utils
-│           danmakuGenerator.ts      #高级创建工具生成算法
-│           parser.ts                #解析工具
-│           tauriBackend.ts          #后端api
-│           time.ts                  #时间格式化工具
-│           toolPresets.ts           #高级创建工具预设读写
-│           validation.ts            #验证工具
+│           danmakuGenerator.ts               #高级创建工具生成算法
+│           parser.ts                         #解析工具
+│           tauriBackend.ts                   #后端api
+│           time.ts                           #时间格式化工具
+│           toolPresets.ts                    #高级创建工具预设读写
+│           validation.ts                     #验证工具
 │
 └───src-tauri
     │   .gitignore
     │   build.rs
     │   Cargo.lock
     │   Cargo.toml
-    │   tauri.conf.json              #构建配置
+    │   tauri.conf.json                       #构建配置
     │
     ├───capabilities
-    │       default.json             #应用权限配置
+    │       default.json                      #应用权限配置
     │
-    ├───icons                        #应用图标
+    ├───icons                                 #应用图标
     │       ...
     │
-    └───src                          #后端
+    └───src                                   #后端
          lib.rs
          main.rs
 ```
