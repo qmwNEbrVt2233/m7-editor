@@ -1,0 +1,1 @@
+import{i as a}from"./api-CUFmiMW0.js";async function t(t,i){await a("plugin:clipboard-manager|write_text",{label:i?.label,text:t})}async function i(){return await a("plugin:clipboard-manager|read_text")}export{t as n,i as t};
