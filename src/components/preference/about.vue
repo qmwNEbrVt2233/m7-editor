@@ -8,7 +8,7 @@
       <div class="help-sidebar no-select">
         <div class="help-sidebar-title">使用文档</div>
         <div class="help-sidebar-option help-scrollbar">
-          <template v-for="section in docSections" :key="section.id">
+          <template v-for="section in visibleDocSections" :key="section.id">
             <!-- 有子节点的分类 -->
             <template v-if="section.children">
               <div
@@ -71,9 +71,10 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useHelpStore, docSections } from '@/store/help'
+import { useHelpStore, docSections, filterVisibleDocSections } from '@/store/help'
 
 const help = useHelpStore()
+const visibleDocSections = computed(() => filterVisibleDocSections(docSections))
 
 const sectionContents: Record<string, string> = {
   'about': `
@@ -96,7 +97,6 @@ const sectionContents: Record<string, string> = {
 
   'interface-project-manager': `
     <subtitle>工程管理</subtitle>
-    <p style="color: red;">注意！此面板及其相关功能只在桌面应用中有效，网页无此项</p>
     <img src="./oi2neu10df-92emusioa-2ei1jb.jpg" style="width: 100%;">
     <p style="color: #aaa; font-style: italic;">开启应用时你应该看到这个</p>
     <p>应用会在系统文档中创建一个文件夹，结构如下</p>
@@ -771,6 +771,25 @@ const sectionContents: Record<string, string> = {
     </ul>
   `,
 
+  'video-export': `
+    <subtitle>视频导出</subtitle>
+    <p>在顶边栏点击<code>导出视频</code>打开视频导出面板</p>
+    <h3>可用功能：</h3>
+    <ul>
+      <li>开始/结束 时间，选择导出范围</li>
+      <li>视频宽高，跟随共工程比例</li>
+      <li>帧数，支持24、30、60、120</li>
+      <li>质量，压缩程度（目标比特率）</li>
+    </ul>
+    <h3>流程：</h3>
+    <ol>
+      <li>设置导出参数和文件输出路径</li>
+      <li>点击导出，此时复制弹幕副本，继续编辑或切换工程不会影响导出（macOS不支持后台渲染，导出时渲染窗口必须处于直接可见范围内）</li>
+      <li>等待完成，可关闭导出面板，进度会继续显示在右下角</li>
+      <li>完成后文件会输出到选中的路径</li>
+    </ol>
+  `,
+
   'suggestions': `
     <subtitle>推荐的基本工作流</subtitle>
     <ol>
@@ -780,7 +799,7 @@ const sectionContents: Record<string, string> = {
       <li>使用 <kbd>Ctrl + S</kbd> 保存，使用 <kbd>Ctrl + shift + S</kbd> 保存时同时备份</li>
       <li>完成后选择你需要的预处理选项并导出 XML</li>
       <li>使用 <a href="https://github.com/qmwNEbrVt2233/DMsender_CLI/releases" target="_blank">DMsender_CLI</a> 或 <a href="https://github.com/MikuFan039/DMSenderAPP/releases" target="_blank">弹幕发射场</a> 或其他 XML 发送工具将弹幕上传至 Bilibili</li>
-      <li>想要录屏分享？打开录屏模式（<kbd>Ctrl + Alt + Space</kbd>）自动全屏，完成后按 <kbd>ESC</kbd> 回到编辑模式</li>
+      <li>打开录屏模式（<kbd>Ctrl + Alt + Space</kbd>）或使用导出视频功能（仅桌面应用）</li>
     </ol>
   `,
 
@@ -823,6 +842,20 @@ SOFTWARE.</kbd>
 }
 
 const currentContent = computed(() => {
+  const visibleSectionIds = new Set<string>()
+  const collectSectionIds = (sections: typeof docSections) => {
+    for (const section of sections) {
+      visibleSectionIds.add(section.id)
+      if (section.children) collectSectionIds(section.children)
+    }
+  }
+
+  collectSectionIds(visibleDocSections.value)
+
+  if (!visibleSectionIds.has(help.activeSection)) {
+    return sectionContents['about']
+  }
+
   return sectionContents[help.activeSection] || sectionContents['about']
 })
 

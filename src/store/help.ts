@@ -1,10 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { isTauriRuntime } from '@/utils/tauriBackend'
 
 export interface DocSection {
   id: string
   title: string
   children?: DocSection[]
+  tauriOnly?: boolean
 }
 
 export const docSections: DocSection[] = [
@@ -15,7 +17,8 @@ export const docSections: DocSection[] = [
     children: [
       { id: 'interface-create-project', title: '新建工程' },
       { id: 'interface-edit-project-info', title: '编辑现有工程信息' }
-    ]
+    ],
+    tauriOnly: true
   },
   {
     id: 'interface-player-area',
@@ -58,6 +61,11 @@ export const docSections: DocSection[] = [
     ]
   },
   {
+    id: 'video-export',
+    title: '视频导出',
+    tauriOnly: true
+  },
+  {
     id: 'tips',
     title: '使用建议与注意事项',
     children: [
@@ -91,6 +99,7 @@ const sectionsWithContent = new Set([
   'import-export-json',
   'import-export-xml',
   'import-export-paste',
+  'video-export',
   'suggestions',
   'notes',
   'license'
@@ -120,6 +129,17 @@ function findFirstContentChild(section: DocSection): string | null {
   return null
 }
 
+export function filterVisibleDocSections(sections: DocSection[]): DocSection[] {
+  return sections
+    .filter(section => !section.tauriOnly || isTauriRuntime())
+    .map(section => {
+      if (!section.children) return section
+      const children = filterVisibleDocSections(section.children)
+      return children.length > 0 ? { ...section, children } : null
+    })
+    .filter((section): section is DocSection => Boolean(section))
+}
+
 export const useHelpStore = defineStore('help', () => {
   const isVisible = ref(false)
   const activeSection = ref('about')
@@ -141,12 +161,16 @@ export const useHelpStore = defineStore('help', () => {
 
   /** 处理侧边栏点击：有内容则打开自身，否则打开第一个子项 */
   function handleSectionClick(id: string) {
+    const section = findSectionById(docSections, id)
+    if (section?.tauriOnly && !isTauriRuntime()) {
+      activeSection.value = 'about'
+      return
+    }
     if (sectionsWithContent.has(id)) {
       activeSection.value = id
       return
     }
     // 没有自身内容，查找第一个有内容的子节点
-    const section = findSectionById(docSections, id)
     if (section) {
       const firstChild = findFirstContentChild(section)
       if (firstChild) {

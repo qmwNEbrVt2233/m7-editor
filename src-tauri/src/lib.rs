@@ -1604,14 +1604,16 @@ fn move_path_to_recycle_bin(path: &Path) -> Result<(), String> {
 #[cfg(windows)]
 fn ask_close_behavior() -> i32 {
     use windows::core::w;
-    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONQUESTION, MB_YESNOCANCEL};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNOCANCEL,
+    };
 
     unsafe {
         MessageBoxW(
             None,
             w!("　　是否最小化到系统托盘？\n\n　　　　　　是：隐藏到托盘\n　　　　　　否：关闭应用\n　　　　　　取消：返回编辑器"),
             w!("关闭 m7-editor"),
-            MB_YESNOCANCEL | MB_ICONQUESTION,
+            MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND,
         )
         .0
     }

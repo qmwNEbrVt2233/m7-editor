@@ -1,9 +1,9 @@
 <template>
   <div v-if="visible" class="video-export-dialog no-select">
-    <section class="dialog-card">
-      <header class="dialog-header">
+    <section ref="dialogRoot" class="dialog-card" :style="dialogPositionStyle">
+      <header class="dialog-header" @pointerdown="startDialogDrag">
         <strong>导出视频</strong>
-        <button class="icon-button" :aria-label="busy ? '隐藏导出进度' : '关闭'" @click="close">✕</button>
+        <button class="icon-button" :aria-label="busy ? '隐藏导出进度' : '关闭'" @pointerdown.stop @click="close">✕</button>
       </header>
 
       <div class="dialog-body">
@@ -69,6 +69,10 @@
       </footer>
     </section>
   </div>
+  <div v-if="busy && !visible" class="progress-notice no-select">
+    <span>{{ progressText }}</span>
+    <progress :value="progress.percent" max="1"></progress>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -88,6 +92,16 @@ const emit = defineEmits<{
 
 const store = useEditorStore()
 const notice = useNoticeStore()
+const dialogRoot = ref<HTMLElement | null>(null)
+const dialogPosition = ref<{ left: number; top: number } | null>(null)
+const dialogPositionStyle: any = computed(() => dialogPosition.value
+  ? {
+      left: `${dialogPosition.value.left}px`,
+      top: `${dialogPosition.value.top}px`,
+      right: 'auto',
+      position: 'fixed'
+    }
+  : {})
 const startMs = ref(0)
 const endMs = ref(store.mediaDuration)
 const fps = ref(60)
@@ -101,6 +115,8 @@ const progress = ref<ExportProgress>({ completedFrames: 0, totalFrames: 0, perce
 const elapsedMs = ref(0)
 let renderStartedAt = 0
 let renderTimer: number | undefined
+let dragOffset = { x: 0, y: 0 }
+let activePointerId: number | null = null
 const averageFrameMs = computed(() => progress.value.completedFrames > 0
   ? elapsedMs.value / progress.value.completedFrames
   : null)
@@ -130,7 +146,11 @@ const progressText = computed(() => {
 })
 
 watch(() => props.visible, (visible) => {
-  if (!visible || busy.value) return
+  if (!visible) {
+    stopDialogDrag()
+    return
+  }
+  if (busy.value) return
   startMs.value = 0
   endMs.value = getDefaultEndMs()
   width.value = store.screenWidth
@@ -138,7 +158,39 @@ watch(() => props.visible, (visible) => {
   errorMessage.value = ''
 })
 
-onBeforeUnmount(stopRenderTimer)
+onBeforeUnmount(() => {
+  stopRenderTimer()
+  stopDialogDrag()
+})
+
+function startDialogDrag(event: PointerEvent) {
+  if (!event.isPrimary || event.button !== 0 || !dialogRoot.value) return
+  event.preventDefault()
+  const bounds = dialogRoot.value.getBoundingClientRect()
+  dialogPosition.value = { left: bounds.left, top: bounds.top }
+  dragOffset = { x: event.clientX - bounds.left, y: event.clientY - bounds.top }
+  activePointerId = event.pointerId
+  window.addEventListener('pointermove', onDialogDragMove)
+  window.addEventListener('pointerup', stopDialogDrag)
+  window.addEventListener('pointercancel', stopDialogDrag)
+}
+
+function onDialogDragMove(event: PointerEvent) {
+  if (event.pointerId !== activePointerId || !dialogRoot.value || !dialogPosition.value) return
+  const bounds = dialogRoot.value.getBoundingClientRect()
+  dialogPosition.value = {
+    left: Math.min(Math.max(0, event.clientX - dragOffset.x), Math.max(0, window.innerWidth - bounds.width)),
+    top: Math.min(Math.max(0, event.clientY - dragOffset.y), Math.max(0, window.innerHeight - bounds.height))
+  }
+}
+
+function stopDialogDrag(event?: PointerEvent) {
+  if (event && event.pointerId !== activePointerId) return
+  activePointerId = null
+  window.removeEventListener('pointermove', onDialogDragMove)
+  window.removeEventListener('pointerup', stopDialogDrag)
+  window.removeEventListener('pointercancel', stopDialogDrag)
+}
 
 async function startExport() {
   if (busy.value) return
@@ -193,7 +245,7 @@ async function startExport() {
     })
 
     if (!result.canceledByUser) {
-      notice.log(`视频导出完成：${result.path}`, 'success')
+      notice.alert(`视频导出完成：${result.path} 耗时：${elapsedTimeText.value}`, 'success', '视频导出成功', result)
       emit('update:visible', false)
     }
   } catch (error) {
@@ -279,7 +331,7 @@ function close() {
   width: min(480px, calc(100vw - 32px));
   overflow: hidden;
   border: 1px solid #444;
-  border-radius: 5px;
+  border-radius: 8px;
   background: #1e1e1e;
   box-shadow: 0 18px 60px rgb(0 0 0 / 55%);
 }
@@ -292,6 +344,15 @@ function close() {
   padding: 14px 18px;
   border-bottom: 1px solid #393a3d;
   font-size: 14px;
+}
+
+.dialog-header {
+  cursor: grab;
+  touch-action: none;
+}
+
+.dialog-header:active {
+  cursor: grabbing;
 }
 
 .dialog-footer {
@@ -347,7 +408,6 @@ select {
 
 progress {
   width: 100%;
-  height: 8px;
   accent-color: #66aaff;
 }
 
@@ -357,6 +417,22 @@ progress {
   margin-top: 5px;
   color: #c6c6c6;
   font-size: 12px;
+}
+
+.progress-notice {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  width: 400px;
+  padding: 3px 7px;
+  background-color: #333;
+  z-index: 10000;
+  border-radius: 4px 0 0 0;
+  color: #c6c6c6;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
 }
 
 .render-stats {
