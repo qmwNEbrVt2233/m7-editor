@@ -12,6 +12,7 @@ import {
   finishFfmpegVideoExport,
   finishVideoExportFile,
   isTauriRuntime,
+  getVideoExportRenderJob,
   startFfmpegVideoExport,
   startVideoExportFile,
   writeFfmpegVideoFrame,
@@ -47,6 +48,15 @@ export type ExportJob = {
   mediaFilePath: string
   danmakus: DanmakuItem[]
   outputPath?: string
+  frameCapture?: { timeMs: number }
+}
+
+export type CapturedVideoFrame = {
+  dataBase64: string
+  mimeType: 'image/jpeg'
+  width: number
+  height: number
+  timeMs: number
 }
 
 export const VIDEO_EXPORT_RENDER_LABEL = 'video-export-render'
@@ -55,11 +65,13 @@ export const VIDEO_EXPORT_RENDER_PROGRESS_EVENT = 'm7-video-export-render-progre
 export const VIDEO_EXPORT_RENDER_FINISHED_EVENT = 'm7-video-export-render-finished'
 export const VIDEO_EXPORT_RENDER_CANCEL_EVENT = 'm7-video-export-render-cancel'
 const RENDER_WINDOW_READY_TIMEOUT_MS = 60_000
+const FRAME_RENDER_WINDOW_READY_TIMEOUT_MS = 45_000
+const FRAME_CAPTURE_FINISHED_TIMEOUT_MS = 35_000
 
 type RenderEventPayload = { jobId: string }
 type RenderProgressPayload = RenderEventPayload & { progress: ExportProgress }
 type RenderFinishedPayload = RenderEventPayload & {
-  result?: { canceledByUser: boolean; path?: string; totalFrames?: number }
+  result?: { canceledByUser: boolean; path?: string; totalFrames?: number; frame?: CapturedVideoFrame }
   error?: string
 }
 
@@ -199,6 +211,91 @@ async function cropExportFrame(png: Uint8Array, bounds: ExportBounds, width: num
     })
   } finally {
     image.close()
+  }
+}
+
+export function fitVideoFrameSize(screenWidth: number, screenHeight: number, maxDimension: number) {
+  if (
+    !Number.isFinite(screenWidth) ||
+    !Number.isFinite(screenHeight) ||
+    screenWidth <= 0 ||
+    screenHeight <= 0 ||
+    !Number.isInteger(maxDimension) ||
+    maxDimension < 16 ||
+    maxDimension > 1920
+  ) {
+    throw new Error('截图尺寸无效；maxDimension 必须是 16 到 1920 之间的整数')
+  }
+
+  const scale = Math.min(1, maxDimension / Math.max(screenWidth, screenHeight))
+  const even = (value: number) => Math.max(16, Math.round(value / 2) * 2)
+  return {
+    width: even(screenWidth * scale),
+    height: even(screenHeight * scale)
+  }
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)))
+  }
+  return btoa(binary)
+}
+
+async function hasVideoExportRenderJob(jobId: string) {
+  try {
+    await getVideoExportRenderJob(jobId)
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function captureVideoExportFrame(
+  job: ExportJob,
+  stage: ExportRenderStage,
+  timeMs: number
+): Promise<CapturedVideoFrame> {
+  if (!Number.isFinite(timeMs) || timeMs < 0) throw new Error('截图时间必须是非负有限数字')
+  if (!isTauriRuntime()) throw new Error('帧截图需要 Tauri 桌面运行环境')
+
+  let bitmap: ImageBitmap | null = null
+  try {
+    const bounds = await stage.renderAt(timeMs, copySnapshot(job.danmakus))
+    const png = await captureWebviewSnapshot()
+    bitmap = await cropExportFrame(png, bounds, job.width, job.height)
+    const canvas = new OffscreenCanvas(job.width, job.height)
+    const context = canvas.getContext('2d', { alpha: false })
+    if (!context) throw new Error('无法创建帧图像画布')
+
+    let width = job.width
+    let height = job.height
+    const qualities = [0.84, 0.74, 0.64, 0.54, 0.48]
+    const maxBytes = 650 * 1024
+    for (let attempt = 0; attempt < qualities.length; attempt += 1) {
+      canvas.width = width
+      canvas.height = height
+      context.drawImage(bitmap, 0, 0, width, height)
+      const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: qualities[attempt] })
+      if (blob.size <= maxBytes) {
+        return {
+          dataBase64: bytesToBase64(new Uint8Array(await blob.arrayBuffer())),
+          mimeType: 'image/jpeg',
+          width,
+          height,
+          timeMs
+        }
+      }
+
+      width = Math.max(16, Math.round(width * 0.75 / 2) * 2)
+      height = Math.max(16, Math.round(height * 0.75 / 2) * 2)
+    }
+    throw new Error('帧图像过大，无法安全回传给 MCP；请降低 maxDimension 后重试')
+  } finally {
+    bitmap?.close()
+    await stage.endRenderSession().catch(() => undefined)
   }
 }
 
@@ -459,7 +556,6 @@ export async function runVideoExportInRenderWindow(
   const ready = new Promise<void>((resolve) => { resolveReady = resolve })
   const finished = new Promise<RenderFinishedPayload>((resolve) => { resolveFinished = resolve })
   const listeners: UnlistenFn[] = []
-  let createStarted = false
   let renderWindowCreated = false
   let cancelRequested = signal.aborted as boolean
   let keepOutput = false
@@ -496,9 +592,13 @@ export async function runVideoExportInRenderWindow(
     readyTimeout = window.setTimeout(() => {
       resolveFinished({ jobId, error: '独立渲染窗口启动超时' })
     }, RENDER_WINDOW_READY_TIMEOUT_MS)
-    createStarted = true
-    await createVideoExportRenderWindow(jobId, renderJob)
-    renderWindowCreated = true
+    try {
+      await createVideoExportRenderWindow(jobId, renderJob)
+      renderWindowCreated = true
+    } catch (error) {
+      renderWindowCreated = await hasVideoExportRenderJob(jobId)
+      throw error
+    }
     if (cancelRequested) sendCancel()
 
     await Promise.race([ready, finished.then(() => undefined)])
@@ -512,8 +612,85 @@ export async function runVideoExportInRenderWindow(
     clearReadyTimeout()
     signal.removeEventListener('abort', onAbort)
     listeners.forEach((unlisten) => unlisten())
-    if (createStarted) {
+    if (renderWindowCreated) {
       await finishVideoExportRenderWindow(jobId, keepOutput).catch(() => undefined)
     }
+  }
+}
+
+export async function runVideoFrameCaptureInRenderWindow(
+  jobInput: Pick<ExportJob, 'screenWidth' | 'screenHeight' | 'mediaDuration' | 'mediaUrl' | 'mediaFilePath' | 'danmakus'>,
+  timeMs: number,
+  maxDimension = 1280
+): Promise<CapturedVideoFrame> {
+  if (!isTauriRuntime()) throw new Error('帧截图需要 Tauri 桌面运行环境')
+  if (!Number.isFinite(timeMs) || timeMs < 0) throw new Error('截图时间必须是非负有限数字')
+
+  const { width, height } = fitVideoFrameSize(jobInput.screenWidth, jobInput.screenHeight, maxDimension)
+  const jobId = crypto.randomUUID()
+  const renderJob: ExportJob = {
+    ...jobInput,
+    startMs: timeMs,
+    endMs: timeMs + 1,
+    fps: 1,
+    quality: 'high',
+    width,
+    height,
+    frameCapture: { timeMs }
+  }
+  let resolveReady!: () => void
+  let resolveFinished!: (payload: RenderFinishedPayload) => void
+  const ready = new Promise<void>((resolve) => { resolveReady = resolve })
+  const finished = new Promise<RenderFinishedPayload>((resolve) => { resolveFinished = resolve })
+  const listeners: UnlistenFn[] = []
+  let renderWindowCreated = false
+  let readyTimeout: number | undefined
+  let finishedTimeout: number | undefined
+
+  const clearTimeouts = () => {
+    if (readyTimeout !== undefined) window.clearTimeout(readyTimeout)
+    if (finishedTimeout !== undefined) window.clearTimeout(finishedTimeout)
+    readyTimeout = undefined
+    finishedTimeout = undefined
+  }
+
+  try {
+    listeners.push(await listen<RenderEventPayload>(VIDEO_EXPORT_RENDER_READY_EVENT, ({ payload }) => {
+      if (payload.jobId !== jobId) return
+      if (readyTimeout !== undefined) window.clearTimeout(readyTimeout)
+      readyTimeout = undefined
+      resolveReady()
+    }))
+    listeners.push(await listen<RenderFinishedPayload>(VIDEO_EXPORT_RENDER_FINISHED_EVENT, ({ payload }) => {
+      if (payload.jobId === jobId) resolveFinished(payload)
+    }))
+
+    readyTimeout = window.setTimeout(() => {
+      resolveFinished({ jobId, error: '帧截图渲染窗口启动超时' })
+    }, FRAME_RENDER_WINDOW_READY_TIMEOUT_MS)
+    try {
+      await createVideoExportRenderWindow(jobId, renderJob)
+      renderWindowCreated = true
+    } catch (error) {
+      renderWindowCreated = await hasVideoExportRenderJob(jobId)
+      throw error
+    }
+
+    await Promise.race([ready, finished.then(() => undefined)])
+    if (readyTimeout !== undefined) window.clearTimeout(readyTimeout)
+    readyTimeout = undefined
+    finishedTimeout = window.setTimeout(() => {
+      resolveFinished({ jobId, error: '等待帧截图完成超时' })
+    }, FRAME_CAPTURE_FINISHED_TIMEOUT_MS)
+
+    const completion = await finished
+    if (completion.error) throw new Error(completion.error)
+    const frame = completion.result?.frame
+    if (!frame) throw new Error('独立渲染窗口没有返回帧图像')
+    return frame
+  } finally {
+    clearTimeouts()
+    listeners.forEach((unlisten) => unlisten())
+    if (renderWindowCreated) await finishVideoExportRenderWindow(jobId, false).catch(() => undefined)
   }
 }

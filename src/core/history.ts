@@ -51,14 +51,36 @@ export class HistoryManager {
   private lastStateMap: Map<string, string> = new Map() // ID -> JSON字符串(用于快速比对)
   private currentFullData: Map<string, DanmakuItem> = new Map() // 当前完整的弹幕库缓存
 
+  ensureBaseline(danmakus: DanmakuItem[], description = '编辑器初始状态') {
+    if (this.state.snapshots.length > 0) return
+    const now = Date.now()
+    const snapshot: HistorySnapshot = {
+      id: this.generateSnapshotId(),
+      delta: {
+        upserted: [],
+        deletedIds: [],
+        undoUpserted: [],
+        undoDeletedIds: []
+      },
+      createdAt: now,
+      description
+    }
+    this.state.snapshots = [snapshot]
+    this.state.currentIndex = 0
+    this.state.navigationHistory.push(snapshot.id)
+    this.updateInternalBase(danmakus)
+    this.lastSnapshotTime = now
+    this.logOperation('记录历史基线: ' + description + ' [ID: ' + snapshot.id + ']')
+  }
+
   /**
    * 记录一个新的增量快照
    */
-  recordSnapshot(danmakus: DanmakuItem[], description?: string) {
+  recordSnapshot(danmakus: DanmakuItem[], description?: string, immediate = false) {
     const now = Date.now()
 
     // 防抖：如果上次记录时间太近，则跳过
-    if (now - this.lastSnapshotTime < this.debounceTime) {
+    if (!immediate && now - this.lastSnapshotTime < this.debounceTime) {
       return
     }
 
@@ -211,6 +233,58 @@ export class HistoryManager {
       canRedo: this.state.currentIndex < this.state.snapshots.length - 1,
       currentSnapshot: this.state.snapshots[this.state.currentIndex] || null,
       navigationHistory: [...this.state.navigationHistory]
+    }
+  }
+
+  listSnapshots() {
+    return this.state.snapshots.map((snapshot, index) => ({
+      snapshotId: snapshot.id,
+      index,
+      createdAt: snapshot.createdAt,
+      description: snapshot.description || '',
+      isCurrent: index === this.state.currentIndex,
+      changedIds: [...new Set([
+        ...snapshot.delta.upserted.map((item) => item.id),
+        ...snapshot.delta.deletedIds
+      ])],
+      createdIds: [...snapshot.delta.undoDeletedIds],
+      deletedIds: [...snapshot.delta.deletedIds]
+    }))
+  }
+
+  getSnapshotDanmakus(snapshotId: string, offset = 0, limit = 100) {
+    const targetIndex = this.state.snapshots.findIndex((snapshot) => snapshot.id === snapshotId)
+    if (targetIndex < 0) throw new Error(`找不到历史快照：${snapshotId}`)
+
+    const danmakus = new Map<string, DanmakuItem>()
+    this.currentFullData.forEach((item, id) => danmakus.set(id, this.clone(item)))
+
+    if (targetIndex < this.state.currentIndex) {
+      for (let index = this.state.currentIndex; index > targetIndex; index--) {
+        const delta = this.state.snapshots[index].delta
+        delta.undoUpserted.forEach((item) => danmakus.set(item.id, this.clone(item)))
+        delta.undoDeletedIds.forEach((id) => danmakus.delete(id))
+      }
+    } else if (targetIndex > this.state.currentIndex) {
+      for (let index = this.state.currentIndex + 1; index <= targetIndex; index++) {
+        const delta = this.state.snapshots[index].delta
+        delta.upserted.forEach((item) => danmakus.set(item.id, this.clone(item)))
+        delta.deletedIds.forEach((id) => danmakus.delete(id))
+      }
+    }
+
+    const snapshot = this.state.snapshots[targetIndex]
+    const allItems = Array.from(danmakus.values())
+    const safeOffset = Math.max(0, Math.trunc(offset))
+    const safeLimit = Math.max(1, Math.min(500, Math.trunc(limit)))
+    return {
+      snapshotId: snapshot.id,
+      index: targetIndex,
+      createdAt: snapshot.createdAt,
+      description: snapshot.description || '',
+      total: allItems.length,
+      offset: safeOffset,
+      items: allItems.slice(safeOffset, safeOffset + safeLimit)
     }
   }
 

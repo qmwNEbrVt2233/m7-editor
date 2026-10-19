@@ -75,6 +75,27 @@ export type ToolWriteRequest = {
   }
 }
 
+export type AgentNumericRule =
+  | { mode: 'range'; start: number; end: number; expression?: string }
+  | { mode: 'relative'; start: number; step: number | string }
+  | { mode: 'cycle'; values: Array<number | string> }
+
+export type AgentColorRule =
+  | { mode: 'range'; start: string; target: string }
+  | { mode: 'relative'; start: string; target: string; alpha: number | string }
+  | { mode: 'cycle'; values: string[] }
+
+export type AgentDirectRule =
+  | { mode: 'assign'; value: string | boolean }
+  | { mode: 'cycle'; values: Array<string | boolean> }
+
+export type AgentCreationRule = AgentNumericRule | AgentColorRule | AgentDirectRule
+
+export type AgentCreationRequest = {
+  quantity: number
+  rules: Partial<Record<AllFieldPath, AgentCreationRule>>
+}
+
 export type DanmakuDraft = Omit<DanmakuItem, 'id'> & {
   id?: string
 }
@@ -142,6 +163,150 @@ export const RANGE_EXPRESSION_PRESETS: ExpressionPreset[] = [
   }
   
 ]
+
+export function createDefaultNumericRules(currentTime = 0): Record<NumericFieldPath, NumericRuleState> {
+  const createRule = (mode: RuleMode, start = '', end = '', step = ''): NumericRuleState => ({
+    mode,
+    cycleList: '',
+    start,
+    end,
+    step,
+    expression: RANGE_EXPRESSION_PRESETS[0].expression,
+    expressionPreset: RANGE_EXPRESSION_PRESETS[0].key
+  })
+
+  return {
+    layer: createRule('relative', '0', '9', '+1'),
+    startTime: createRule('relative', String(Math.round(currentTime)), String(Math.round(currentTime + 900)), '+100'),
+    'content.size': createRule('range', '60', '60', '+2'),
+    'transform.start.x': createRule('range', '0', '0', '+20'),
+    'transform.start.y': createRule('range', '0', '0', '+10'),
+    'transform.end.x': createRule('range', '0', '0', '+20'),
+    'transform.end.y': createRule('range', '0', '0', '+10'),
+    'transform.zRotate': createRule('range', '0', '0', '+15'),
+    'transform.yRotate': createRule('range', '0', '0', '+15'),
+    'opacity.from': createRule('range', '1', '1', '-0.05'),
+    'opacity.to': createRule('range', '1', '1', '-0.05'),
+    'animation.duration': createRule('range', '1000', '1000', '+100'),
+    'animation.moveDuration': createRule('range', '500', '500', '+100'),
+    'animation.delay': createRule('range', '0', '0', '+100')
+  }
+}
+
+export function createDefaultColorRule(): ColorRuleState {
+  return {
+    mode: 'range',
+    cycleList: '',
+    start: '#FFFFFF',
+    startText: '#FFFFFF',
+    target: '#FFAA00',
+    targetText: '#FFAA00',
+    alpha: '0.1'
+  }
+}
+
+export function createDefaultDirectRules(): ToolWriteRequest['directRules'] {
+  return {
+    text: { mode: 'assign', value: '欢迎使用高级创建工具', cycleList: '' },
+    font: { mode: 'assign', value: 'Microsoft YaHei', cycleList: '' },
+    stroke: { mode: 'assign', value: false, cycleList: '' },
+    easing: { mode: 'assign', value: 'speedup', cycleList: '' }
+  }
+}
+
+export function buildToolWriteRequestFromAgentRules(
+  input: AgentCreationRequest,
+  currentTime: number
+): ToolWriteRequest {
+  if (!Number.isSafeInteger(input.quantity) || input.quantity < 1 || input.quantity > 1000) {
+    throw new Error('quantity 必须是 1 到 1000 之间的整数')
+  }
+
+  const entries = Object.entries(input.rules) as Array<[string, AgentCreationRule | undefined]>
+  if (entries.length === 0 || entries.some(([, rule]) => rule === undefined)) {
+    throw new Error('rules 至少需要包含一个有效字段规则')
+  }
+
+  const request: ToolWriteRequest = {
+    quantity: input.quantity,
+    expressionEnabled: false,
+    writeMode: 'replace',
+    previewText: '[]',
+    numericRules: createDefaultNumericRules(currentTime),
+    colorRule: createDefaultColorRule(),
+    directRules: createDefaultDirectRules()
+  }
+
+  for (const [rawPath, rawRule] of entries) {
+    if (!CREATION_TOOL_FIELD_PATH_SET.has(rawPath as AllFieldPath)) {
+      throw new Error(`不支持的 creationTools 字段：${rawPath}`)
+    }
+    if (!rawRule) throw new Error(`字段 ${rawPath} 缺少规则`)
+
+    if (isNumericFieldPath(rawPath)) {
+      const rule = rawRule as AgentNumericRule
+      const target = request.numericRules[rawPath]
+      target.mode = rule.mode
+      if (rule.mode === 'range') {
+        target.start = String(rule.start)
+        target.end = String(rule.end)
+        if (rule.expression !== undefined) {
+          target.expression = rule.expression
+          request.expressionEnabled = true
+        }
+      } else if (rule.mode === 'relative') {
+        target.start = String(rule.start)
+        target.step = String(rule.step)
+      } else {
+        target.cycleList = rule.values.map(String).join(';\n')
+      }
+      continue
+    }
+
+    if (rawPath === 'content.color') {
+      const rule = rawRule as AgentColorRule
+      request.colorRule.mode = rule.mode
+      if (rule.mode === 'cycle') {
+        request.colorRule.cycleList = rule.values.join(';\n')
+      } else {
+        request.colorRule.start = rule.start
+        request.colorRule.startText = rule.start
+        request.colorRule.target = rule.target
+        request.colorRule.targetText = rule.target
+        if (rule.mode === 'relative') request.colorRule.alpha = String(rule.alpha)
+      }
+      continue
+    }
+
+    const rule = rawRule as AgentDirectRule
+    const directPath = rawPath as DirectFieldPath
+    const target = directPath === 'content.text'
+      ? request.directRules.text
+      : directPath === 'content.font'
+        ? request.directRules.font
+        : directPath === 'content.stroke'
+          ? request.directRules.stroke
+          : request.directRules.easing
+    target.mode = rule.mode
+    if (rule.mode === 'assign') {
+      target.value = rule.value as never
+    } else {
+      target.cycleList = rule.values.map(String).join(';\n')
+    }
+  }
+
+  return request
+}
+
+export function generateDanmakuDraftsFromAgentRules(
+  input: AgentCreationRequest,
+  currentTime: number,
+  allowNegativeValues = false
+): DanmakuDraft[] {
+  const request = buildToolWriteRequestFromAgentRules(input, currentTime)
+  return generateDanmakuDraftsFromRules(request)
+    .map((draft) => normalizeGeneratedDraft(draft, allowNegativeValues))
+}
 
 const NUMERIC_FIELD_PATHS: NumericFieldPath[] = [
   'layer',

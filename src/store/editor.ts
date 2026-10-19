@@ -5,6 +5,8 @@ import type { DanmakuItem } from '@/core/danmaku'
 import { saveProject, loadProject, clearProject } from '@/localStorage/projectStorage'
 import { historyManager } from '@/core/history'
 import { parseXML, toXML } from '@/core/converter'
+import { applyEditorApi, type EditorApiMethod, type EditorApiResult } from '@/core/editorApi'
+import { measureDanmakus } from '@/core/danmakuMeasurement'
 import {
   backupFolderProject,
   convertMediaPathToUrl,
@@ -23,6 +25,8 @@ import {
   deleteDanmakuTemplate,
   type DanmakuTemplateRecord
 } from '@/utils/tauriBackend'
+
+let editorApiQueue: Promise<void> = Promise.resolve()
 
 type SavePickerAcceptType = {
   description: string
@@ -185,6 +189,36 @@ function isValidTemplateDanmaku(value: unknown): value is DanmakuItem {
     (animation.duration === undefined || isFiniteNumber(animation.duration)) &&
     isFiniteNumber(animation.moveDuration) && isFiniteNumber(animation.delay) &&
     (animation.easing === 'speedup' || animation.easing === 'speeddown')
+}
+
+function normalizeMcpDanmakuDrafts(input: unknown, defaultDuration: number): DanmakuItem[] {
+  if (!Array.isArray(input) || input.length === 0) throw new Error('请提供至少一条弹幕对象')
+  return input.map((value, index) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`第 ${index + 1} 条弹幕必须是对象`)
+    }
+    let draft: Record<string, any>
+    try {
+      draft = JSON.parse(JSON.stringify(value)) as Record<string, any>
+    } catch {
+      throw new Error(`第 ${index + 1} 条弹幕无法序列化`)
+    }
+    if (!draft.animation || typeof draft.animation !== 'object' || Array.isArray(draft.animation)) {
+      throw new Error(`第 ${index + 1} 条弹幕缺少 animation 对象`)
+    }
+    if (!Number.isFinite(draft.animation.duration)) draft.animation.duration = defaultDuration
+    draft.id = '__mcp_pending_id__'
+    if (!isValidTemplateDanmaku(draft)) {
+      throw new Error(`第 ${index + 1} 条弹幕结构无效；需要 content、transform、opacity 和完整的 animation 字段`)
+    }
+    if (draft.startTime < 0 || draft.layer < 0 || draft.animation.duration <= 0) {
+      throw new Error(`第 ${index + 1} 条弹幕的时间、层级和持续时间必须是有效的非负值，持续时间须大于 0`)
+    }
+    draft.id = ''
+    draft.startTime = Math.round(draft.startTime)
+    draft.layer = Math.round(draft.layer)
+    return draft as DanmakuItem
+  })
 }
 
 export function parsePastedDanmakusText(text: string): DanmakuItem[] {
@@ -356,6 +390,276 @@ export const useEditorStore = defineStore('editor', {
   },
 
   actions: {
+    async applyFieldUpdate(field: string, method: EditorApiMethod): Promise<EditorApiResult> {
+      const previousOperation = editorApiQueue
+      let releaseOperation!: () => void
+      editorApiQueue = new Promise<void>((resolve) => { releaseOperation = resolve })
+      await previousOperation
+
+      try {
+      const emptyResult = { changedIds: [], createdIds: [], selectedIds: [...this.selectedIds], warnings: [] as string[] }
+
+      if (field === '@history.undo' || field === '@history.redo') {
+        const historyState = historyManager.getState()
+        if (field === '@history.undo' && !historyState.canUndo) {
+          return { ok: false, code: 'NO_UNDO', message: '没有可撤销的操作', ...emptyResult }
+        }
+        if (field === '@history.redo' && !historyState.canRedo) {
+          return { ok: false, code: 'NO_REDO', message: '没有可重做的操作', ...emptyResult }
+        }
+        const before = new Map<string, string>(this.danmakus.map((item: DanmakuItem) => [item.id, JSON.stringify(item)] as [string, string]))
+        field === '@history.undo' ? this.undo() : this.redo()
+        const after = new Map<string, string>(this.danmakus.map((item: DanmakuItem) => [item.id, JSON.stringify(item)] as [string, string]))
+        const changedIds = [...new Set([...before.keys(), ...after.keys()])].filter((id) => before.get(id) !== after.get(id))
+        return { ok: true, changedIds, createdIds: [...after.keys()].filter((id) => !before.has(id)), selectedIds: [...this.selectedIds], warnings: [] }
+      }
+
+      try {
+        const methodParams = method && typeof method === 'object' ? method as Record<string, unknown> : {}
+
+        if (field === '@danmaku.create') {
+          if (typeof methodParams.relativeToCurrentTime !== 'boolean') {
+            throw new Error('relativeToCurrentTime 必须明确传入 true 或 false')
+          }
+          const drafts = normalizeMcpDanmakuDrafts(methodParams.danmakus, this.getDefaultDanmakuDuration())
+          historyManager.ensureBaseline(this.danmakus, 'MCP 编辑前的状态')
+          const relativeToCurrentTime = methodParams.relativeToCurrentTime === true
+          let created: DanmakuItem[]
+          if (relativeToCurrentTime) {
+            created = this.insertDanmakus(drafts, 'MCP 创建弹幕', true)
+          } else {
+            let nextId = this.danmakus.reduce((max: number, item: DanmakuItem) => {
+              const numericId = Number.parseInt(item.id, 10)
+              return Number.isFinite(numericId) ? Math.max(max, numericId) : max
+            }, 0)
+            created = drafts.map((draft) => ({ ...draft, id: String(++nextId) }))
+            this.danmakus.push(...created)
+            this.selectedIds = created.map((item) => item.id)
+            historyManager.recordSnapshot(this.danmakus, `MCP 创建弹幕${created.length}条`, true)
+          }
+          return {
+            ok: true,
+            changedIds: [],
+            createdIds: created.map((item) => item.id),
+            selectedIds: [...this.selectedIds],
+            warnings: []
+          }
+        }
+
+        if (field === '@danmaku.delete') {
+          const requestedIds = methodParams.ids === undefined
+            ? [...this.selectedIds]
+            : Array.isArray(methodParams.ids) && methodParams.ids.every((id) => typeof id === 'string')
+              ? [...new Set(methodParams.ids as string[])]
+              : null
+          if (requestedIds === null) throw new Error('弹幕 ID 必须是字符串数组')
+          if (!requestedIds.length) throw new Error('没有指定要删除的弹幕，也没有选中弹幕')
+          const requested = new Set(requestedIds)
+          const found = this.danmakus.filter((item: DanmakuItem) => requested.has(item.id))
+          if (found.length !== requested.size) throw new Error('指定的部分弹幕不存在，未删除任何弹幕')
+          historyManager.ensureBaseline(this.danmakus, 'MCP 删除前的状态')
+          this.danmakus = this.danmakus.filter((item: DanmakuItem) => !requested.has(item.id))
+          this.selectedIds = this.selectedIds.filter((id: string) => !requested.has(id))
+          historyManager.recordSnapshot(this.danmakus, `MCP 删除弹幕${found.length}条`, true)
+          return {
+            ok: true,
+            changedIds: found.map((item: DanmakuItem) => item.id),
+            createdIds: [],
+            selectedIds: [...this.selectedIds],
+            warnings: []
+          }
+        }
+
+        if (field === '@editor.currentTime') {
+          if (typeof method !== 'number' || !Number.isFinite(method)) throw new Error('currentTime 必须是有限数字')
+          const nextTime = Math.max(0, Math.round(method))
+          this.currentTime = nextTime
+          this.timelineOffset = nextTime
+          return { ok: true, ...emptyResult, warnings: nextTime === method ? [] : ['currentTime 已四舍五入并限制为非负值'] }
+        }
+
+        if (field === '@editor.settings') {
+          if (!method || typeof method !== 'object' || Array.isArray(method)) throw new Error('编辑器设置必须是对象')
+          const settings = method as Record<string, unknown>
+          const allowedKeys = new Set(['screenWidth', 'screenHeight', 'maxLayers'])
+          const unknownKey = Object.keys(settings).find((key) => !allowedKeys.has(key))
+          if (unknownKey) throw new Error(`不支持的编辑器设置：${unknownKey}`)
+          if (!Object.keys(settings).length) throw new Error('请至少提供 screenWidth、screenHeight 或 maxLayers')
+          for (const [key, value] of Object.entries(settings)) {
+            if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${key} 必须是有限数字`)
+          }
+
+          const warnings: string[] = []
+          const width = typeof settings.screenWidth === 'number' ? settings.screenWidth : this.screenWidth
+          const height = typeof settings.screenHeight === 'number' ? settings.screenHeight : this.screenHeight
+          if (width < 10 || height < 10) warnings.push('屏幕宽高最小值为 10')
+          this.setScreenSize(width, height)
+          if (typeof settings.maxLayers === 'number') {
+            if (settings.maxLayers < 1) warnings.push('最大层数最小值为 1')
+            this.setMaxLayers(settings.maxLayers)
+            if (this.maxLayers > Math.max(1, Math.round(settings.maxLayers))) {
+              warnings.push(`当前已有弹幕使用到第 ${this.maxLayers} 层，最大层数未能调低到请求值`)
+            }
+          }
+          return { ok: true, ...emptyResult, warnings }
+        }
+
+        const awaitsMeasurement = field === '@toolbar.center'
+          || (field === '@toolbar.split' && methodParams.mode === 'letter')
+        const startingDanmakus = awaitsMeasurement ? JSON.stringify(this.danmakus) : null
+        const startingSelection = awaitsMeasurement ? JSON.stringify(this.selectedIds) : null
+        const outcome = await applyEditorApi({
+          danmakus: this.danmakus,
+          selectedIds: [...this.selectedIds],
+          currentTime: this.currentTime,
+          screenWidth: this.screenWidth,
+          screenHeight: this.screenHeight,
+          maxLayers: this.maxLayers,
+          allowNegativeValues: this.allowNegativeValues,
+          generateId: () => this.generateNewId(),
+          measureDanmakus
+        }, field, method)
+
+        if (awaitsMeasurement && (
+          JSON.stringify(this.danmakus) !== startingDanmakus
+          || JSON.stringify(this.selectedIds) !== startingSelection
+        )) {
+          return {
+            ok: false,
+            code: 'CONCURRENT_MODIFICATION',
+            message: '编辑期间工程或选择发生变化，请重试',
+            changedIds: [],
+            createdIds: [],
+            selectedIds: [...this.selectedIds],
+            warnings: []
+          }
+        }
+
+        if (outcome.changedIds.length > 0 || outcome.createdIds.length > 0) {
+          historyManager.ensureBaseline(this.danmakus)
+          historyManager.recordSnapshot(this.danmakus, '统一 API 操作前的编辑', true)
+          this.danmakus = outcome.danmakus
+          historyManager.recordSnapshot(this.danmakus, outcome.historyLabel || `字段更新：${field}`, true)
+          if (outcome.changedField) {
+            outcome.changedIds.forEach((id) => {
+              const item = this.danmakus.find((danmaku: DanmakuItem) => danmaku.id === id)
+              if (item) {
+                const value = outcome.changedField!.split('.').reduce((current: any, key) => current?.[key], item as any)
+                this._checkAndMovePlayhead({ [outcome.changedField!]: value }, id)
+              }
+            })
+          }
+        }
+        this.selectedIds = outcome.selectedIds
+        return {
+          ok: true,
+          changedIds: outcome.changedIds,
+          createdIds: outcome.createdIds,
+          selectedIds: [...this.selectedIds],
+          warnings: outcome.warnings
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        const code = message.includes('测量')
+          ? 'MEASUREMENT_FAILED'
+          : message.includes('没有选中')
+            ? 'NO_SELECTION'
+            : message.includes('表达式')
+              ? 'INVALID_EXPRESSION'
+              : message.includes('字段或操作') || message.includes('字段不存在') || message.includes('字段不支持') || message.includes('不支持的字段') || message.includes('不支持的编辑操作')
+                ? 'INVALID_FIELD'
+                : field === '@selection.filter'
+                  ? 'INVALID_FILTER'
+                  : 'INVALID_OPERATION'
+        return { ok: false, code, message, ...emptyResult }
+      }
+      } finally {
+        releaseOperation()
+      }
+    },
+
+    getMcpEditorState() {
+      const history = historyManager.getState()
+      return {
+        version: this.version,
+        ready: !this.InitializationPhase,
+        projectMode: this.projectMode,
+        danmakuCount: this.danmakus.length,
+        selectedIds: [...this.selectedIds],
+        selectedCount: this.selectedIds.length,
+        currentTime: this.currentTime,
+        screen: { width: this.screenWidth, height: this.screenHeight },
+        maxLayers: this.maxLayers,
+        canUndo: history.canUndo,
+        canRedo: history.canRedo
+      }
+    },
+
+    getMcpDanmakus(options: { ids?: string[]; selectedOnly?: boolean; offset?: number; limit?: number } = {}) {
+      const ids = options.ids ? new Set(options.ids) : null
+      const selected = new Set(this.selectedIds)
+      const filtered = this.danmakus.filter((item: DanmakuItem) => {
+        if (ids) return ids.has(item.id)
+        if (options.selectedOnly !== false) return selected.has(item.id)
+        return true
+      })
+      const offset = Math.max(0, Math.trunc(options.offset || 0))
+      const limit = Math.max(1, Math.min(500, Math.trunc(options.limit || 100)))
+      return { total: filtered.length, offset, items: JSON.parse(JSON.stringify(filtered.slice(offset, offset + limit))) as DanmakuItem[] }
+    },
+
+    getMcpLogs(options: { type?: string; offset?: number; limit?: number } = {}) {
+      const logs = useNoticeStore().logList.filter((entry) => !options.type || entry.type === options.type)
+      const offset = Math.max(0, Math.trunc(options.offset || 0))
+      const limit = Math.max(1, Math.min(500, Math.trunc(options.limit || 100)))
+      const newestFirst = [...logs].reverse()
+      const items = newestFirst.slice(offset, offset + limit).map((entry) => {
+        let additionalInfo: unknown = entry.AdditionalInfo
+        if (additionalInfo !== undefined) {
+          try {
+            additionalInfo = JSON.parse(JSON.stringify(additionalInfo)) as unknown
+          } catch {
+            additionalInfo = String(additionalInfo)
+          }
+        }
+        return {
+          id: entry.id,
+          timestamp: entry.timestamp,
+          type: entry.type || 'info',
+          message: entry.message,
+          ...(additionalInfo !== undefined ? { additionalInfo } : {})
+        }
+      })
+      return { total: logs.length, offset, items }
+    },
+
+    getMcpHistorySnapshots() {
+      return historyManager.listSnapshots()
+    },
+
+    getMcpHistorySnapshot(snapshotId: string, options: { offset?: number; limit?: number } = {}) {
+      return historyManager.getSnapshotDanmakus(snapshotId, options.offset, options.limit)
+    },
+
+    async saveFolderProjectForMcp(backup = false) {
+      if (this.projectMode !== 'folder' || !this.activeFolderProjectPath) {
+        throw new Error('保存和备份仅支持已打开的文件夹工程')
+      }
+      const payload = backup
+        ? await backupFolderProject(this.activeFolderProjectPath, this.exportProject(), this.pendingFolderMediaPath)
+        : await saveFolderProject(this.activeFolderProjectPath, this.exportProject(), this.pendingFolderMediaPath)
+      await this.applyFolderProjectPayload(payload, true)
+      const notice = useNoticeStore()
+      notice.log(backup ? '[MCP] 文件夹工程已保存并备份' : '[MCP] 文件夹工程已保存', 'success')
+      return {
+        ok: true,
+        projectMode: this.projectMode,
+        projectPath: this.activeFolderProjectPath,
+        projectName: this.activeFolderProjectConfig?.name || '',
+        lastBackUpAt: this.activeFolderProjectConfig?.lastBackUpAt || null
+      }
+    },
+
     setTime(time: number) {
       this.currentTime = time
     },
@@ -1271,7 +1575,7 @@ export const useEditorStore = defineStore('editor', {
       this.persistGlobalSettings()
     },
 
-    insertDanmakus(drafts: DanmakuItem[], historyLabel = '插入弹幕'): DanmakuItem[] {
+    insertDanmakus(drafts: DanmakuItem[], historyLabel = '插入弹幕', immediate = false): DanmakuItem[] {
       const danmakusToAdd = JSON.parse(JSON.stringify(drafts)) as DanmakuItem[]
       const duration = this.getDefaultDanmakuDuration()
       danmakusToAdd.forEach((danmaku) => {
@@ -1292,7 +1596,7 @@ export const useEditorStore = defineStore('editor', {
       this.assignLayersForDanmakusSequentially(danmakusToAdd)
       this.danmakus.push(...danmakusToAdd)
       this.selectedIds = danmakusToAdd.map((danmaku) => danmaku.id)
-      historyManager.recordSnapshot(this.danmakus, `${historyLabel}${danmakusToAdd.length}条`)
+      historyManager.recordSnapshot(this.danmakus, `${historyLabel}${danmakusToAdd.length}条`, immediate)
       return danmakusToAdd
     },
 

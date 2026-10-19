@@ -452,24 +452,22 @@
 
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
-import type { DanmakuItem } from '@/core/danmaku'
-import { historyManager } from '@/core/history'
 import { useEditorStore, parsePastedDanmakusText } from '@/store/editor'
 import type {
   ColorFieldPath,
-  ColorRuleState,
   DanmakuDraft,
   DirectRuleMode,
-  DirectRuleState,
   DirectFieldPath,
   NumericFieldPath,
-  NumericRuleState,
   RuleMode,
   ToolWriteRequest,
   WriteMode
 } from '@/utils/danmakuGenerator'
 import {
   RANGE_EXPRESSION_PRESETS as RANGE_EXPRESSION_PRESETS_VALUE,
+  createDefaultColorRule,
+  createDefaultDirectRules,
+  createDefaultNumericRules,
   normalizeGeneratedDraft,
   parsePreviewDanmakus,
   writeGeneratedDanmakusToPreview
@@ -557,47 +555,7 @@ const rangeExpressionPresets = RANGE_EXPRESSION_PRESETS_VALUE
 const presets = ref<CreationToolPreset[]>(loadCreationToolPresets())
 const managedPresetId = ref<string | null>(null)
 
-function createDefaultNumericRules(): Record<NumericFieldPath, NumericRuleState> {
-  return {
-    layer: createNumericRule('relative', '0', '9', '+1'),
-    startTime: createNumericRule('relative', String(Math.round(store.currentTime)), String(Math.round(store.currentTime + 900)), '+100'),
-    'content.size': createNumericRule('range' , '60', '60', '+2'),
-    'transform.start.x': createNumericRule('range', '0', '0', '+20'),
-    'transform.start.y': createNumericRule('range', '0', '0', '+10'),
-    'transform.end.x': createNumericRule('range', '0', '0', '+20'),
-    'transform.end.y': createNumericRule('range', '0', '0', '+10'),
-    'transform.zRotate': createNumericRule('range', '0', '0', '+15'),
-    'transform.yRotate': createNumericRule('range', '0', '0', '+15'),
-    'opacity.from': createNumericRule('range', '1', '1', '-0.05'),
-    'opacity.to': createNumericRule('range', '1', '1', '-0.05'),
-    'animation.duration': createNumericRule('range', '1000', '1000', '+100'),
-    'animation.moveDuration': createNumericRule('range', '500', '500', '+100'),
-    'animation.delay': createNumericRule('range', '0', '0', '+100')
-  }
-}
-
-function createDefaultColorRule(): ColorRuleState {
-  return {
-    mode: 'range',
-    cycleList: '',
-    start: '#FFFFFF',
-    startText: '#FFFFFF',
-    target: '#FFAA00',
-    targetText: '#FFAA00',
-    alpha: '0.1'
-  }
-}
-
-function createDefaultDirectRules() {
-  return {
-    text: createDirectRule('欢迎使用高级创建工具'),
-    font: createDirectRule('Microsoft YaHei'),
-    stroke: createDirectRule(false),
-    easing: createDirectRule('speedup' as DanmakuItem['animation']['easing'])
-  }
-}
-
-const numericRules = ref(createDefaultNumericRules())
+const numericRules = ref(createDefaultNumericRules(store.currentTime))
 const colorRule = ref(createDefaultColorRule())
 const directRules = ref(createDefaultDirectRules())
 const builtInFontOptions: FontOption[] = [
@@ -894,26 +852,6 @@ async function handleCreationToolsShortcut(event: KeyboardEvent) {
       event.preventDefault()
       await handleToolReset()
       break
-  }
-}
-
-function createNumericRule(mode: RuleMode, start = '', end = '', step = ''): NumericRuleState {
-  return {
-    mode,
-    cycleList: '',
-    start,
-    end,
-    step,
-    expression: RANGE_EXPRESSION_PRESETS_VALUE[0].expression,
-    expressionPreset: RANGE_EXPRESSION_PRESETS_VALUE[0].key
-  }
-}
-
-function createDirectRule<T>(value: T): DirectRuleState<T> {
-  return {
-    mode: 'assign',
-    value,
-    cycleList: ''
   }
 }
 
@@ -1300,7 +1238,7 @@ async function handleToolReset() {
   const confirmed = await notice.confirm('确定要重置工具栏吗？这将丢失未保存的设置')
   if (confirmed) {
     expressionEnabled.value = false
-    numericRules.value = createDefaultNumericRules()
+    numericRules.value = createDefaultNumericRules(store.currentTime)
     colorRule.value = createDefaultColorRule()
     directRules.value = createDefaultDirectRules()
     toolStatus.value = '工具栏已重置至默认值'
@@ -1405,31 +1343,25 @@ function handleExpressionInput(path: NumericFieldPath) {
   rule.expressionPreset = matchedPreset?.key || 'custom'
 }
 
-function handleCreate() {
+async function handleCreate() {
   try {
     const drafts = parsePreviewDanmakus(previewText.value)
     if (drafts.length === 0) {
       throw new Error('预览框中没有可创建的弹幕数据')
     }
 
-    const nextId = createIdAllocator()
-    const createdDanmakus = drafts.map((draft) => {
-      const normalized = normalizeGeneratedDraft(draft, store.allowNegativeValues)
-      return {
-        ...normalized,
-        id: nextId()
-      }
+    const normalizedDrafts = drafts.map((draft) => normalizeGeneratedDraft(draft, store.allowNegativeValues))
+    const response = await store.applyFieldUpdate('@danmaku.create', {
+      danmakus: normalizedDrafts,
+      relativeToCurrentTime: false
     })
+    if (!response.ok) throw new Error(response.message || '创建失败')
 
-    store.danmakus.push(...createdDanmakus)
-    store.selectedIds = createdDanmakus.map((item) => item.id)
-    historyManager.recordSnapshot(store.danmakus, `高级创建工具：创建${createdDanmakus.length}条弹幕`)
-
-    previewStatus.value = `已创建 ${createdDanmakus.length} 条弹幕`
+    previewStatus.value = `已创建 ${response.createdIds.length} 条弹幕`
     previewStatusTone.value = 'success'
     emit('created', {
-      count: createdDanmakus.length,
-      ids: createdDanmakus.map((item) => item.id)
+      count: response.createdIds.length,
+      ids: response.createdIds
     })
     if (autoOperationMode.value === 'auto') {
       store.showCreationTools = false
@@ -1445,20 +1377,6 @@ function normalizeQuantity(): number {
   const normalized = Number.isFinite(parsed) ? Math.max(1, Math.round(parsed)) : 10
   quantityInput.value = String(normalized)
   return normalized
-}
-
-function createIdAllocator() {
-  const generatedId = Number(store.generateNewId())
-  const maxExistingId = store.danmakus.reduce((max: number, danmaku: DanmakuItem) => {
-    const numericId = Number(danmaku.id)
-    return Number.isFinite(numericId) ? Math.max(max, numericId) : max
-  }, 0)
-
-  let nextId = Number.isFinite(generatedId)
-    ? Math.max(generatedId, maxExistingId + 1)
-    : maxExistingId + 1
-
-  return () => String(nextId++)
 }
 
 function cloneValue<T>(value: T): T {

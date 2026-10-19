@@ -1,16 +1,21 @@
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
-    io::{Seek, SeekFrom, Write},
+    io::{Read, Seek, SeekFrom, Write},
+    net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{mpsc, Mutex},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc, Arc, Mutex,
+    },
+    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{ipc::Response, AppHandle, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{ipc::Response, AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 #[cfg(desktop)]
 use tauri::{
@@ -23,6 +28,9 @@ const APP_VERSION: &str = "1.10.0";
 const APP_DIR_NAME: &str = "m7-editor";
 const APP_CONFIG_FILE: &str = "config.json";
 const PROJECT_CONFIG_FILE: &str = "project_config.json";
+const MCP_DESCRIPTOR_PREFIX: &str = "m7-editor-mcp-bridge-";
+const MCP_MAX_BODY_BYTES: usize = 1024 * 1024;
+static MCP_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Serialize)]
 struct MediaFile {
@@ -38,6 +46,367 @@ struct FileSystemRuntime {
 struct VideoExportRuntime {
     ffmpeg_processes: Mutex<HashMap<String, Child>>,
     render_jobs: Mutex<HashMap<String, Value>>,
+}
+
+#[derive(Clone)]
+struct McpBridgeRuntime {
+    inner: Arc<McpBridgeInner>,
+}
+
+struct McpBridgeInner {
+    token: String,
+    port: u16,
+    descriptor_path: PathBuf,
+    pending: Mutex<HashMap<String, mpsc::SyncSender<Result<Value, String>>>>,
+    running: AtomicBool,
+    frontend_ready: AtomicBool,
+}
+
+impl McpBridgeRuntime {
+    fn start(app: AppHandle) -> Result<Self, String> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|error| format!("无法启动 MCP 本机桥: {error}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|error| format!("无法配置 MCP 本机桥: {error}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|error| format!("无法读取 MCP 本机桥地址: {error}"))?
+            .port();
+        let token = create_mcp_token()?;
+        let descriptor_id = create_mcp_token()?;
+        let descriptor_dir = app
+            .path()
+            .app_config_dir()
+            .map_err(|error| format!("无法获取 MCP 桥接配置目录: {error}"))?
+            .join("mcp");
+        fs::create_dir_all(&descriptor_dir)
+            .map_err(|error| format!("无法创建 MCP 桥接配置目录: {error}"))?;
+        let descriptor_path = descriptor_dir.join(format!(
+            "{}{}.json",
+            MCP_DESCRIPTOR_PREFIX,
+            &descriptor_id[..24]
+        ));
+        write_mcp_descriptor(&descriptor_path, port, &token)?;
+        let bridge = Self {
+            inner: Arc::new(McpBridgeInner {
+                token,
+                port,
+                descriptor_path,
+                pending: Mutex::new(HashMap::new()),
+                running: AtomicBool::new(true),
+                frontend_ready: AtomicBool::new(false),
+            }),
+        };
+        let listener_bridge = bridge.clone();
+        thread::Builder::new()
+            .name("m7-editor-mcp-bridge".to_string())
+            .spawn(move || {
+                while listener_bridge.inner.running.load(Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            let request_bridge = listener_bridge.clone();
+                            let request_app = app.clone();
+                            let _ = thread::Builder::new()
+                                .name("m7-editor-mcp-request".to_string())
+                                .spawn(move || request_bridge.serve_connection(&request_app, stream));
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(25));
+                        }
+                        Err(_) => thread::sleep(Duration::from_millis(100)),
+                    }
+                }
+            })
+            .map_err(|error| format!("无法启动 MCP 本机桥线程: {error}"))?;
+        Ok(bridge)
+    }
+
+    fn serve_connection(&self, app: &AppHandle, mut stream: TcpStream) {
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+        let result = self.read_and_dispatch(app, &mut stream);
+        match result {
+            Ok(value) => write_mcp_http_response(&mut stream, 200, "OK", &json!({ "result": value })),
+            Err((status, message)) => {
+                write_mcp_http_response(&mut stream, status, "Error", &json!({ "error": message }))
+            }
+        }
+    }
+
+    fn read_and_dispatch(
+        &self,
+        app: &AppHandle,
+        stream: &mut TcpStream,
+    ) -> Result<Value, (u16, String)> {
+        let mut headers = Vec::with_capacity(1024);
+        let mut byte = [0u8; 1];
+        while headers.len() < 8192 {
+            stream
+                .read_exact(&mut byte)
+                .map_err(|_| (400, "HTTP 请求头不完整".to_string()))?;
+            headers.push(byte[0]);
+            if headers.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        if !headers.ends_with(b"\r\n\r\n") {
+            return Err((431, "HTTP 请求头过大".to_string()));
+        }
+        let headers_text = std::str::from_utf8(&headers)
+            .map_err(|_| (400, "HTTP 请求头格式无效".to_string()))?;
+        let mut lines = headers_text.split("\r\n");
+        let request_line = lines.next().unwrap_or_default();
+        if request_line != "POST /rpc HTTP/1.1" && request_line != "POST /rpc HTTP/1.0" {
+            return Err((404, "仅支持 POST /rpc".to_string()));
+        }
+
+        let mut content_length = None;
+        let mut authorization = None;
+        let mut host = None;
+        let mut has_origin = false;
+        let mut json_content_type = false;
+        let mut has_transfer_encoding = false;
+        for line in lines {
+            let Some((name, value)) = line.split_once(':') else {
+                continue;
+            };
+            match name.trim().to_ascii_lowercase().as_str() {
+                "content-length" => content_length = value.trim().parse::<usize>().ok(),
+                "authorization" => authorization = Some(value.trim().to_string()),
+                "host" => host = Some(value.trim().to_ascii_lowercase()),
+                "origin" => has_origin = true,
+                "content-type" => {
+                    json_content_type = value.trim().to_ascii_lowercase().starts_with("application/json")
+                }
+                "transfer-encoding" => has_transfer_encoding = true,
+                _ => {}
+            }
+        }
+
+        if has_origin {
+            return Err((403, "MCP 本机桥不接受浏览器来源请求".to_string()));
+        }
+        let expected_host = format!("127.0.0.1:{}", self.inner.port);
+        let expected_localhost = format!("localhost:{}", self.inner.port);
+        if !host.as_deref().is_some_and(|value| value == expected_host || value == expected_localhost) {
+            return Err((403, "MCP 本机桥拒绝了非本机 Host".to_string()));
+        }
+        if !authorization
+            .as_deref()
+            .is_some_and(|value| constant_time_equal(value, &format!("Bearer {}", self.inner.token)))
+        {
+            return Err((401, "MCP 桥接令牌无效".to_string()));
+        }
+        if !self.inner.frontend_ready.load(Ordering::Relaxed) {
+            return Err((503, "编辑器界面尚未连接 MCP 桥，请稍后重试".to_string()));
+        }
+        if !json_content_type || has_transfer_encoding {
+            return Err((400, "请求必须使用固定长度的 application/json 内容".to_string()));
+        }
+        if content_length.is_none_or(|length| length == 0 || length > MCP_MAX_BODY_BYTES) {
+            return Err((413, "MCP 请求体为空或超过 1 MiB".to_string()));
+        }
+        let content_length = content_length.unwrap();
+        let mut body = vec![0u8; content_length];
+        stream
+            .read_exact(&mut body)
+            .map_err(|_| (400, "MCP 请求体不完整".to_string()))?;
+        let request: Value = serde_json::from_slice(&body)
+            .map_err(|error| (400, format!("MCP 请求 JSON 无效: {error}")))?;
+        let method = request
+            .get("method")
+            .and_then(Value::as_str)
+            .filter(|method| !method.is_empty())
+            .ok_or_else(|| (400, "MCP 请求缺少 method".to_string()))?;
+        let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+        let request_id = format!(
+            "mcp-{}-{}",
+            now_millis(),
+            MCP_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let (sender, receiver) = mpsc::sync_channel(1);
+        self.inner
+            .pending
+            .lock()
+            .map_err(|_| (500, "MCP 请求队列不可用".to_string()))?
+            .insert(request_id.clone(), sender);
+        if let Err(error) = app.emit_to(
+            MAIN_WINDOW_LABEL,
+            "mcp-command",
+            json!({ "requestId": request_id, "method": method, "params": params }),
+        ) {
+            self.inner
+                .pending
+                .lock()
+                .ok()
+                .and_then(|mut pending| pending.remove(&request_id));
+            return Err((503, format!("编辑器窗口未连接 MCP 桥: {error}")));
+        }
+
+        let response_timeout = if method == "editor.captureFrame" {
+            Duration::from_secs(90)
+        } else {
+            Duration::from_secs(30)
+        };
+        match receiver.recv_timeout(response_timeout) {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(message)) => Err((422, message)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.inner
+                    .pending
+                    .lock()
+                    .ok()
+                    .and_then(|mut pending| pending.remove(&request_id));
+                Err((504, "编辑器未在 30 秒内响应 MCP 请求".to_string()))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err((503, "编辑器 MCP 请求通道已关闭".to_string())),
+        }
+    }
+
+    fn complete(&self, request_id: String, result: Option<Value>, error: Option<String>) -> Result<(), String> {
+        let sender = self
+            .inner
+            .pending
+            .lock()
+            .map_err(|_| "MCP 请求队列不可用".to_string())?
+            .remove(&request_id)
+            .ok_or_else(|| "MCP 请求不存在或已超时".to_string())?;
+        let response = match error {
+            Some(message) => Err(message),
+            None => result.ok_or_else(|| "编辑器返回了空 MCP 响应".to_string()),
+        };
+        sender
+            .send(response)
+            .map_err(|_| "MCP 客户端已断开".to_string())
+    }
+
+    fn shutdown(&self) {
+        self.inner.running.store(false, Ordering::Relaxed);
+        if let Ok(contents) = fs::read_to_string(&self.inner.descriptor_path) {
+            let is_current = serde_json::from_str::<Value>(&contents)
+                .ok()
+                .and_then(|descriptor| descriptor.get("token").and_then(Value::as_str).map(str::to_string))
+                .is_some_and(|token| constant_time_equal(&token, &self.inner.token));
+            if is_current {
+                let _ = fs::remove_file(&self.inner.descriptor_path);
+            }
+        }
+    }
+
+    fn set_frontend_ready(&self, ready: bool) {
+        self.inner.frontend_ready.store(ready, Ordering::Relaxed);
+    }
+}
+
+#[tauri::command]
+fn complete_mcp_request(
+    bridge: State<'_, McpBridgeRuntime>,
+    request_id: String,
+    result: Option<Value>,
+    error: Option<String>,
+) -> Result<(), String> {
+    bridge.complete(request_id, result, error)
+}
+
+#[tauri::command]
+fn set_mcp_frontend_ready(bridge: State<'_, McpBridgeRuntime>, ready: bool) {
+    bridge.set_frontend_ready(ready);
+}
+
+fn write_mcp_http_response(stream: &mut TcpStream, status: u16, reason: &str, payload: &Value) {
+    let Ok(body) = serde_json::to_vec(payload) else {
+        return;
+    };
+    let headers = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",
+        status,
+        reason,
+        body.len()
+    );
+    let _ = stream.write_all(headers.as_bytes());
+    let _ = stream.write_all(&body);
+}
+
+fn constant_time_equal(left: &str, right: &str) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.as_bytes()
+        .iter()
+        .zip(right.as_bytes())
+        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
+        == 0
+}
+
+fn create_mcp_token() -> Result<String, String> {
+    let mut bytes = [0u8; 32];
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        fs::File::open("/dev/urandom")
+            .and_then(|mut file| file.read_exact(&mut bytes))
+            .map_err(|error| format!("无法生成 MCP 鉴权令牌: {error}"))?;
+    }
+    #[cfg(windows)]
+    {
+        #[link(name = "bcrypt")]
+        extern "system" {
+            fn BCryptGenRandom(
+                algorithm: *mut std::ffi::c_void,
+                buffer: *mut u8,
+                buffer_length: u32,
+                flags: u32,
+            ) -> i32;
+        }
+        const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 0x0000_0002;
+        let status = unsafe {
+            BCryptGenRandom(
+                std::ptr::null_mut(),
+                bytes.as_mut_ptr(),
+                bytes.len() as u32,
+                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+            )
+        };
+        if status < 0 {
+            return Err(format!("无法生成 MCP 鉴权令牌 (NTSTATUS {status:#x})"));
+        }
+    }
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn write_mcp_descriptor(path: &Path, port: u16, token: &str) -> Result<(), String> {
+    let contents = serde_json::to_vec(&json!({
+        "host": "127.0.0.1",
+        "port": port,
+        "token": token,
+        "pid": std::process::id()
+    }))
+    .map_err(|error| format!("无法生成 MCP 桥接描述: {error}"))?;
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|error| format!("无法写入 MCP 桥接描述: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("无法保护 MCP 桥接令牌: {error}"))?;
+    }
+    file.write_all(&contents)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| format!("无法保存 MCP 桥接描述: {error}"))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_mcp_token() -> Result<String, String> {
+    Err("当前平台不支持安全生成 MCP 鉴权令牌".to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2492,6 +2861,10 @@ pub fn run() {
                 log_file: Mutex::new(Some(log_file)),
             });
             app.manage(VideoExportRuntime::default());
+            let mcp_bridge = McpBridgeRuntime::start(app.handle().clone()).map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::Other, error)
+            })?;
+            app.manage(mcp_bridge);
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
@@ -2532,7 +2905,9 @@ pub fn run() {
             choose_project_folder,
             import_folder_project,
             open_project_file,
-            append_log
+            append_log,
+            complete_mcp_request,
+            set_mcp_frontend_ready
         ]);
 
     #[cfg(desktop)]
@@ -2583,6 +2958,12 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            if let Some(bridge) = app.try_state::<McpBridgeRuntime>() {
+                bridge.shutdown();
+            }
+        }
+
         #[cfg(desktop)]
         if matches!(event, tauri::RunEvent::Ready) {
             let Ok(menu) = MenuBuilder::new(app)

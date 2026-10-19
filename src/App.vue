@@ -42,6 +42,8 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import Player from './components/player/Player.vue'
 import VideoExportDialog from './components/preference/VideoExportDialog.vue'
 import TopSidebar from './components/preference/TopSideBar.vue'
@@ -56,12 +58,24 @@ import GlobalNotice from './components/notice/GlobalNotice.vue'
 import { useEditorStore } from './store/editor'
 import { useNoticeStore } from './store/notice'
 import { useHelpStore } from './store/help.ts'
+import type { EditorApiMethod } from './core/editorApi'
 import { isTauriRuntime } from './utils/tauriBackend'
+import {
+  generateDanmakuDraftsFromAgentRules,
+  type AgentCreationRequest
+} from './utils/danmakuGenerator'
+import { runVideoFrameCaptureInRenderWindow } from './core/videoExport/exportCoordinator'
 
 const store = useEditorStore()
 const notice = useNoticeStore()
 const help = useHelpStore()
 const nativeRuntime = isTauriRuntime()
+type McpCommandPayload = {
+  requestId: string
+  method: string
+  params?: Record<string, unknown>
+}
+let stopMcpListener: (() => void) | null = null
 const showVideoExport = ref(false)
 const editorReady = ref(!nativeRuntime)
 const timelineHeight = ref(Math.max(100, window.innerHeight - store.screenHeight * store.screenScale / 100 - 80))
@@ -70,6 +84,102 @@ const currentTimeBeforeRecording = ref(store.currentTime)
 const timeLineOffsetBeforeRecording =ref(store.timelineOffset) 
 const H_LONG_PRESS_MS = 150
 const DANMAKU_VISIBILITY_EVENT = 'danmaku-selection-visibility'
+
+async function handleMcpCommand(payload: McpCommandPayload) {
+  const { requestId, method, params = {} } = payload
+  let result: unknown = null
+  let error: string | null = null
+  try {
+    if (method === 'editor.getState') {
+      result = { ...store.getMcpEditorState(), ready: editorReady.value }
+    } else if (method === 'editor.getDanmakus') {
+      if (!editorReady.value) throw new Error('编辑器尚未加载工程')
+      result = store.getMcpDanmakus(params as { ids?: string[]; selectedOnly?: boolean; offset?: number; limit?: number })
+    } else if (method === 'editor.getLogs') {
+      result = store.getMcpLogs(params as { type?: string; offset?: number; limit?: number })
+    } else if (method === 'editor.getHistorySnapshots') {
+      if (!editorReady.value) throw new Error('编辑器尚未加载工程')
+      result = store.getMcpHistorySnapshots()
+    } else if (method === 'editor.getHistorySnapshot') {
+      if (!editorReady.value) throw new Error('编辑器尚未加载工程')
+      if (typeof params.snapshotId !== 'string' || !params.snapshotId) throw new Error('快照 ID 不能为空')
+      result = store.getMcpHistorySnapshot(params.snapshotId, params as { offset?: number; limit?: number })
+    } else if (method === 'editor.createGeneratedDanmakus') {
+      if (!editorReady.value) throw new Error('编辑器尚未加载工程，暂不能创建弹幕')
+      const input = params as AgentCreationRequest & { relativeToCurrentTime?: boolean }
+      const drafts = generateDanmakuDraftsFromAgentRules(input, store.currentTime, store.allowNegativeValues)
+      const response = await store.applyFieldUpdate('@danmaku.create', {
+        danmakus: drafts,
+        relativeToCurrentTime: input.relativeToCurrentTime === true
+      })
+      result = response
+      reportMcpEditResult('@danmaku.create', response)
+    } else if (method === 'editor.captureFrame') {
+      if (!editorReady.value) throw new Error('编辑器尚未加载工程，暂不能获取画面')
+      const timeMs = params.timeMs
+      const maxDimension = params.maxDimension ?? 1280
+      if (typeof timeMs !== 'number' || !Number.isFinite(timeMs) || timeMs < 0) {
+        throw new Error('截图时间 timeMs 必须是非负有限数字')
+      }
+      if (typeof maxDimension !== 'number' || !Number.isInteger(maxDimension)) {
+        throw new Error('maxDimension 必须是整数')
+      }
+      notice.log(`MCP 正在渲染 ${Math.round(timeMs)} ms 的画面`, 'info')
+      const frame = await runVideoFrameCaptureInRenderWindow({
+        screenWidth: store.screenWidth,
+        screenHeight: store.screenHeight,
+        mediaDuration: store.mediaDuration,
+        mediaUrl: store.mediaUrl,
+        mediaFilePath: store.mediaUrl ? store.mediaFilePath : '',
+        danmakus: store.danmakus
+      }, timeMs, maxDimension)
+      result = frame
+      notice.log(`MCP 已返回 ${frame.width}×${frame.height} 帧图像`, 'success')
+    } else if (method === 'editor.saveFolderProject' || method === 'editor.backupFolderProject') {
+      if (!editorReady.value) throw new Error('编辑器尚未加载工程')
+      result = await store.saveFolderProjectForMcp(method === 'editor.backupFolderProject')
+    } else if (method === 'editor.applyFieldUpdate') {
+      if (!editorReady.value) throw new Error('编辑器尚未加载工程，暂不能编辑')
+      if (typeof params.field !== 'string' || !params.field) throw new Error('字段或操作名称不能为空')
+      const field = params.field
+      const response = await store.applyFieldUpdate(field, params.method as EditorApiMethod)
+      result = response
+      reportMcpEditResult(field, response)
+    } else {
+      throw new Error('不支持的编辑器桥接方法：' + method)
+    }
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause)
+    notice.alert('MCP：' + error, 'warn')
+  }
+
+  try {
+    await invoke('complete_mcp_request', { requestId, result, error })
+  } catch (cause) {
+    console.error('[MCP] 返回编辑器操作结果失败:', cause)
+  }
+}
+
+function reportMcpEditResult(field: string, response: Awaited<ReturnType<typeof store.applyFieldUpdate>>) {
+  if (!response.ok) {
+    notice.alert('MCP 编辑失败：' + response.message, 'warn')
+    return
+  }
+
+  response.warnings.forEach((warning) => notice.alert('MCP：' + warning, 'warn'))
+  const summary = field === '@selection.filter'
+    ? 'MCP 筛选完成：当前选中 ' + response.selectedIds.length + ' 条弹幕'
+    : field === '@editor.currentTime'
+      ? 'MCP 已设置当前播放时间'
+      : field === '@editor.settings'
+        ? 'MCP 已更新画布或层数设置'
+        : field === '@danmaku.create'
+          ? 'MCP 已创建 ' + response.createdIds.length + ' 条弹幕'
+          : 'MCP 编辑完成：修改 ' + response.changedIds.length + ' 条，新增 ' + response.createdIds.length + ' 条弹幕'
+  if (response.changedIds.length || response.createdIds.length || field === '@selection.filter' || field.startsWith('@history.') || field.startsWith('@editor.')) {
+    notice.log(summary, 'success')
+  }
+}
 
 type DanmakuVisibilityMode = 'hide' | 'only'
 
@@ -393,6 +503,14 @@ async function handleKeyDown(e: KeyboardEvent) {
 }
 
 onMounted(() => {
+  if (nativeRuntime) {
+    void listen<McpCommandPayload>('mcp-command', (event) => { void handleMcpCommand(event.payload) })
+      .then(async (stop) => {
+        stopMcpListener = stop
+        await invoke('set_mcp_frontend_ready', { ready: true })
+      })
+      .catch((error) => console.error('[MCP] 本机桥事件监听启动失败:', error))
+  }
   void store.loadDanmakuTemplates().catch((error) => console.error('[模板] 加载失败:', error))
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('keyup', handleKeyUp)
@@ -400,6 +518,9 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  stopMcpListener?.()
+  stopMcpListener = null
+  if (nativeRuntime) void invoke('set_mcp_frontend_ready', { ready: false }).catch(() => {})
   if (hPressTimer) {
     clearTimeout(hPressTimer)
   }

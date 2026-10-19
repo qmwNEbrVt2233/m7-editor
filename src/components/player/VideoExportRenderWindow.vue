@@ -20,6 +20,7 @@ import {
   registerMediaPath
 } from '@/utils/tauriBackend'
 import {
+  captureVideoExportFrame,
   runVideoExport,
   VIDEO_EXPORT_RENDER_CANCEL_EVENT,
   VIDEO_EXPORT_RENDER_FINISHED_EVENT,
@@ -109,6 +110,15 @@ async function runRenderJob() {
     if (!playerRef.value) throw new Error('独立渲染播放器未能启动')
 
     await emit(VIDEO_EXPORT_RENDER_READY_EVENT, { jobId })
+    if (outputJob.frameCapture) {
+      const frame = await captureVideoExportFrame(outputJob, playerRef.value, outputJob.frameCapture.timeMs)
+      await emit(VIDEO_EXPORT_RENDER_FINISHED_EVENT, {
+        jobId,
+        result: { canceledByUser: false, frame }
+      })
+      return
+    }
+
     const result = await runVideoExport(
       outputJob,
       playerRef.value,
