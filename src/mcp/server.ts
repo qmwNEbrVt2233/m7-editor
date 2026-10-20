@@ -206,7 +206,7 @@ function resultForMcp(value: unknown) {
 }
 
 function createMcpServer() {
-  const server = new McpServer({ name: 'm7-editor', version: '1.10.0' }, {
+  const server = new McpServer({ name: 'm7-editor', version: '1.11.0' }, {
     capabilities: { tools: {} },
     instructions: '控制当前运行的 m7-editor 编辑会话。字段、工具栏、弹幕创建/删除、播放头和画布设置最终统一通过 applyFieldUpdate 操作；普通编辑默认作用于当前选择。create_generated_danmakus 使用 creationTools 的生成规则；get_frame 返回指定时间的图片内容，供视觉模型检查。保存/备份仅支持文件夹工程。先用 list_history_snapshots 获取快照 ID，再查询详情。'
   })
@@ -386,7 +386,7 @@ function createMcpServer() {
   registerTool(
     'update_editor_settings',
     '设置画布和层数',
-    '更新画布屏幕宽高和/或最大层数。宽高最小为 10；最大层数不能低于现有弹幕使用的层数。',
+    '更新画布屏幕宽高和/或最大层数。宽高最小为 10；最大层数决定自动分配层级的上限',
     z.strictObject({
       screenWidth: z.number().positive().optional(),
       screenHeight: z.number().positive().optional(),
@@ -443,7 +443,7 @@ function createMcpServer() {
   registerTool(
     'select_by_command',
     '按条件筛选弹幕',
-    '使用工具栏现有 /s 命令语法更新选择范围。',
+    '使用 /s 命令语法更新选择范围。',
     z.strictObject({ command: z.string().describe('以 /s 开头的筛选命令') }),
     (input) => callEditor('editor.applyFieldUpdate', { field: '@selection.filter', method: { command: input.command } })
   )

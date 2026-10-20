@@ -81,7 +81,7 @@ const sectionContents: Record<string, string> = {
     <subtitle>关于</subtitle>
     <img src="/favicon.svg" alt="m7-editor" style="width: 150px; height: 150px;">
     <p>m7-editor是一个面向 M7 / B 站特效弹幕场景的可视化编辑器，由jerryeee开发</p>
-    <p><strong>您所在的版本：</strong><kbd>1.10.0</kbd></p>
+    <p><strong>您所在的版本：</strong><kbd>1.11.0</kbd></p>
     <h3>获取帮助</h3>
     <p>按下<code>h</code>随时唤出帮助</p>
     <p>鼠标在左上角图标处悬停以获取快捷键帮助</p>
