@@ -4,15 +4,16 @@ import App from './App.vue'
 import VideoExportRenderWindow from './components/player/VideoExportRenderWindow.vue'
 import './style.css'
 
-const isVideoExportRenderWindow = new URLSearchParams(window.location.search).has('videoExportRender')
-const app = createApp(isVideoExportRenderWindow ? VideoExportRenderWindow : App)
+const renderWindowParams = new URLSearchParams(window.location.search)
+const isRenderWindow = renderWindowParams.has('videoExportRender') || renderWindowParams.has('videoFrameRender')
+const app = createApp(isRenderWindow ? VideoExportRenderWindow : App)
 const pinia = createPinia()
 
 app.use(pinia)
 
 app.mount('#app')
 
-if (!isVideoExportRenderWindow) {
+if (!isRenderWindow) {
   window.addEventListener('contextmenu', (e) => {
     e.preventDefault()
   }, false)

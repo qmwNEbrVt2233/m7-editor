@@ -16,7 +16,6 @@ import Player from './Player.vue'
 import { useEditorStore } from '@/store/editor'
 import {
   getVideoExportRenderJob,
-  finishVideoExportRenderWindow,
   registerMediaPath
 } from '@/utils/tauriBackend'
 import {
@@ -33,7 +32,8 @@ import {
 type RenderPlayer = ExportRenderStage & { waitUntilReady: () => Promise<void> }
 
 const store = useEditorStore()
-const jobId = new URLSearchParams(window.location.search).get('videoExportRender')
+const renderParams = new URLSearchParams(window.location.search)
+const jobId = renderParams.get('videoExportRender') ?? renderParams.get('videoFrameRender')
 const playerRef = ref<RenderPlayer | null>(null)
 const renderReady = ref(false)
 const abortController = new AbortController()
@@ -49,7 +49,6 @@ onUnmounted(() => {
 })
 
 async function runRenderJob() {
-  let keepOutput = false
   let outputJob: ExportJob | null = null
 
   try {
@@ -127,7 +126,6 @@ async function runRenderJob() {
         void emit(VIDEO_EXPORT_RENDER_PROGRESS_EVENT, { jobId, progress })
       }
     )
-    keepOutput = !result.canceledByUser
     await emit(VIDEO_EXPORT_RENDER_FINISHED_EVENT, { jobId, result })
   } catch (error) {
     const canceledByUser = error instanceof DOMException && error.name === 'AbortError'
@@ -137,9 +135,6 @@ async function runRenderJob() {
     await emit(VIDEO_EXPORT_RENDER_FINISHED_EVENT, detail).catch(() => undefined)
   } finally {
     unlistenCancel?.()
-    if (jobId) {
-      await finishVideoExportRenderWindow(jobId, keepOutput).catch(() => undefined)
-    }
   }
 }
 </script>

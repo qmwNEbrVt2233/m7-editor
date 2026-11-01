@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the editor and video render windows",
-  "windows": ["main", "video-export-render"],
+  "windows": ["main", "video-export-render", "video-frame-render"],
   "permissions": [
     "core:default",
     "opener:default",

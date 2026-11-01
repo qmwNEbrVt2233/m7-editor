@@ -567,6 +567,8 @@ struct DanmakuTemplateRecord {
 const MAIN_WINDOW_LABEL: &str = "main";
 
 const VIDEO_EXPORT_RENDER_WINDOW_LABEL: &str = "video-export-render";
+// MCP frame captures use their own surface so they can run during video export.
+const VIDEO_FRAME_RENDER_WINDOW_LABEL: &str = "video-frame-render";
 
 #[cfg(desktop)]
 const TRAY_ID: &str = "main";
@@ -2014,8 +2016,22 @@ async fn create_video_export_render_window(
     if width < 16 || width > 7680 || height < 16 || height > 4320 || width % 2 != 0 || height % 2 != 0 {
         return Err("独立渲染窗口尺寸无效".to_string());
     }
-    if app.get_webview_window(VIDEO_EXPORT_RENDER_WINDOW_LABEL).is_some() {
-        return Err("已有视频导出渲染窗口正在运行".to_string());
+    let is_frame_capture = job.get("frameCapture").and_then(Value::as_object).is_some();
+    let (window_label, query_parameter, already_running_message) = if is_frame_capture {
+        (
+            VIDEO_FRAME_RENDER_WINDOW_LABEL,
+            "videoFrameRender",
+            "已有帧截图渲染窗口正在运行",
+        )
+    } else {
+        (
+            VIDEO_EXPORT_RENDER_WINDOW_LABEL,
+            "videoExportRender",
+            "已有视频导出渲染窗口正在运行",
+        )
+    };
+    if app.get_webview_window(window_label).is_some() {
+        return Err(already_running_message.to_string());
     }
 
     runtime
@@ -2024,10 +2040,10 @@ async fn create_video_export_render_window(
         .map_err(|_| "视频导出任务状态不可用".to_string())?
         .insert(job_id.clone(), job);
 
-    let url = format!("index.html?videoExportRender={job_id}");
+    let url = format!("index.html?{query_parameter}={job_id}");
     let window = WebviewWindowBuilder::new(
         &app,
-        VIDEO_EXPORT_RENDER_WINDOW_LABEL,
+        window_label,
         WebviewUrl::App(url.into()),
     )
     .inner_size(width as f64, height as f64)
@@ -2036,16 +2052,14 @@ async fn create_video_export_render_window(
     .decorations(false)
     .resizable(false)
     .skip_taskbar(true)
-    // WKWebView stops producing reliable snapshots when its window is
-    // covered on macOS. Keep the render surface above other windows without
-    // activating it; Windows is hidden immediately below because WebView2
-    // does not have the same visibility requirement.
-    .always_on_bottom(!cfg!(target_os = "macos"))
+    // WKWebView stops producing reliable snapshots when its window is covered on macOS.
+    // Keep the render surface above other windows without activating it.
+    // WebView2 does not have the same visibility requirement.
     .always_on_top(cfg!(target_os = "macos"))
     .focused(false)
     .focusable(!cfg!(target_os = "macos"))
     .visible_on_all_workspaces(cfg!(target_os = "macos"))
-    .visible(true)
+    .visible(cfg!(target_os = "macos"))
     .build();
 
     if let Err(error) = window {
@@ -2056,7 +2070,7 @@ async fn create_video_export_render_window(
     }
 
     if cfg!(target_os = "macos") {
-        if let Some(window) = app.get_webview_window(VIDEO_EXPORT_RENDER_WINDOW_LABEL) {
+        if let Some(window) = app.get_webview_window(window_label) {
             // `visible(true)` is applied while building the native window, but
             // explicitly showing it here also covers macOS versions that
             // defer ordering a non-focused window until after navigation.
@@ -2064,10 +2078,6 @@ async fn create_video_export_render_window(
             window
                 .set_always_on_top(true)
                 .map_err(|error| format!("设置独立视频渲染窗口层级失败: {error}"))?;
-        }
-    } else if cfg!(windows) {
-        if let Some(window) = app.get_webview_window(VIDEO_EXPORT_RENDER_WINDOW_LABEL) {
-            window.hide().map_err(|error| format!("隐藏独立视频渲染窗口失败: {error}"))?;
         }
     }
 
@@ -2118,10 +2128,17 @@ fn finish_video_export_render_window(
         }
     }
 
-    if let Some(window) = app.get_webview_window(VIDEO_EXPORT_RENDER_WINDOW_LABEL) {
-        window
-            .close()
-            .map_err(|error| format!("关闭独立视频渲染窗口失败: {error}"))?;
+    if let Some(job) = job.as_ref() {
+        let window_label = if job.get("frameCapture").and_then(Value::as_object).is_some() {
+            VIDEO_FRAME_RENDER_WINDOW_LABEL
+        } else {
+            VIDEO_EXPORT_RENDER_WINDOW_LABEL
+        };
+        if let Some(window) = app.get_webview_window(window_label) {
+            window
+                .close()
+                .map_err(|error| format!("关闭独立渲染窗口失败: {error}"))?;
+        }
     }
     Ok(())
 }

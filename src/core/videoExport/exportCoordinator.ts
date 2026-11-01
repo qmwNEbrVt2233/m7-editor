@@ -618,10 +618,24 @@ export async function runVideoExportInRenderWindow(
   }
 }
 
-export async function runVideoFrameCaptureInRenderWindow(
+// The dedicated frame window has a fixed native label, so serialize MCP captures.
+let frameCaptureQueue: Promise<void> = Promise.resolve()
+
+export function runVideoFrameCaptureInRenderWindow(
   jobInput: Pick<ExportJob, 'screenWidth' | 'screenHeight' | 'mediaDuration' | 'mediaUrl' | 'mediaFilePath' | 'danmakus'>,
   timeMs: number,
   maxDimension = 1280
+): Promise<CapturedVideoFrame> {
+  const snapshot = { ...jobInput, danmakus: copySnapshot(jobInput.danmakus) }
+  const capture = frameCaptureQueue.then(() => captureVideoFrameInRenderWindow(snapshot, timeMs, maxDimension))
+  frameCaptureQueue = capture.then(() => undefined, () => undefined)
+  return capture
+}
+
+async function captureVideoFrameInRenderWindow(
+  jobInput: Pick<ExportJob, 'screenWidth' | 'screenHeight' | 'mediaDuration' | 'mediaUrl' | 'mediaFilePath' | 'danmakus'>,
+  timeMs: number,
+  maxDimension: number
 ): Promise<CapturedVideoFrame> {
   if (!isTauriRuntime()) throw new Error('帧截图需要 Tauri 桌面运行环境')
   if (!Number.isFinite(timeMs) || timeMs < 0) throw new Error('截图时间必须是非负有限数字')
