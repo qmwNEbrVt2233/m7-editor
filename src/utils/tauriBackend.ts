@@ -73,6 +73,7 @@ export type FolderProjectCreateInput = {
   parentDir: string
   name: string
   fromProject?: any
+  fromProjectPath?: string
   mediaPath?: string
   copyMedia: boolean
   description?: string
@@ -381,8 +382,29 @@ export type EditFolderProjectInput = {
   description?: string
 }
 
-export async function importFolderProject(): Promise<FolderProjectPayload | null> {
-  const payload = await invokeTauri<FolderProjectPayload | null>('import_folder_project')
+function normalizeFsPathForCompare(targetPath: string): string {
+  let normalized = targetPath.trim().replace(/^\\\\\?\\/, '').replace(/\\/g, '/')
+  if (normalized.length > 1) {
+    normalized = normalized.replace(/\/+$/, '')
+  }
+  if (/^[a-zA-Z]:$/.test(normalized)) {
+    normalized += '/'
+  }
+  if (/^[a-zA-Z]:\//.test(normalized)) {
+    return normalized[0].toLowerCase() + normalized.slice(1)
+  }
+  return normalized
+}
+
+export function isSameFsPath(left: string, right: string): boolean {
+  if (!left || !right) return false
+  return normalizeFsPathForCompare(left) === normalizeFsPathForCompare(right)
+}
+
+export async function importFolderProject(projectPath?: string): Promise<FolderProjectPayload | null> {
+  const payload = await invokeTauri<FolderProjectPayload | null>('import_folder_project', {
+    projectPath: projectPath ?? null
+  })
   return payload ? withRegisteredMedia(payload) : null
 }
 
@@ -392,6 +414,14 @@ export async function editFolderProject(input: EditFolderProjectInput): Promise<
 
 export async function openProjectFile(): Promise<any | null> {
   return invokeTauri<any | null>('open_project_file')
+}
+
+export async function readProjectJsonFile(path: string): Promise<any> {
+  return invokeTauri<any>('read_project_json_file', { path })
+}
+
+export async function readXmlFile(path: string): Promise<string> {
+  return invokeTauri<string>('read_xml_file', { path })
 }
 
 export async function appendLogToFile(line: string): Promise<void> {

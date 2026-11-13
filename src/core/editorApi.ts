@@ -5,6 +5,7 @@ import {
   blendColor,
   createNumericVariableContext,
   evaluateMathExpression,
+  evaluateSeededRandom,
   NUMERIC_FIELD_DEFINITIONS,
   parseColorWithAlpha,
   parseInput
@@ -20,7 +21,8 @@ import {
 } from '@/utils/validation'
 
 export type FieldInput = string | number | boolean
-export type EditorApiMethod = FieldInput | Record<string, unknown>
+export type UpsetMethod = { op: 'upset'; seed?: number }
+export type EditorApiMethod = FieldInput | UpsetMethod | Record<string, unknown>
 
 export type EditorApiResult = {
   ok: true
@@ -58,6 +60,7 @@ export type EditorApiOutcome = {
   warnings: string[]
   historyLabel?: string
   changedField?: string
+  changedFields?: string[]
   selectionChanged: boolean
 }
 
@@ -119,12 +122,42 @@ function normalizeFieldValue(path: string, value: number, allowNegative: boolean
   return normalized
 }
 
-function fieldValueForItem(item: DanmakuItem, path: string, input: FieldInput, allowNegative: boolean, warnings: string[]): unknown {
+function parseUpsetMethod(input: unknown): UpsetMethod | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+  const record = input as Record<string, unknown>
+  const keys = Object.keys(record)
+  if (record.op !== 'upset' || keys.some((key) => key !== 'op' && key !== 'seed')) {
+    throw new Error('upset 操作只支持 { op: "upset", seed? } 格式，不能与其他赋值规则或表达式混用')
+  }
+  if (record.seed !== undefined && (typeof record.seed !== 'number' || !Number.isFinite(record.seed))) {
+    throw new Error('upset 的 seed 必须是有限数字')
+  }
+  return record.seed === undefined ? { op: 'upset' } : { op: 'upset', seed: record.seed }
+}
+
+function applyUpsetToField(targetItems: DanmakuItem[], sourceItems: DanmakuItem[], path: string, seed?: number) {
+  const values = sourceItems.map((item) => clone(getPath(item as unknown as Record<string, any>, path)))
+  for (let i = values.length - 1; i > 0; i--) {
+    const rand = seed !== undefined ? evaluateSeededRandom(seed, i) : Math.random()
+    const j = Math.floor(rand * (i + 1))
+    ;[values[i], values[j]] = [values[j], values[i]]
+  }
+  targetItems.forEach((item, index) => setPath(item as unknown as Record<string, any>, path, values[index]))
+}
+
+function fieldValueForItem(
+  item: DanmakuItem,
+  path: string,
+  input: FieldInput,
+  allowNegative: boolean,
+  warnings: string[],
+  sourceItem: DanmakuItem = item
+): unknown {
   if (path === 'content.color') {
     const value = String(input)
     const alpha = parseColorWithAlpha(value)
     if (alpha) {
-      return blendColor(item.content.color || '#ffffff', alpha.color, alpha.alpha)
+      return blendColor(sourceItem.content.color || '#ffffff', alpha.color, alpha.alpha)
     }
     const color = normalizeColor(value)
     if (!color) throw new Error('颜色格式无效（支持 #RRGGBB 或 RRGGBB@Alpha 格式）')
@@ -143,7 +176,7 @@ function fieldValueForItem(item: DanmakuItem, path: string, input: FieldInput, a
     return input
   }
 
-  const definition = Object.values(NUMERIC_FIELD_DEFINITIONS).find((item) => item.path === path)
+  const definition = Object.values(NUMERIC_FIELD_DEFINITIONS).find((entry) => entry.path === path)
   const isOpacity = path === 'opacity.from' || path === 'opacity.to'
   const isRotation = path === 'transform.zRotate' || path === 'transform.yRotate'
   if (!definition && !isOpacity && !isRotation) throw new Error(`字段 ${path} 不支持数值操作`)
@@ -154,7 +187,7 @@ function fieldValueForItem(item: DanmakuItem, path: string, input: FieldInput, a
     if (!expression) throw new Error(`字段 ${path} 的表达式为空`)
     let result: number
     try {
-      result = evaluateMathExpression(expression, createNumericVariableContext(item))
+      result = evaluateMathExpression(expression, createNumericVariableContext(sourceItem))
     } catch (error) {
       throw new Error(`字段 ${path} 表达式执行失败：${error instanceof Error ? error.message : String(error)}`)
     }
@@ -166,7 +199,7 @@ function fieldValueForItem(item: DanmakuItem, path: string, input: FieldInput, a
   if (parsed.error) throw new Error(`字段 ${path} 验证失败: ${parsed.error}`)
   if (parsed.mode === 'multiple') return getPath(item as unknown as Record<string, any>, path)
 
-  const current = getPath(item as unknown as Record<string, any>, path)
+  const current = getPath(sourceItem as unknown as Record<string, any>, path)
   if (typeof current !== 'number' || !Number.isFinite(current)) {
     throw new Error(`弹幕 ${item.id} 的字段 ${path} 不是有效数值`)
   }
@@ -287,7 +320,7 @@ function allocateId(context: EditorApiContext, danmakus: DanmakuItem[]) {
   }
 }
 
-function rotatedBox(width: number, height: number, angle: number) {
+export function rotatedBox(width: number, height: number, angle: number) {
   const rad = angle * Math.PI / 180
   const corners = [
     { x: 0, y: 0 }, { x: width * Math.cos(rad), y: width * Math.sin(rad) },
@@ -371,12 +404,7 @@ async function applyToolbarOperation(
     for (const rule of rules) {
       const definition = NUMERIC_FIELD_DEFINITIONS[rule.target]
       if (rule.expression === 'upset') {
-        const values = updates.map((item) => getPath(item as unknown as Record<string, any>, definition.path))
-        for (let i = values.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1))
-          ;[values[i], values[j]] = [values[j], values[i]]
-        }
-        updates.forEach((item, index) => setPath(item as unknown as Record<string, any>, definition.path, values[index]))
+        applyUpsetToField(updates, updates, definition.path)
       } else {
         updates.forEach((item, index) => {
           let value: number
@@ -681,7 +709,7 @@ async function applyToolbarOperation(
 export async function applyEditorApi(context: EditorApiContext, field: string, method: EditorApiMethod): Promise<EditorApiOutcome> {
   if (field === '@selection.filter' || (field === '@toolbar.command' && typeof method === 'object' && typeof method.command === 'string' && /^\/s\b/.test(method.command.trim()))) {
     const command = field === '@selection.filter' ? String((method as Record<string, unknown>)?.command ?? '') : String((method as Record<string, unknown>).command)
-    if (!/^\/s\b/.test(command.trim())) throw new Error('筛选命令必须以 /s 开头')
+    if (field !== '@selection.filter' && !/^\/s\b/.test(command.trim())) throw new Error('筛选命令必须以 /s 开头')
     const matches = parseSelectionCommand(command)
     const selecting = new Set(context.selectedIds)
     const nextSelection = context.danmakus.filter((item) => matches(item, selecting)).map((item) => item.id)
@@ -693,25 +721,92 @@ export async function applyEditorApi(context: EditorApiContext, field: string, m
   let nextSelection = [...context.selectedIds]
   let historyLabel: string | undefined
   let changedField: string | undefined
+  let changedFields: string[] | undefined
 
-  if (FIELD_PATHS.has(field)) {
+  if (field === '@danmaku.updateFields') {
     if (!context.selectedIds.length) throw new Error('没有选中的弹幕')
-    if (!['@internal', '@none'].includes(field) && (typeof method !== 'string' && typeof method !== 'number' && typeof method !== 'boolean')) throw new Error('字段操作的第二个参数必须是字符串、数字或布尔值')
-    const selectedIds = new Set(context.selectedIds)
-    const input = method as FieldInput
-    const path = field
-    for (const item of draft) {
-      if (!selectedIds.has(item.id)) continue
-      const value = fieldValueForItem(item, path, input, context.allowNegativeValues, warnings)
-      setPath(item as unknown as Record<string, any>, path, value)
+    const rawSteps = method && typeof method === 'object' && !Array.isArray(method)
+      ? (method as Record<string, unknown>).steps
+      : undefined
+    if (!Array.isArray(rawSteps) || rawSteps.length === 0) {
+      throw new Error('steps 必须是非空二维数组')
     }
-    changedField = path
-    historyLabel = `字段更新：${path} 操作：${method}`
+    const selectedIds = new Set(context.selectedIds)
+    const selectedItems = draft.filter((item) => selectedIds.has(item.id))
+    const appliedFields: string[] = []
+    let totalEntries = 0
+    for (let stepIndex = 0; stepIndex < rawSteps.length; stepIndex++) {
+      const rawStep = rawSteps[stepIndex]
+      if (!Array.isArray(rawStep) || rawStep.length === 0) {
+        throw new Error(`steps[${stepIndex}] 必须是非空数组`)
+      }
+      totalEntries += rawStep.length
+      if (totalEntries > 200) {
+        throw new Error('所有步骤的更新条目总数不能超过 200')
+      }
+      const seenFields = new Set<string>()
+      const stepBases = selectedItems.map(clone)
+      for (const entry of rawStep) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+          throw new Error(`steps[${stepIndex}] 中的每一项都必须是包含 field 和 method 的对象`)
+        }
+        const updateField = (entry as Record<string, unknown>).field
+        const updateMethod = (entry as Record<string, unknown>).method
+        if (typeof updateField !== 'string' || !FIELD_PATHS.has(updateField)) {
+          throw new Error(`不支持批量更新的字段：${String(updateField)}`)
+        }
+        if (seenFields.has(updateField)) {
+          throw new Error(`第 ${stepIndex + 1} 步中存在重复字段：${updateField}（如需先后多次修改同一字段，请拆到不同步骤）`)
+        }
+        seenFields.add(updateField)
+        const upset = parseUpsetMethod(updateMethod)
+        if (upset) {
+          applyUpsetToField(selectedItems, stepBases, updateField, upset.seed)
+        } else {
+          if (typeof updateMethod !== 'string' && typeof updateMethod !== 'number' && typeof updateMethod !== 'boolean') {
+            throw new Error(`字段 ${updateField} 的更新值必须是字符串、数字、布尔值或 { op: "upset", seed? }`)
+          }
+          selectedItems.forEach((item, index) => {
+            const value = fieldValueForItem(item, updateField, updateMethod, context.allowNegativeValues, warnings, stepBases[index])
+            setPath(item as unknown as Record<string, any>, updateField, value)
+          })
+        }
+        appliedFields.push(updateField)
+      }
+    }
+    changedField = appliedFields[appliedFields.length - 1]
+    changedFields = [...new Set(appliedFields)]
+    historyLabel = `批量字段更新（${rawSteps.length} 步）：${changedFields.join(', ')}`
+  } else if (FIELD_PATHS.has(field)) {
+    if (!context.selectedIds.length) throw new Error('没有选中的弹幕')
+    const selectedIds = new Set(context.selectedIds)
+    const selectedItems = draft.filter((item) => selectedIds.has(item.id))
+    const path = field
+    const upset = parseUpsetMethod(method)
+    if (upset) {
+      applyUpsetToField(selectedItems, selectedItems, path, upset.seed)
+      changedField = path
+      changedFields = [path]
+      historyLabel = `字段打乱：${path}`
+    } else {
+      if (typeof method !== 'string' && typeof method !== 'number' && typeof method !== 'boolean') {
+        throw new Error('字段操作的第二个参数必须是字符串、数字、布尔值或 { op: "upset", seed? }')
+      }
+      const input = method as FieldInput
+      for (const item of selectedItems) {
+        const value = fieldValueForItem(item, path, input, context.allowNegativeValues, warnings)
+        setPath(item as unknown as Record<string, any>, path, value)
+      }
+      changedField = path
+      changedFields = [path]
+      historyLabel = `字段更新：${path} 操作：${method}`
+    }
   } else if (TOOLBAR_FIELDS.has(field)) {
     const result = await applyToolbarOperation(context, draft, field, method, nextSelection, warnings)
     nextSelection = result.selectedIds
     historyLabel = result.historyLabel
     changedField = result.changedField
+    if (changedField) changedFields = [changedField]
   } else {
     throw new Error(`不支持的字段或操作：${field}`)
   }
@@ -719,5 +814,5 @@ export async function applyEditorApi(context: EditorApiContext, field: string, m
   const beforeById = new Map(context.danmakus.map((item) => [item.id, JSON.stringify(item)]))
   const changedIds = draft.filter((item) => beforeById.get(item.id) !== JSON.stringify(item)).map((item) => item.id)
   const createdIds = draft.filter((item) => !beforeById.has(item.id)).map((item) => item.id)
-  return { danmakus: draft, selectedIds: nextSelection, changedIds, createdIds, warnings: [...new Set(warnings)], historyLabel, changedField, selectionChanged: false }
+  return { danmakus: draft, selectedIds: nextSelection, changedIds, createdIds, warnings: [...new Set(warnings)], historyLabel, changedField, changedFields, selectionChanged: false }
 }

@@ -205,10 +205,23 @@ function resultForMcp(value: unknown) {
   }
 }
 
+function resolveRequiredPath(value: string, label: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    throw new Error(`${label}不能为空`)
+  }
+  return resolve(trimmed)
+}
+
+function resolveOptionalPath(value?: string): string | undefined {
+  const trimmed = value?.trim()
+  return trimmed ? resolve(trimmed) : undefined
+}
+
 function createMcpServer() {
   const server = new McpServer({ name: 'm7-editor', version: '1.11.0' }, {
     capabilities: { tools: {} },
-    instructions: '控制当前运行的 m7-editor 编辑会话。字段、工具栏、弹幕创建/删除、播放头和画布设置最终统一通过 applyFieldUpdate 操作；普通编辑默认作用于当前选择。create_generated_danmakus 使用 creationTools 的生成规则；get_frame 返回指定时间的图片内容，供视觉模型检查。保存/备份仅支持文件夹工程。先用 list_history_snapshots 获取快照 ID，再查询详情。'
+    instructions: '控制当前运行的 m7-editor 编辑会话。当 get_editor_state 返回 ready=false 时，可先调用工具打开或创建工程。字段、工具栏、弹幕创建/删除、播放头和画布设置最终统一通过 applyFieldUpdate 操作；普通编辑默认作用于当前选择。使用 create_generated_danmakus 按规则批量生成；get_frame 返回指定时间的图片内容，供视觉模型检查。保存/备份仅支持文件夹工程。先用 list_history_snapshots 获取快照 ID，再查询详情。reload_app 会调用 window.location.reload() 清空内存历史快照与未保存状态，仅在需从本地更新工程信息时使用。'
   })
 
   function registerTool<Schema extends z.ZodType>(
@@ -239,9 +252,31 @@ function createMcpServer() {
   registerTool(
     'get_editor_state',
     '读取编辑器状态',
-    '读取当前运行的 m7-editor 会话、工程、播放头、画布和选择状态。',
+    '读取当前运行的 m7-editor 会话、工程、播放头、画布、时间轴弹幕范围（timelineRange）和选择状态。',
     emptyInput,
     () => callEditor('editor.getState'),
+    true
+  )
+  const measureTextEntryInput = z.strictObject({
+    text: z.string().describe('要测量的弹幕文本（支持 \\n 换行）'),
+    font: z.string().default('Microsoft YaHei').describe('字体名称，默认 Microsoft YaHei'),
+    size: z.number().positive().default(60).describe('字号（像素），默认 60'),
+    zRotate: z.number().default(0).describe('Z 轴旋转角度（度），默认 0'),
+    stroke: z.boolean().default(false).describe('是否开启描边，默认 false')
+  })
+  registerTool(
+    'measure_text',
+    '测量文字渲染尺寸',
+    '只读测量弹幕文本在当前编辑器渲染层的实际像素宽高（rawWidth/rawHeight）、Z 轴旋转后包围盒宽高（width/height）以及居中参考坐标（centerX/centerY）。不创建或修改任何弹幕。传入 text 测单条，或传入 items 批量测量。',
+    z.strictObject({
+      text: z.string().optional().describe('单条测量时的文本；与 items 二选一'),
+      font: z.string().default('Microsoft YaHei').describe('单条测量时的字体，默认 Microsoft YaHei'),
+      size: z.number().positive().default(60).describe('单条测量时的字号（像素），默认 60'),
+      zRotate: z.number().default(0).describe('单条测量时的 Z 轴旋转角度（度），默认 0'),
+      stroke: z.boolean().default(false).describe('单条测量时是否开启描边，默认 false'),
+      items: z.array(measureTextEntryInput).min(1).max(100).optional().describe('批量测量的条目数组；与 text 二选一')
+    }).refine((input) => (input.text !== undefined) !== (input.items !== undefined), '请在 text 和 items 中二选一'),
+    (input) => callEditor('editor.measureText', input),
     true
   )
   registerTool(
@@ -268,16 +303,41 @@ function createMcpServer() {
     (input) => callEditor('editor.getDanmakus', input),
     true
   )
+  const upsetMethodInput = z.strictObject({
+    op: z.literal('upset'),
+    seed: z.number().optional().describe('可选随机种子；传入后可复现相同的打乱顺序')
+  }).describe('在当前选择内随机打乱该字段现有值（仅限传此对象，不能与表达式或赋值混用；避免与文本内容 "upset" 混淆）')
+  const fieldMethodInput = z.union([z.string(), z.number(), z.boolean(), upsetMethodInput])
+
   registerTool(
     'apply_field_update',
     '更新弹幕字段',
-    '通过统一编辑 API 修改当前选择的字段。支持赋值、相对运算、随机值和以 $ 开头的数学表达式。',
+    '通过统一编辑 API 修改当前选择的单个字段。支持文本/颜色/字体/描边/缓动/数值赋值、相对运算、随机值、$ 数学表达式，或传入 { "op": "upset", "seed?": 数字 } 在当前选择内随机打乱该字段值（与赋值/表达式互斥；对文本字段需显式传此对象，纯字符串 "upset" 会按字面文本写入）。',
     z.strictObject({
       field: z.string().describe('字段路径，例如 transform.start.x、content.text、opacity.from'),
-      method: z.union([z.string(), z.number(), z.boolean(), z.record(z.string(), z.unknown())])
-        .describe('字段输入值或操作方法；数字字段支持 +2、* 等规则及 $表达式')
+      method: fieldMethodInput
+        .describe('字段输入值/操作方法（数字字段支持 +2、* 等规则及 $表达式），或 { "op": "upset", "seed?": 数字 }')
     }),
     (input) => callEditor('editor.applyFieldUpdate', input)
+  )
+  const fieldUpdateItemInput = z.strictObject({
+    field: z.string().describe('字段路径，例如 transform.start.x、content.text、opacity.from'),
+    method: fieldMethodInput
+      .describe('赋值/运算/随机/$表达式，或 { "op": "upset", "seed?": 数字 }（与表达式互斥）')
+  })
+  registerTool(
+    'apply_field_updates',
+    '批量分步更新多个弹幕字段',
+    '在单次原子操作（单个撤销步骤）中，按二维数组 steps 分步更新当前选择的多个字段（支持数值、文本、字体、颜色、描边、缓动及 upset 打乱）。外层 steps 按顺序串行执行（后一步的表达式可读到前一步的新值）；同一内层步骤中的多条规则共享该步开始前的原值快照（适合变量交叉引用或互换），且单步内不能重复更新同一字段；任一项失败时整批回滚。',
+    z.strictObject({
+      steps: z.array(
+        z.array(fieldUpdateItemInput).min(1).max(50).describe('同一执行步内的更新列表；同一步内共享步前原值快照，字段不可重复')
+      ).min(1).max(50).describe('按顺序执行的步骤二维数组，例如 [[{field:"transform.start.x",method:"$endX"},{field:"transform.end.x",method:"$startX"}], [{field:"content.text",method:{op:"upset"}}]]')
+    }).refine(
+      (input) => input.steps.reduce((total, step) => total + step.length, 0) <= 200,
+      '所有步骤的更新条目总数不能超过 200'
+    ),
+    (input) => callEditor('editor.applyFieldUpdate', { field: '@danmaku.updateFields', method: input })
   )
   const danmakuObjectInput = z.record(z.string(), z.unknown())
   const numericGenerationRule = z.discriminatedUnion('mode', [
@@ -285,7 +345,7 @@ function createMcpServer() {
       mode: z.literal('range'),
       start: z.number(),
       end: z.number(),
-      expression: z.string().optional().describe('可选数学表达式；支持 S、E、i、n、t、width、height 及其他字段路径')
+      expression: z.string().optional().describe('可选数学表达式；支持 S、E、i、n、t、width、height、bezier(...)、seededRandom(seed, index?) 及其他字段路径')
     }),
     z.strictObject({
       mode: z.literal('relative'),
@@ -343,7 +403,7 @@ function createMcpServer() {
   registerTool(
     'create_generated_danmakus',
     '按 creationTools 规则生成弹幕',
-    '用 creationTools 同一规则引擎批量生成并创建弹幕。提供 quantity 和任意字段 rules；未指定字段沿用界面默认值。数字字段支持 range（均匀范围或 expression）、relative（起始值加步长）和 cycle；颜色支持范围渐变、Alpha 混合和循环；文本/字体/描边/缓动支持赋值或循环。表达式可引用 S、E、i、n、t、width、height 和其他字段路径。默认保留绝对 startTime；relativeToCurrentTime=true 时使用 insertDanmakus 的播放头偏移和层级分配。新弹幕会自动选中。',
+    '用 creationTools 同一规则引擎批量生成并创建弹幕。提供 quantity 和任意字段 rules；未指定字段沿用界面默认值。数字字段支持 range（均匀范围或 expression）、relative（起始值加步长）和 cycle；颜色支持范围渐变、Alpha 混合和循环；文本/字体/描边/缓动支持赋值或循环。表达式可引用 S、E、i、n、t、width、height、bezier(...)、seededRandom(seed, index?) 和其他字段路径。默认保留绝对 startTime；relativeToCurrentTime=true 时使用 insertDanmakus 的播放头偏移和层级分配。新弹幕会自动选中。',
     z.strictObject({
       quantity: z.number().int().min(1).max(1000),
       relativeToCurrentTime: z.boolean().default(false),
@@ -409,6 +469,143 @@ function createMcpServer() {
     () => callEditor('editor.backupFolderProject')
   )
   registerTool(
+    'get_file_system_state',
+    '获取工程文件系统状态',
+    '读取应用配置路径、日志目录、默认文件夹工程目录、全局设置以及已注册的文件夹工程列表，并同步刷新界面的工程管理列表；在 ready 为 false 时也可调用。',
+    emptyInput,
+    () => callEditor('editor.getFileSystemState'),
+    true
+  )
+  registerTool(
+    'check_folder_project_path',
+    '检查文件夹工程路径',
+    '检查指定父目录（省略时使用默认工程目录）下按工程名称安全化后的文件夹工程路径是否已存在。',
+    z.strictObject({
+      name: z.string().trim().min(1),
+      parentDir: z.string().optional()
+    }),
+    (input) => callEditor('editor.checkFolderProjectPath', {
+      name: input.name,
+      parentDir: resolveOptionalPath(input.parentDir)
+    }),
+    true
+  )
+  registerTool(
+    'create_folder_project',
+    '创建文件夹工程',
+    '创建文件夹工程并立即加载到编辑器（同 UI 手动创建：切换到新工程、重置历史快照、刷新工程列表并关闭工程管理弹窗）。可通过 fromCurrent 从当前画布创建，或通过 fromProjectPath 从已有 JSON 工程文件创建，或留空创建默认空白工程；支持在 ready 为 false 时调用。',
+    z.strictObject({
+      name: z.string().trim().min(1),
+      parentDir: z.string().optional(),
+      fromCurrent: z.boolean().optional(),
+      fromProjectPath: z.string().optional(),
+      mediaPath: z.string().optional(),
+      copyMedia: z.boolean().default(true),
+      description: z.string().optional()
+    }).superRefine((value, context) => {
+      if (value.fromCurrent && value.fromProjectPath?.trim()) {
+        context.addIssue({ code: 'custom', message: 'fromCurrent 与 fromProjectPath 不能同时指定' })
+      }
+    }),
+    (input) => callEditor('editor.createFolderProject', {
+      name: input.name,
+      parentDir: resolveOptionalPath(input.parentDir),
+      fromCurrent: input.fromCurrent ?? false,
+      fromProjectPath: resolveOptionalPath(input.fromProjectPath),
+      mediaPath: resolveOptionalPath(input.mediaPath),
+      copyMedia: input.copyMedia,
+      description: input.description
+    })
+  )
+  registerTool(
+    'load_folder_project',
+    '加载文件夹工程',
+    '按工程文件夹路径加载已注册或有效的文件夹工程，重置历史快照、刷新工程列表并关闭工程管理弹窗（非阻塞，不弹确认框）；支持在 ready 为 false 时调用。',
+    z.strictObject({ projectPath: z.string().trim().min(1) }),
+    (input) => callEditor('editor.loadFolderProject', {
+      projectPath: resolveRequiredPath(input.projectPath, '工程路径')
+    })
+  )
+  registerTool(
+    'import_folder_project',
+    '导入文件夹工程',
+    '按本地文件夹路径导入外部文件夹工程，将其注册到应用工程列表并立即加载到编辑器（重置历史快照、刷新工程列表并关闭工程管理弹窗）；支持在 ready 为 false 时调用。',
+    z.strictObject({ projectPath: z.string().trim().min(1) }),
+    (input) => callEditor('editor.importFolderProject', {
+      projectPath: resolveRequiredPath(input.projectPath, '工程路径')
+    })
+  )
+  registerTool(
+    'edit_folder_project',
+    '编辑文件夹工程配置',
+    '编辑文件夹工程的名称、说明、父目录或媒体引用方式（内部拷贝 vs 外部链接），并刷新工程列表。若目标正是当前打开的文件夹工程，会同步更新内存中的工程路径、配置与媒体绑定，同时保留未保存的弹幕编辑；支持在 ready 为 false 时调用。',
+    z.strictObject({
+      projectPath: z.string().trim().min(1),
+      name: z.string().trim().min(1).optional(),
+      newParentDir: z.string().optional(),
+      mediaUseExternalLink: z.boolean().optional(),
+      mediaExternalPath: z.string().optional(),
+      description: z.string().optional()
+    }).superRefine((value, context) => {
+      const hasUpdate = value.name !== undefined
+        || value.newParentDir !== undefined
+        || value.mediaUseExternalLink !== undefined
+        || value.mediaExternalPath !== undefined
+        || value.description !== undefined
+      if (!hasUpdate) {
+        context.addIssue({
+          code: 'custom',
+          message: '至少需要提供一个待更新字段（name、newParentDir、mediaUseExternalLink、mediaExternalPath 或 description）'
+        })
+      }
+      if (value.newParentDir !== undefined && !value.newParentDir.trim()) {
+        context.addIssue({ code: 'custom', message: 'newParentDir 不能为空字符串' })
+      }
+    }),
+    (input) => callEditor('editor.editFolderProject', {
+      projectPath: resolveRequiredPath(input.projectPath, '工程路径'),
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(input.newParentDir !== undefined ? { newParentDir: resolveRequiredPath(input.newParentDir, '目标父目录') } : {}),
+      ...(input.mediaUseExternalLink !== undefined ? { mediaUseExternalLink: input.mediaUseExternalLink } : {}),
+      ...(input.mediaExternalPath !== undefined ? { mediaExternalPath: resolveOptionalPath(input.mediaExternalPath) ?? '' } : {}),
+      ...(input.description !== undefined ? { description: input.description } : {})
+    })
+  )
+  registerTool(
+    'delete_folder_project',
+    '删除文件夹工程',
+    '将已注册的文件夹工程移入系统回收站并从工程列表中移除；若删除的正是当前打开的工程，会与界面一致地切换到单文件模式而不覆盖当前内存状态。仅允许删除已注册工程，不会弹出确认框。',
+    z.strictObject({ projectPath: z.string().trim().min(1) }),
+    (input) => callEditor('editor.deleteFolderProject', {
+      projectPath: resolveRequiredPath(input.projectPath, '工程路径')
+    })
+  )
+  registerTool(
+    'import_single_project',
+    '导入单文件工程（JSON）',
+    '读取指定 .json 工程文件并进入单文件模式加载到编辑器（重置历史快照、触发缓冲重构并关闭工程管理弹窗），与工程管理界面顶部的“导入工程”行为一致；支持在 ready 为 false 时调用。',
+    z.strictObject({ projectPath: z.string().trim().min(1) }),
+    (input) => callEditor('editor.importSingleProject', {
+      projectPath: resolveRequiredPath(input.projectPath, '工程文件路径')
+    })
+  )
+  registerTool(
+    'import_xml_danmakus',
+    '导入 XML 弹幕文件',
+    '读取指定 Bilibili .xml 弹幕文件并按当前画布尺寸、XML 偏移设置与最大层数解析，切换到单文件模式、重置历史快照、触发缓冲重构并关闭工程管理弹窗，与工程管理界面顶部的“导入 XML”行为一致；支持在 ready 为 false 时调用。',
+    z.strictObject({ xmlPath: z.string().trim().min(1) }),
+    (input) => callEditor('editor.importXmlDanmakus', {
+      xmlPath: resolveRequiredPath(input.xmlPath, 'XML 文件路径')
+    })
+  )
+  registerTool(
+    'skip_folder_project',
+    '跳过或关闭工程管理器',
+    '与工程管理弹窗右上角“跳过/关闭”按钮行为一致：若当前处于启动初始化阶段（ready 为 false），则跳过文件夹工程并进入单文件模式（如有本地缓存则加载）；否则仅关闭工程管理弹窗。',
+    emptyInput,
+    () => callEditor('editor.skipFolderProject')
+  )
+  registerTool(
     'get_editor_logs',
     '查询编辑器日志',
     '读取当前运行会话中最近的界面日志，按时间倒序返回；不会读取磁盘上的旧日志文件。',
@@ -443,16 +640,9 @@ function createMcpServer() {
   registerTool(
     'select_by_command',
     '按条件筛选弹幕',
-    '使用 /s 命令语法更新选择范围。',
-    z.strictObject({ command: z.string().describe('以 /s 开头的筛选命令') }),
+    '使用筛选命令语法更新选择范围（MCP 调用可省略开头的 /s，也兼容带 /s 写法）。支持按 id（如 id:"\'1\',\'2\'"）、文本正则、数值范围等条件筛选。',
+    z.strictObject({ command: z.string().describe('筛选命令（可省略开头的 /s），例如 id:"\'1\',\'2\'" 或 startTime:"1000~3000"') }),
     (input) => callEditor('editor.applyFieldUpdate', { field: '@selection.filter', method: { command: input.command } })
-  )
-  registerTool(
-    'execute_edit_command',
-    '执行工具栏命令',
-    '执行工具栏数字字段表达式命令，例如：startX = startX + 20;zRotate = 90，与 apply_field_update 表达式的区别是这个可以同时执行多条赋值规则，在引用被赋值字段时使用原值而非赋值后的值',
-    z.strictObject({ command: z.string() }),
-    (input) => callEditor('editor.applyFieldUpdate', { field: '@toolbar.command', method: { command: input.command } })
   )
   registerTool(
     'apply_stroke',
@@ -464,8 +654,11 @@ function createMcpServer() {
   registerTool(
     'center_danmakus',
     '弹幕居中',
-    '按画布尺寸和文字测量结果将当前选择水平或垂直居中。测量失败时整次操作取消。axis=x 表示垂直居中，axis=y 表示水平居中。',
-    z.strictObject({ axis: z.enum(['x', 'y']), scope: scopeInput.optional() }),
+    '按画布尺寸和文字测量结果居中当前选择的 X 或 Y 坐标（含 zRotate 旋转包围盒补偿）。测量失败时整次操作取消。axis=x 居中 X 坐标（将 transform.start.x / transform.end.x 设为 ((screenWidth - box.width) / 2) - box.minX，沿画布垂直中轴线左右居中）；axis=y 居中 Y 坐标（将 transform.start.y / transform.end.y 设为 ((screenHeight - box.height) / 2) - box.minY，沿画布水平中轴线上下居中）。',
+    z.strictObject({
+      axis: z.enum(['x', 'y']).describe('x：居中 X 坐标（左右居中，对应工具栏“垂直居中”）；y：居中 Y 坐标（上下居中，对应工具栏“水平居中”）'),
+      scope: scopeInput.optional()
+    }),
     (input) => callEditor('editor.applyFieldUpdate', { field: '@toolbar.center', method: input })
   )
   registerTool(
@@ -530,6 +723,13 @@ function createMcpServer() {
     '重做最近撤销的编辑操作。',
     emptyInput,
     () => callEditor('editor.applyFieldUpdate', { field: '@history.redo', method: null })
+  )
+  registerTool(
+    'reload_app',
+    '重新加载应用（慎用）',
+    '调用前端 window.location.reload() 强制刷新整个应用。注意：此操作会清空所有内存历史快照（historySnapshots）和未保存的编辑状态，使应用回到初始启动阶段（ready 变为 false）',
+    emptyInput,
+    () => callEditor('editor.reloadApp')
   )
 
   return server

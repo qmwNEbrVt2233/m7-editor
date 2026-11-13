@@ -84,11 +84,19 @@ async function main() {
     if (!Array.isArray(tools) || tools.length === 0) throw new Error('MCP 服务没有注册工具')
     const requiredTools = [
       'create_danmakus', 'delete_danmakus', 'update_current_time', 'update_editor_settings',
-      'save_folder_project', 'backup_folder_project', 'get_editor_logs',
-      'list_history_snapshots', 'get_history_snapshot', 'create_generated_danmakus', 'get_frame'
+      'save_folder_project', 'backup_folder_project', 'get_file_system_state',
+      'check_folder_project_path', 'create_folder_project', 'load_folder_project',
+      'import_folder_project', 'edit_folder_project', 'delete_folder_project',
+      'import_single_project', 'import_xml_danmakus', 'skip_folder_project',
+      'reload_app', 'get_editor_logs',
+      'list_history_snapshots', 'get_history_snapshot', 'create_generated_danmakus', 'get_frame',
+      'apply_field_updates', 'measure_text'
     ]
     const missingTools = requiredTools.filter((name) => !tools.some((tool: { name?: string }) => tool.name === name))
     if (missingTools.length) throw new Error(`MCP 服务缺少工具：${missingTools.join(', ')}`)
+    if (tools.some((tool: { name?: string }) => tool.name === 'execute_edit_command')) {
+      throw new Error('MCP 服务仍暴露已移除的 execute_edit_command 工具')
+    }
     console.log(`MCP 握手成功，已发现 ${tools.length} 个工具。`)
 
     const invalidInput = await request('tools/call', {
@@ -130,6 +138,61 @@ async function main() {
       throw new Error('生成工具没有拒绝未知字段规则')
     }
     console.log('生成规则参数检查正常，未知字段已在调用编辑器前拒绝。')
+
+    const invalidBatchUpdates = await request('tools/call', {
+      name: 'apply_field_updates',
+      arguments: { steps: [] }
+    })
+    if (!invalidBatchUpdates.error && invalidBatchUpdates.result?.isError !== true) {
+      throw new Error('批量更新工具没有拒绝空的 steps 数组')
+    }
+    const invalidMixedUpset = await request('tools/call', {
+      name: 'apply_field_updates',
+      arguments: { steps: [[{ field: 'transform.start.x', method: { op: 'upset', expr: '$startX' } }]] }
+    })
+    if (!invalidMixedUpset.error && invalidMixedUpset.result?.isError !== true) {
+      throw new Error('批量更新工具没有拒绝无效的 upset 混合参数')
+    }
+    console.log('批量字段更新参数检查正常，空 steps 与无效 upset 参数已在调用编辑器前拒绝。')
+
+    const invalidMeasure = await request('tools/call', {
+      name: 'measure_text',
+      arguments: {}
+    })
+    if (!invalidMeasure.error && invalidMeasure.result?.isError !== true) {
+      throw new Error('文字测量工具没有拒绝同时缺少 text 和 items 的请求')
+    }
+    console.log('文字测量参数检查正常，缺少测量内容时已拒绝请求。')
+
+    const invalidCreateFolderProject = await request('tools/call', {
+      name: 'create_folder_project',
+      arguments: { name: 'demo', fromCurrent: true, fromProjectPath: 'demo.json' }
+    })
+    if (!invalidCreateFolderProject.error && invalidCreateFolderProject.result?.isError !== true) {
+      throw new Error('创建文件夹工程工具没有拒绝同时指定 fromCurrent 和 fromProjectPath 的请求')
+    }
+    const invalidEditFolderProject = await request('tools/call', {
+      name: 'edit_folder_project',
+      arguments: { projectPath: 'demo' }
+    })
+    if (!invalidEditFolderProject.error && invalidEditFolderProject.result?.isError !== true) {
+      throw new Error('编辑文件夹工程工具没有拒绝缺少待更新字段的请求')
+    }
+    const invalidCheckProjectPath = await request('tools/call', {
+      name: 'check_folder_project_path',
+      arguments: { name: '   ' }
+    })
+    if (!invalidCheckProjectPath.error && invalidCheckProjectPath.result?.isError !== true) {
+      throw new Error('工程路径检查工具没有拒绝空白工程名称')
+    }
+    const invalidReloadApp = await request('tools/call', {
+      name: 'reload_app',
+      arguments: { unexpected: true }
+    })
+    if (!invalidReloadApp.error && invalidReloadApp.result?.isError !== true) {
+      throw new Error('应用重启工具没有拒绝未知参数')
+    }
+    console.log('文件系统与重启工具参数检查正常，无效组合与未知参数已在调用编辑器前拒绝。')
 
     const state = await request('tools/call', { name: 'get_editor_state', arguments: {} })
     if (state.error) throw new Error(state.error.message)

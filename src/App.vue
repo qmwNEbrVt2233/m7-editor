@@ -89,9 +89,86 @@ async function handleMcpCommand(payload: McpCommandPayload) {
   const { requestId, method, params = {} } = payload
   let result: unknown = null
   let error: string | null = null
+  let shouldReload = false
   try {
     if (method === 'editor.getState') {
       result = { ...store.getMcpEditorState(), ready: editorReady.value }
+    } else if (method === 'editor.getFileSystemState') {
+      result = await store.refreshFileSystemState()
+    } else if (method === 'editor.checkFolderProjectPath') {
+      if (typeof params.name !== 'string' || !params.name.trim()) {
+        throw new Error('工程名称不能为空')
+      }
+      result = await store.checkFolderProjectPathState(
+        params.name,
+        typeof params.parentDir === 'string' ? params.parentDir : undefined
+      )
+    } else if (method === 'editor.createFolderProject') {
+      if (typeof params.name !== 'string' || !params.name.trim()) {
+        throw new Error('工程名称不能为空')
+      }
+      result = await store.createFolderProjectFromInput({
+        name: params.name,
+        parentDir: typeof params.parentDir === 'string' ? params.parentDir : undefined,
+        fromCurrent: params.fromCurrent === true,
+        fromProjectPath: typeof params.fromProjectPath === 'string' ? params.fromProjectPath : undefined,
+        mediaPath: typeof params.mediaPath === 'string' ? params.mediaPath : undefined,
+        copyMedia: typeof params.copyMedia === 'boolean' ? params.copyMedia : true,
+        description: typeof params.description === 'string' ? params.description : ''
+      })
+      editorReady.value = true
+    } else if (method === 'editor.loadFolderProject') {
+      if (typeof params.projectPath !== 'string' || !params.projectPath.trim()) {
+        throw new Error('工程路径不能为空')
+      }
+      result = await store.loadFolderProjectFromPath(params.projectPath)
+      editorReady.value = true
+    } else if (method === 'editor.importFolderProject') {
+      if (typeof params.projectPath !== 'string' || !params.projectPath.trim()) {
+        throw new Error('工程路径不能为空')
+      }
+      result = await store.importFolderProjectFromPath(params.projectPath)
+      editorReady.value = true
+    } else if (method === 'editor.editFolderProject') {
+      if (typeof params.projectPath !== 'string' || !params.projectPath.trim()) {
+        throw new Error('工程路径不能为空')
+      }
+      result = await store.editFolderProjectByInput({
+        projectPath: params.projectPath,
+        name: typeof params.name === 'string' ? params.name : undefined,
+        newParentDir: typeof params.newParentDir === 'string' ? params.newParentDir : undefined,
+        mediaUseExternalLink: typeof params.mediaUseExternalLink === 'boolean' ? params.mediaUseExternalLink : undefined,
+        mediaExternalPath: typeof params.mediaExternalPath === 'string' ? params.mediaExternalPath : undefined,
+        description: typeof params.description === 'string' ? params.description : undefined
+      })
+    } else if (method === 'editor.deleteFolderProject') {
+      if (typeof params.projectPath !== 'string' || !params.projectPath.trim()) {
+        throw new Error('工程路径不能为空')
+      }
+      result = await store.deleteFolderProjectByPath(params.projectPath, true)
+    } else if (method === 'editor.importSingleProject') {
+      if (typeof params.projectPath !== 'string' || !params.projectPath.trim()) {
+        throw new Error('工程文件路径不能为空')
+      }
+      result = await store.importSingleProjectFromPath(params.projectPath)
+      editorReady.value = true
+    } else if (method === 'editor.importXmlDanmakus') {
+      if (typeof params.xmlPath !== 'string' || !params.xmlPath.trim()) {
+        throw new Error('XML 文件路径不能为空')
+      }
+      result = await store.importXmlFromPath(params.xmlPath)
+      editorReady.value = true
+    } else if (method === 'editor.skipFolderProject') {
+      result = await store.skipProjectManager()
+      editorReady.value = true
+    } else if (method === 'editor.reloadApp') {
+      shouldReload = true
+      notice.log('[MCP] 即将重新加载应用（历史快照与未保存状态将被清空）', 'warn')
+      result = {
+        ok: true,
+        reloading: true,
+        warning: '应用即将重载，所有内存历史快照和未保存的更改都会被清空'
+      }
     } else if (method === 'editor.getDanmakus') {
       if (!editorReady.value) throw new Error('编辑器尚未加载工程')
       result = store.getMcpDanmakus(params as { ids?: string[]; selectedOnly?: boolean; offset?: number; limit?: number })
@@ -135,6 +212,22 @@ async function handleMcpCommand(payload: McpCommandPayload) {
       }, timeMs, maxDimension)
       result = frame
       notice.log(`MCP 已返回 ${frame.width}×${frame.height} 帧图像`, 'success')
+    } else if (method === 'editor.measureText') {
+      if (!editorReady.value) throw new Error('编辑器尚未加载工程，暂不能测量文字')
+      const hasItems = Array.isArray(params.items)
+      const items = hasItems
+        ? params.items as Array<{ text: string; font?: string; size?: number; zRotate?: number; stroke?: boolean }>
+        : [{
+          text: params.text as string,
+          font: params.font as string | undefined,
+          size: params.size as number | undefined,
+          zRotate: params.zRotate as number | undefined,
+          stroke: params.stroke as boolean | undefined
+        }]
+      const measured = await store.measureTextForMcp(items)
+      result = hasItems
+        ? measured
+        : { ...measured.items[0], screen: measured.screen }
     } else if (method === 'editor.saveFolderProject' || method === 'editor.backupFolderProject') {
       if (!editorReady.value) throw new Error('编辑器尚未加载工程')
       result = await store.saveFolderProjectForMcp(method === 'editor.backupFolderProject')
@@ -157,6 +250,11 @@ async function handleMcpCommand(payload: McpCommandPayload) {
     await invoke('complete_mcp_request', { requestId, result, error })
   } catch (cause) {
     console.error('[MCP] 返回编辑器操作结果失败:', cause)
+  }
+
+  if (shouldReload && !error) {
+    await invoke('set_mcp_frontend_ready', { ready: false }).catch(() => {})
+    window.location.reload()
   }
 }
 

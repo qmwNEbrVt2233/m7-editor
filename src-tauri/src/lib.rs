@@ -513,6 +513,8 @@ struct CreateFolderProjectRequest {
     parent_dir: String,
     name: String,
     from_project: Option<Value>,
+    #[serde(default)]
+    from_project_path: Option<String>,
     media_path: Option<String>,
     copy_media: bool,
     description: Option<String>,
@@ -1146,12 +1148,57 @@ fn check_folder_project_path(parent_dir: String, name: String) -> Result<Project
     })
 }
 
+fn read_validated_project_json(path: &Path) -> Result<Value, String> {
+    let project = read_json::<Value>(path)
+        .map_err(|error| format!("无法读取工程文件 {}: {error}", path.display()))?;
+    if !project.is_object() {
+        return Err(format!("工程文件格式无效（根节点必须是对象）: {}", path.display()));
+    }
+    if let Some(danmakus) = project.get("danmakus") {
+        if !danmakus.is_array() {
+            return Err(format!("工程文件格式无效（danmakus 必须是数组）: {}", path.display()));
+        }
+    }
+    Ok(project)
+}
+
 #[tauri::command]
 fn create_folder_project(
     app: AppHandle,
     request: CreateFolderProjectRequest,
 ) -> Result<FolderProjectPayload, String> {
-    let project_name = sanitize_file_name(&request.name);
+    let trimmed_name = request.name.trim();
+    if trimmed_name.is_empty() {
+        return Err("工程名称不能为空".to_string());
+    }
+
+    let from_project_path = request
+        .from_project_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty());
+    if request.from_project.is_some() && from_project_path.is_some() {
+        return Err("不能同时指定 fromProject 和 fromProjectPath".to_string());
+    }
+
+    let source_project = match (request.from_project, from_project_path) {
+        (Some(project), None) => {
+            if !project.is_object() {
+                return Err("fromProject 必须是 JSON 对象".to_string());
+            }
+            if let Some(danmakus) = project.get("danmakus") {
+                if !danmakus.is_array() {
+                    return Err("fromProject 中的 danmakus 必须是数组".to_string());
+                }
+            }
+            Some(project)
+        }
+        (None, Some(path)) => Some(read_validated_project_json(Path::new(path))?),
+        (None, None) => None,
+        (Some(_), Some(_)) => unreachable!(),
+    };
+
+    let project_name = sanitize_file_name(trimmed_name);
     let parent_dir = PathBuf::from(request.parent_dir);
     fs::create_dir_all(&parent_dir).map_err(|error| format!("无法创建工程父目录: {error}"))?;
 
@@ -1188,7 +1235,7 @@ fn create_folder_project(
         description: request.description.unwrap_or_default(),
     };
 
-    let mut project = request.from_project.unwrap_or_else(|| {
+    let mut project = source_project.unwrap_or_else(|| {
         json!({
             "meta": {
                 "version": APP_VERSION,
@@ -1331,16 +1378,27 @@ fn edit_folder_project(
 
     // 处理移动
     if let Some(ref new_parent) = request.new_parent_dir {
-        let parent = PathBuf::from(new_parent);
-        if parent != new_project_dir.parent().map(|p| p.to_path_buf()).unwrap_or_default() {
+        let trimmed_parent = new_parent.trim();
+        if !trimmed_parent.is_empty() {
+            let parent = PathBuf::from(trimmed_parent);
             fs::create_dir_all(&parent)
                 .map_err(|error| format!("无法创建目标父目录: {error}"))?;
-            let candidate = parent.join(new_project_dir.file_name().ok_or("无法获取工程文件夹名")?);
-            if candidate.exists() && candidate != new_project_dir {
-                return Err(format!("目标目录已存在: {}", candidate.display()));
+            let canonical_parent = fs::canonicalize(&parent).unwrap_or(parent);
+            let current_parent = new_project_dir
+                .parent()
+                .map(|p| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
+                .unwrap_or_default();
+            if canonical_parent != current_parent {
+                let candidate = canonical_parent
+                    .join(new_project_dir.file_name().ok_or("无法获取工程文件夹名")?);
+                let canonical_candidate = fs::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
+                let canonical_current = fs::canonicalize(&new_project_dir).unwrap_or_else(|_| new_project_dir.clone());
+                if candidate.exists() && canonical_candidate != canonical_current {
+                    return Err(format!("目标目录已存在: {}", candidate.display()));
+                }
+                new_project_dir = candidate;
+                needs_move = true;
             }
-            new_project_dir = candidate;
-            needs_move = true;
         }
     }
 
@@ -1757,9 +1815,22 @@ fn choose_project_folder() -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-fn import_folder_project(app: AppHandle) -> Result<Option<FolderProjectPayload>, String> {
-    let Some(path) = open_project_folder_dialog()? else {
-        return Ok(None);
+fn import_folder_project(
+    app: AppHandle,
+    project_path: Option<String>,
+) -> Result<Option<FolderProjectPayload>, String> {
+    let path = match project_path {
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Err("工程路径不能为空".to_string());
+            }
+            PathBuf::from(trimmed)
+        }
+        None => match open_project_folder_dialog()? {
+            Some(selected) => selected,
+            None => return Ok(None),
+        },
     };
 
     let payload = load_folder_project_payload(&app, &path)?;
@@ -1893,6 +1964,25 @@ fn open_project_file() -> Result<Option<Value>, String> {
     let project = read_json::<Value>(&path)
         .map_err(|error| format!("无法读取工程文件 {}: {error}", path.display()))?;
     Ok(Some(project))
+}
+
+#[tauri::command]
+fn read_project_json_file(path: String) -> Result<Value, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("工程文件路径不能为空".to_string());
+    }
+    read_validated_project_json(Path::new(trimmed))
+}
+
+#[tauri::command]
+fn read_xml_file(path: String) -> Result<String, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("XML 文件路径不能为空".to_string());
+    }
+    fs::read_to_string(Path::new(trimmed))
+        .map_err(|error| format!("无法读取 XML 文件 {}: {error}", trimmed))
 }
 
 #[cfg(windows)]
@@ -2922,6 +3012,8 @@ pub fn run() {
             choose_project_folder,
             import_folder_project,
             open_project_file,
+            read_project_json_file,
+            read_xml_file,
             append_log,
             complete_mcp_request,
             set_mcp_frontend_ready

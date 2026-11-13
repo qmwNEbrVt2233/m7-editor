@@ -178,21 +178,15 @@ import { useNoticeStore } from '@/store/notice'
 import {
   checkFolderProjectPath,
   chooseProjectFolder,
-  createFolderProject,
-  editFolderProject,
-  getFileSystemState,
-  importFolderProject,
-  loadFolderProject,
+  isSameFsPath,
   openMediaFileWithTauri,
   openProjectFile,
-  removeFolderProject,
   type EditFolderProjectInput,
-  type FileSystemState,
   type FolderProjectSummary,
   type ProjectPathCheck
 } from '@/utils/tauriBackend'
 
-defineProps<{
+const props = defineProps<{
   visible: boolean
 }>()
 
@@ -205,7 +199,7 @@ const store = useEditorStore()
 const notice = useNoticeStore()
 
 const loading = ref(false)
-const fileSystemState = ref<FileSystemState | null>(null)
+const fileSystemState = computed(() => store.fileSystemState)
 const projectName = ref('Project_1')
 const parentDir = ref('')
 const mediaPath = ref('')
@@ -242,6 +236,21 @@ const canCreateProject = computed(() => {
 watch(importFromFile, (val) => { if (val) createFromCurrent.value = false })
 watch(createFromCurrent, (val) => { if (val) { importFromFile.value = false; importedProjectData.value = null; importedProjectPath.value = '' } })
 
+watch(() => props.visible, (visible) => {
+  if (visible) {
+    void refreshProjects()
+  }
+})
+
+watch(() => store.fileSystemState, (fsState) => {
+  if (!fsState) return
+  parentDir.value ||= fsState.defaultProjectsDir
+  if (editingProjectPath.value && !fsState.projects.some((project) => isSameFsPath(project.path, editingProjectPath.value!))) {
+    cancelEditing()
+  }
+  void checkProjectPathNow()
+})
+
 onMounted(() => {
   void refreshProjects()
 })
@@ -249,11 +258,8 @@ onMounted(() => {
 async function refreshProjects() {
   loading.value = true
   try {
-    fileSystemState.value = await getFileSystemState()
-    if (!store.globalSettingsLoaded) {
-      store.applyGlobalSettings(fileSystemState.value.globalSettings)
-    }
-    parentDir.value ||= fileSystemState.value.defaultProjectsDir
+    const fsState = await store.refreshFileSystemState()
+    parentDir.value ||= fsState.defaultProjectsDir
     await checkProjectPathNow()
   } catch (error) {
     notice.alert(error instanceof Error ? error.message : String(error), 'error', '工程列表读取失败', error)
@@ -309,26 +315,20 @@ async function createProject() {
   if (!canCreateProject.value) return
 
   try {
-    // 确定 fromProject 数据源
-    let fromProject: any = undefined
-    if (importFromFile.value && importedProjectData.value) {
-      fromProject = importedProjectData.value
-    } else if (createFromCurrent.value) {
-      fromProject = store.exportProject()
-    }
+    const fromProject = importFromFile.value && importedProjectData.value
+      ? importedProjectData.value
+      : undefined
 
-    const payload = await createFolderProject({
+    await store.createFolderProjectFromInput({
       parentDir: parentDir.value,
       name: projectName.value,
+      fromCurrent: !fromProject && createFromCurrent.value,
       fromProject,
       mediaPath: mediaPath.value || undefined,
       copyMedia: copyMedia.value,
       description: description.value
     })
 
-    await store.applyFolderProjectPayload(payload)
-    await refreshProjects()
-    notice.log('[工程] 文件夹工程已创建', 'success')
     emit('loaded')
     emit('close')
   } catch (error) {
@@ -344,17 +344,7 @@ async function loadProject(path: string) {
     }
   }
   try {
-    const payload = await loadFolderProject(path)
-    await store.applyFolderProjectPayload(payload)
-    notice.log('[工程] 文件夹工程已加载', 'success')
-
-    // 显示媒体缺失警告
-    if (payload.warnings && payload.warnings.length > 0) {
-      for (const warning of payload.warnings) {
-        notice.alert(warning, 'warn', '媒体文件警告')
-      }
-    }
-
+    await store.loadFolderProjectFromPath(path)
     emit('loaded')
     emit('close')
   } catch (error) {
@@ -364,12 +354,9 @@ async function loadProject(path: string) {
 
 async function importProjectFolder() {
   try {
-    const payload = await importFolderProject()
-    if (!payload) return
+    const result = await store.importFolderProjectFromPath()
+    if (!result) return
 
-    await store.applyFolderProjectPayload(payload)
-    await refreshProjects()
-    notice.log('[工程] 文件夹工程已导入', 'success')
     emit('loaded')
     emit('close')
   } catch (error) {
@@ -382,12 +369,7 @@ async function deleteProject(path: string) {
   if (!confirmed) return
 
   try {
-    await removeFolderProject(path)
-    if (store.activeFolderProjectPath === path) {
-      store.enterSingleFileMode(false)
-    }
-    await refreshProjects()
-    notice.log(`[工程] 工程已删除：${path}`, 'success')
+    await store.deleteFolderProjectByPath(path, false)
   } catch (error) {
     notice.alert(error instanceof Error ? error.message : String(error), 'error', '删除工程失败', error)
   }
@@ -488,10 +470,8 @@ async function saveEditing() {
       input.mediaExternalPath = editingMediaExternalPath.value
     }
 
-    await editFolderProject(input)
-    await refreshProjects()
+    await store.editFolderProjectByInput(input)
     cancelEditing()
-    notice.log('[工程] 工程配置已更新', 'success')
   } catch (error) {
     notice.alert(error instanceof Error ? error.message : String(error), 'error', '编辑工程失败', error)
   } finally {
@@ -539,15 +519,13 @@ async function chooseImportedProjectFile() {
   }
 }
 
-function skipFolderProject() {
-  if (!store.InitializationPhase) {
+async function skipFolderProject() {
+  try {
+    await store.skipProjectManager()
     emit('loaded')
     emit('close')
-    return
-  } else {
-    store.enterSingleFileMode(true)
-    emit('loaded')
-    emit('close')
+  } catch (error) {
+    notice.alert(error instanceof Error ? error.message : String(error), 'error', '跳过工程失败', error)
   }
 }
 

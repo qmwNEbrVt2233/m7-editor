@@ -4,6 +4,7 @@ import {
   applyOperation,
   blendColor,
   evaluateMathExpressionValue,
+  evaluateSeededRandom,
   parseColorWithAlpha,
   parseInput,
   parseMathExpression
@@ -1033,6 +1034,7 @@ function createExpressionScope(params: {
     n: params.quantity,
     t,
     bezier: evaluateBezier,
+    seededRandom: (seed: number, index: number = params.index) => evaluateSeededRandom(seed, index),
     width: store.screenWidth,
     height: store.screenHeight
   }

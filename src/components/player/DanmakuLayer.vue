@@ -43,7 +43,7 @@ import type { ComponentPublicInstance } from 'vue'
 import { shallowRef, computed, watch, nextTick, ref, onMounted, onBeforeUnmount } from 'vue'
 import type { DanmakuItem } from '@/core/danmaku'
 import { TOOLBAR_MEASURE_EVENT } from '@/core/danmakuMeasurement'
-import type { ToolbarMeasure, ToolbarMeasureEventDetail } from '@/core/danmakuMeasurement'
+import type { ToolbarMeasure, ToolbarMeasureRequest, ToolbarMeasureEventDetail } from '@/core/danmakuMeasurement'
 import { useEditorStore } from '@/store/editor'
 
 const store = useEditorStore()
@@ -78,9 +78,7 @@ const playbackActiveNodes = new Map<string, HTMLDivElement>()
 const playbackNodePool: HTMLDivElement[] = []
 
 const danmakuBufferSignature = computed(() => {
-  return (props.renderDanmakus ?? store.danmakus)
-    .map((d: DanmakuItem) => `${d.id}|${d.layer}|${d.startTime}|${d.animation.duration}`)
-    .join(';')
+  return JSON.stringify(props.renderDanmakus ?? store.danmakus)
 })
 
 const isSnapshotRender = computed(() => props.renderTimeMs !== undefined && props.renderTimeMs !== null)

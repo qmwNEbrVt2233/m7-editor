@@ -5,14 +5,27 @@ import type { DanmakuItem } from '@/core/danmaku'
 import { saveProject, loadProject, clearProject } from '@/localStorage/projectStorage'
 import { historyManager } from '@/core/history'
 import { parseXML, toXML } from '@/core/converter'
-import { applyEditorApi, type EditorApiMethod, type EditorApiResult } from '@/core/editorApi'
+import { applyEditorApi, rotatedBox, type EditorApiMethod, type EditorApiResult } from '@/core/editorApi'
 import { measureDanmakus } from '@/core/danmakuMeasurement'
 import {
   backupFolderProject,
+  checkFolderProjectPath,
   convertMediaPathToUrl,
+  createFolderProject,
+  editFolderProject,
+  getFileSystemState,
+  importFolderProject,
+  isSameFsPath,
+  loadFolderProject,
+  readProjectJsonFile,
+  readXmlFile,
+  removeFolderProject,
+  type EditFolderProjectInput,
+  type FileSystemState,
   type GlobalSettings,
   type FolderProjectConfig,
   type FolderProjectPayload,
+  type ProjectPathCheck,
   getProjectMediaPath,
   isTauriRuntime,
   registerMediaPath,
@@ -27,6 +40,20 @@ import {
 } from '@/utils/tauriBackend'
 
 let editorApiQueue: Promise<void> = Promise.resolve()
+
+async function withEditorOperationLock<T>(task: () => Promise<T>): Promise<T> {
+  const previousOperation = editorApiQueue
+  let releaseOperation!: () => void
+  editorApiQueue = new Promise<void>((resolve) => {
+    releaseOperation = resolve
+  })
+  await previousOperation
+  try {
+    return await task()
+  } finally {
+    releaseOperation()
+  }
+}
 
 type SavePickerAcceptType = {
   description: string
@@ -271,6 +298,7 @@ export const useEditorStore = defineStore('editor', {
       activeFolderProjectPath: '',
       activeFolderProjectConfig: null as FolderProjectConfig | null,
       pendingFolderMediaPath: '',
+      fileSystemState: null as FileSystemState | null,
       mediaUrl: savedMediaPath ? '' : saved?.media?.url || '',
       mediaDuration: 0,
       mediaElement: null as HTMLMediaElement | null,
@@ -391,12 +419,7 @@ export const useEditorStore = defineStore('editor', {
 
   actions: {
     async applyFieldUpdate(field: string, method: EditorApiMethod): Promise<EditorApiResult> {
-      const previousOperation = editorApiQueue
-      let releaseOperation!: () => void
-      editorApiQueue = new Promise<void>((resolve) => { releaseOperation = resolve })
-      await previousOperation
-
-      try {
+      return withEditorOperationLock(async () => {
       const emptyResult = { changedIds: [], createdIds: [], selectedIds: [...this.selectedIds], warnings: [] as string[] }
 
       if (field === '@history.undo' || field === '@history.redo') {
@@ -540,12 +563,20 @@ export const useEditorStore = defineStore('editor', {
           historyManager.recordSnapshot(this.danmakus, '统一 API 操作前的编辑', true)
           this.danmakus = outcome.danmakus
           historyManager.recordSnapshot(this.danmakus, outcome.historyLabel || `字段更新：${field}`, true)
-          if (outcome.changedField) {
+          const fieldsToCheck = outcome.changedFields?.length
+            ? outcome.changedFields
+            : outcome.changedField
+              ? [outcome.changedField]
+              : []
+          if (fieldsToCheck.length) {
             outcome.changedIds.forEach((id) => {
               const item = this.danmakus.find((danmaku: DanmakuItem) => danmaku.id === id)
               if (item) {
-                const value = outcome.changedField!.split('.').reduce((current: any, key) => current?.[key], item as any)
-                this._checkAndMovePlayhead({ [outcome.changedField!]: value }, id)
+                const patch: Record<string, unknown> = {}
+                for (const changedPath of fieldsToCheck) {
+                  patch[changedPath] = changedPath.split('.').reduce((current: any, key) => current?.[key], item as any)
+                }
+                this._checkAndMovePlayhead(patch, id)
               }
             })
           }
@@ -573,18 +604,39 @@ export const useEditorStore = defineStore('editor', {
                   : 'INVALID_OPERATION'
         return { ok: false, code, message, ...emptyResult }
       }
-      } finally {
-        releaseOperation()
-      }
+      })
     },
 
     getMcpEditorState() {
       const history = historyManager.getState()
+      let timelineRange: { minStartTime: number; maxEndTime: number; spanMs: number } | null = null
+      if (this.danmakus.length > 0) {
+        let minStartTime = Infinity
+        let maxEndTime = -Infinity
+        for (const item of this.danmakus as DanmakuItem[]) {
+          if (item.startTime < minStartTime) minStartTime = item.startTime
+          const endTime = item.startTime + item.animation.duration
+          if (endTime > maxEndTime) maxEndTime = endTime
+        }
+        timelineRange = {
+          minStartTime,
+          maxEndTime,
+          spanMs: Math.max(0, maxEndTime - minStartTime)
+        }
+      }
       return {
         version: this.version,
         ready: !this.InitializationPhase,
         projectMode: this.projectMode,
+        activeFolderProject: this.projectMode === 'folder' && this.activeFolderProjectPath
+          ? {
+              path: this.activeFolderProjectPath,
+              name: this.activeFolderProjectConfig?.name || ''
+            }
+          : null,
+        showProjectManager: this.showProjectManager,
         danmakuCount: this.danmakus.length,
+        timelineRange,
         selectedIds: [...this.selectedIds],
         selectedCount: this.selectedIds.length,
         currentTime: this.currentTime,
@@ -592,6 +644,73 @@ export const useEditorStore = defineStore('editor', {
         maxLayers: this.maxLayers,
         canUndo: history.canUndo,
         canRedo: history.canRedo
+      }
+    },
+
+    async measureTextForMcp(items: Array<{ text: string; font?: string; size?: number; zRotate?: number; stroke?: boolean }>) {
+      if (!Array.isArray(items) || items.length === 0) {
+        throw new Error('测量条目不能为空')
+      }
+      const normalized = items.map((entry, index) => {
+        if (!entry || typeof entry !== 'object') throw new Error('测量条目无效')
+        if (typeof entry.text !== 'string') throw new Error('测量文本必须是字符串')
+        const font = typeof entry.font === 'string' && entry.font.trim() ? entry.font : 'Microsoft YaHei'
+        const size = entry.size ?? 60
+        if (typeof size !== 'number' || !Number.isFinite(size) || size <= 0) {
+          throw new Error('字号 size 必须是大于 0 的有限数字')
+        }
+        const zRotate = entry.zRotate ?? 0
+        if (typeof zRotate !== 'number' || !Number.isFinite(zRotate)) {
+          throw new Error('zRotate 必须是有限数字')
+        }
+        const stroke = Boolean(entry.stroke ?? false)
+        const danmaku: DanmakuItem = {
+          id: `mcp-measure-${index}`,
+          layer: 0,
+          startTime: 0,
+          content: {
+            text: entry.text,
+            font,
+            size: Math.round(size),
+            color: '#FFFFFF',
+            stroke
+          },
+          transform: {
+            start: { x: 0, y: 0 },
+            end: { x: 0, y: 0 },
+            zRotate,
+            yRotate: 0
+          },
+          opacity: { from: 1, to: 1 },
+          animation: {
+            duration: 1000,
+            moveDuration: 1,
+            delay: 0,
+            easing: 'speedup'
+          }
+        }
+        return { danmaku, zRotate }
+      })
+
+      const measurements = await measureDanmakus(normalized.map((entry) => entry.danmaku))
+      const results = normalized.map(({ danmaku, zRotate }) => {
+        const measure = measurements[danmaku.id]
+        if (!measure) throw new Error(`文字测量结果缺失：${danmaku.id}`)
+        const box = rotatedBox(measure.rawWidth, measure.rawHeight, zRotate)
+        const round2 = (value: number) => Math.round(value * 100) / 100
+        return {
+          rawWidth: measure.rawWidth,
+          rawHeight: measure.rawHeight,
+          width: round2(measure.width),
+          height: round2(measure.height),
+          centerX: Math.round(((this.screenWidth - box.width) / 2) - box.minX),
+          centerY: Math.round(((this.screenHeight - box.height) / 2) - box.minY)
+        }
+      })
+
+      return {
+        screen: { width: this.screenWidth, height: this.screenHeight },
+        items: results
       }
     },
 
@@ -642,22 +761,341 @@ export const useEditorStore = defineStore('editor', {
     },
 
     async saveFolderProjectForMcp(backup = false) {
-      if (this.projectMode !== 'folder' || !this.activeFolderProjectPath) {
-        throw new Error('保存和备份仅支持已打开的文件夹工程')
+      return withEditorOperationLock(async () => {
+        if (this.projectMode !== 'folder' || !this.activeFolderProjectPath) {
+          throw new Error('保存和备份仅支持已打开的文件夹工程')
+        }
+        const payload = backup
+          ? await backupFolderProject(this.activeFolderProjectPath, this.exportProject(), this.pendingFolderMediaPath)
+          : await saveFolderProject(this.activeFolderProjectPath, this.exportProject(), this.pendingFolderMediaPath)
+        await this.applyFolderProjectPayload(payload, true)
+        await this.refreshFileSystemState().catch((err) => console.warn('[MCP] 刷新工程列表失败:', err))
+        const notice = useNoticeStore()
+        notice.log(backup ? '[MCP] 文件夹工程已保存并备份' : '[MCP] 文件夹工程已保存', 'success')
+        return {
+          ok: true,
+          projectMode: this.projectMode,
+          projectPath: this.activeFolderProjectPath,
+          projectName: this.activeFolderProjectConfig?.name || '',
+          lastBackUpAt: this.activeFolderProjectConfig?.lastBackUpAt || null
+        }
+      })
+    },
+
+    async refreshFileSystemState(): Promise<FileSystemState> {
+      const fsState = await getFileSystemState()
+      this.fileSystemState = fsState
+      if (!this.globalSettingsLoaded) {
+        this.applyGlobalSettings(fsState.globalSettings)
       }
-      const payload = backup
-        ? await backupFolderProject(this.activeFolderProjectPath, this.exportProject(), this.pendingFolderMediaPath)
-        : await saveFolderProject(this.activeFolderProjectPath, this.exportProject(), this.pendingFolderMediaPath)
-      await this.applyFolderProjectPayload(payload, true)
+      return fsState
+    },
+
+    async checkFolderProjectPathState(name: string, parentDir?: string): Promise<ProjectPathCheck> {
+      const trimmedName = name.trim()
+      if (!trimmedName) {
+        throw new Error('工程名称不能为空')
+      }
+      const trimmedParent = parentDir?.trim()
+      const resolvedParent = trimmedParent || (this.fileSystemState ?? (await this.refreshFileSystemState())).defaultProjectsDir
+      return checkFolderProjectPath(resolvedParent, trimmedName)
+    },
+
+    async activateFolderProjectPayload(
+      payload: FolderProjectPayload,
+      options: { logMessage: string; closeManager?: boolean }
+    ) {
+      this.pausePlayback()
+      await this.applyFolderProjectPayload(payload)
+      await this.refreshFileSystemState().catch((err) => console.warn('[工程] 刷新工程列表失败:', err))
+      if (options.closeManager !== false) {
+        this.showProjectManager = false
+      }
       const notice = useNoticeStore()
-      notice.log(backup ? '[MCP] 文件夹工程已保存并备份' : '[MCP] 文件夹工程已保存', 'success')
+      notice.log(options.logMessage, 'success')
+      if (payload.warnings?.length) {
+        for (const warning of payload.warnings) {
+          notice.alert(warning, 'warn', '媒体文件警告')
+        }
+      }
       return {
         ok: true,
         projectMode: this.projectMode,
-        projectPath: this.activeFolderProjectPath,
-        projectName: this.activeFolderProjectConfig?.name || '',
-        lastBackUpAt: this.activeFolderProjectConfig?.lastBackUpAt || null
+        projectPath: payload.path,
+        projectName: payload.config.name,
+        config: payload.config,
+        mediaFile: payload.mediaFile ?? null,
+        warnings: payload.warnings ?? [],
+        danmakuCount: this.danmakus.length,
+        screen: { width: this.screenWidth, height: this.screenHeight },
+        ready: !this.InitializationPhase
       }
+    },
+
+    async createFolderProjectFromInput(input: {
+      name: string
+      parentDir?: string
+      fromCurrent?: boolean
+      fromProject?: any
+      fromProjectPath?: string
+      mediaPath?: string
+      copyMedia?: boolean
+      description?: string
+      closeManager?: boolean
+    }) {
+      return withEditorOperationLock(async () => {
+        const trimmedName = input.name?.trim() || ''
+        if (!trimmedName) {
+          throw new Error('工程名称不能为空')
+        }
+        const trimmedFromPath = input.fromProjectPath?.trim() || ''
+        const sourceCount = (input.fromCurrent ? 1 : 0)
+          + (input.fromProject !== undefined ? 1 : 0)
+          + (trimmedFromPath ? 1 : 0)
+        if (sourceCount > 1) {
+          throw new Error('fromCurrent、fromProject 和 fromProjectPath 最多只能指定一个')
+        }
+        const resolvedParent = input.parentDir?.trim()
+          || (this.fileSystemState ?? (await this.refreshFileSystemState())).defaultProjectsDir
+        const fromProject = input.fromCurrent ? this.exportProject() : input.fromProject
+        const payload = await createFolderProject({
+          parentDir: resolvedParent,
+          name: trimmedName,
+          fromProject,
+          fromProjectPath: trimmedFromPath || undefined,
+          mediaPath: input.mediaPath?.trim() || undefined,
+          copyMedia: input.copyMedia ?? true,
+          description: input.description ?? ''
+        })
+        return this.activateFolderProjectPayload(payload, {
+          logMessage: '[工程] 文件夹工程已创建',
+          closeManager: input.closeManager
+        })
+      })
+    },
+
+    async loadFolderProjectFromPath(projectPath: string, closeManager = true) {
+      return withEditorOperationLock(async () => {
+        const trimmedPath = projectPath?.trim() || ''
+        if (!trimmedPath) {
+          throw new Error('工程路径不能为空')
+        }
+        const payload = await loadFolderProject(trimmedPath)
+        return this.activateFolderProjectPayload(payload, {
+          logMessage: '[工程] 文件夹工程已加载',
+          closeManager
+        })
+      })
+    },
+
+    async importFolderProjectFromPath(projectPath?: string, closeManager = true) {
+      return withEditorOperationLock(async () => {
+        if (projectPath !== undefined && !projectPath.trim()) {
+          throw new Error('工程路径不能为空')
+        }
+        const payload = await importFolderProject(projectPath?.trim() || undefined)
+        if (!payload) {
+          return null
+        }
+        return this.activateFolderProjectPayload(payload, {
+          logMessage: '[工程] 文件夹工程已导入',
+          closeManager
+        })
+      })
+    },
+
+    async editFolderProjectByInput(input: EditFolderProjectInput) {
+      return withEditorOperationLock(async () => {
+        if (!input.projectPath?.trim()) {
+          throw new Error('工程路径不能为空')
+        }
+        const isEditingActive = this.projectMode === 'folder'
+          && isSameFsPath(this.activeFolderProjectPath, input.projectPath)
+        const prevMediaConfig = JSON.stringify(this.activeFolderProjectConfig?.media ?? null)
+        const summary = await editFolderProject(input)
+        if (isEditingActive) {
+          this.activeFolderProjectPath = summary.path
+          this.activeFolderProjectConfig = summary.config
+          const mediaConfigChanged = input.mediaUseExternalLink !== undefined
+            || input.mediaExternalPath !== undefined
+            || prevMediaConfig !== JSON.stringify(summary.config.media ?? null)
+          if (mediaConfigChanged) {
+            this.pendingFolderMediaPath = ''
+            if (summary.mediaPath) {
+              await this.resolveMediaPath(summary.mediaPath)
+            } else {
+              this.mediaFilePath = ''
+              this.mediaUrl = ''
+            }
+          }
+        }
+        const fsState = await this.refreshFileSystemState()
+        useNoticeStore().log('[工程] 工程配置已更新', 'success')
+        return {
+          ok: true,
+          project: summary,
+          isActiveProject: isEditingActive,
+          projectsCount: fsState.projects.length
+        }
+      })
+    },
+
+    async deleteFolderProjectByPath(projectPath: string, requireRegistered = true) {
+      return withEditorOperationLock(async () => {
+        const trimmedPath = projectPath?.trim() || ''
+        if (!trimmedPath) {
+          throw new Error('工程路径不能为空')
+        }
+        let resolvedPath = trimmedPath
+        if (requireRegistered) {
+          const fsState = await this.refreshFileSystemState()
+          const matched = fsState.projects.find((item) => isSameFsPath(item.path, trimmedPath))
+          if (!matched) {
+            throw new Error(`未在已注册工程列表中找到该文件夹工程：${trimmedPath}`)
+          }
+          resolvedPath = matched.path
+        }
+        await removeFolderProject(resolvedPath)
+        const deletedActive = this.projectMode === 'folder'
+          && isSameFsPath(this.activeFolderProjectPath, resolvedPath)
+        if (deletedActive) {
+          await this.enterSingleFileMode(false)
+        }
+        const fsState = await this.refreshFileSystemState()
+        useNoticeStore().log(`[工程] 工程已删除：${resolvedPath}`, 'success')
+        return {
+          ok: true,
+          deletedPath: resolvedPath,
+          wasActiveProject: deletedActive,
+          projectMode: this.projectMode,
+          projectsCount: fsState.projects.length
+        }
+      })
+    },
+
+    async applyImportedProject(
+      project: any,
+      options: { closeManager?: boolean; logMessage?: string } = {}
+    ) {
+      if (!project || typeof project !== 'object' || Array.isArray(project)) {
+        throw new Error('工程文件格式无效（根节点必须是对象）')
+      }
+      if (project.danmakus !== undefined && !Array.isArray(project.danmakus)) {
+        throw new Error('工程文件格式无效（danmakus 必须是数组）')
+      }
+      this.pausePlayback()
+      await this.enterSingleFileMode(false)
+      await this.applyProject(project)
+      historyManager.clear()
+      historyManager.recordSnapshot(this.danmakus, `导入工程(${this.danmakus.length}条弹幕)`)
+      // 标记导入完成，触发缓冲池重构
+      this.importTimestamp = Date.now()
+      if (options.closeManager) {
+        this.showProjectManager = false
+      }
+      if (options.logMessage) {
+        useNoticeStore().log(options.logMessage, 'success')
+      }
+      return {
+        ok: true,
+        projectMode: this.projectMode,
+        danmakuCount: this.danmakus.length,
+        screen: { width: this.screenWidth, height: this.screenHeight },
+        mediaUrl: this.mediaUrl || null,
+        ready: !this.InitializationPhase
+      }
+    },
+
+    async importSingleProjectFromPath(jsonPath: string) {
+      return withEditorOperationLock(async () => {
+        const trimmedPath = jsonPath?.trim() || ''
+        if (!trimmedPath) {
+          throw new Error('工程文件路径不能为空')
+        }
+        const project = await readProjectJsonFile(trimmedPath)
+        return this.applyImportedProject(project, {
+          closeManager: true,
+          logMessage: `[工程] 已导入单文件工程：${trimmedPath}`
+        })
+      })
+    },
+
+    async applyImportedXmlText(xml: string, options: { closeManager?: boolean } = {}) {
+      const notice = useNoticeStore()
+      const { danmakus, errors } = parseXML(xml, {
+        screenWidth: this.screenWidth,
+        screenHeight: this.screenHeight,
+        durationOffsetMs: this.importXmlDurationOffsetEnabled ? -50 : 0,
+        maxLayers: this.maxLayers
+      })
+
+      this.pausePlayback()
+      this.danmakus = danmakus
+      this.selectedIds = []
+      this.currentTime = 0
+
+      await this.enterSingleFileMode(false)
+      historyManager.clear()
+      historyManager.recordSnapshot(this.danmakus)
+
+      errors.forEach((error) => {
+        notice.log('[XML 导入] 已跳过异常弹幕:' + error.message + '，导出日志以获取更多信息', 'warn', error.metadata)
+      })
+
+      if (errors.length > 0) {
+        console.warn(`[XML 导入] 共跳过 ${errors.length} 条异常弹幕`)
+      }
+
+      // 标记导入完成，触发缓冲池重构
+      this.importTimestamp = Date.now()
+      if (options.closeManager) {
+        this.showProjectManager = false
+      }
+
+      notice.alert(
+        errors.length === 0 ? `共 ${danmakus.length} 条，未见异常弹幕` : `共 ${danmakus.length} 条，共跳过 ${errors.length} 条异常弹幕`,
+        errors.length === 0 ? 'success' : 'warn',
+        'XML导入成功'
+      )
+
+      return {
+        ok: true,
+        projectMode: this.projectMode,
+        danmakuCount: danmakus.length,
+        skippedCount: errors.length,
+        screen: { width: this.screenWidth, height: this.screenHeight },
+        ready: !this.InitializationPhase
+      }
+    },
+
+    async importXmlFromPath(xmlPath: string) {
+      return withEditorOperationLock(async () => {
+        const trimmedPath = xmlPath?.trim() || ''
+        if (!trimmedPath) {
+          throw new Error('XML 文件路径不能为空')
+        }
+        const xml = await readXmlFile(trimmedPath)
+        return this.applyImportedXmlText(xml, { closeManager: true })
+      })
+    },
+
+    async skipProjectManager() {
+      return withEditorOperationLock(async () => {
+        const wasInitializationPhase = this.InitializationPhase
+        if (wasInitializationPhase) {
+          this.pausePlayback()
+          await this.enterSingleFileMode(true)
+          useNoticeStore().log('[工程] 已跳过文件夹工程并进入单文件模式', 'info')
+        }
+        this.showProjectManager = false
+        return {
+          ok: true,
+          enteredSingleFileMode: wasInitializationPhase,
+          projectMode: this.projectMode,
+          danmakuCount: this.danmakus.length,
+          ready: !this.InitializationPhase
+        }
+      })
     },
 
     setTime(time: number) {
@@ -810,13 +1248,7 @@ export const useEditorStore = defineStore('editor', {
       reader.onload = async () => {
         try {
           const project = JSON.parse(reader.result as string)
-          this.enterSingleFileMode(false)
-          await this.applyProject(project)
-          historyManager.clear()
-          historyManager.recordSnapshot(this.danmakus, `导入工程(${this.danmakus.length}条弹幕)`)
-          // 标记导入完成，触发缓冲池重构
-          this.importTimestamp = Date.now()
-
+          await withEditorOperationLock(() => this.applyImportedProject(project))
           console.log('文件加载成功')
         } catch (e) {
           console.error('文件解析失败', e)
@@ -831,36 +1263,10 @@ export const useEditorStore = defineStore('editor', {
       const notice = useNoticeStore()
       const reader = new FileReader()
 
-      reader.onload = () => {
+      reader.onload = async () => {
         try {
           const xml = String(reader.result ?? '')
-          const { danmakus, errors } = parseXML(xml, {
-            screenWidth: this.screenWidth,
-            screenHeight: this.screenHeight,
-            durationOffsetMs: this.importXmlDurationOffsetEnabled ? -50 : 0,
-            maxLayers: this.maxLayers
-          })
-
-          this.danmakus = danmakus
-          this.selectedIds = []
-          this.currentTime = 0
-
-          this.enterSingleFileMode(false)
-          historyManager.clear()
-          historyManager.recordSnapshot(this.danmakus)
-
-          errors.forEach((error) => {
-            notice.log('[XML 导入] 已跳过异常弹幕:'+ error.message + '，导出日志以获取更多信息', 'warn', error.metadata)
-          })
-
-          if (errors.length > 0) {
-            console.warn(`[XML 导入] 共跳过 ${errors.length} 条异常弹幕`)
-          }
-          
-          // 标记导入完成，触发缓冲池重构
-          this.importTimestamp = Date.now()
-
-          notice.alert(errors.length === 0 ? `共 ${danmakus.length} 条，未见异常弹幕` : `共 ${danmakus.length} 条，共跳过 ${errors.length} 条异常弹幕`, errors.length === 0 ? 'success' : 'warn', 'XML导入成功')
+          await withEditorOperationLock(() => this.applyImportedXmlText(xml))
         } catch (error) {
           notice.alert(error instanceof Error ? error.message : String(error), 'error', 'XML解析失败', error)
         }
@@ -1054,7 +1460,7 @@ export const useEditorStore = defineStore('editor', {
       this.mediaElement = element
     },
 
-    enterSingleFileMode(loadCached = true) {
+    async enterSingleFileMode(loadCached = true): Promise<void> {
       this.InitializationPhase = false
       this.projectMode = 'single'
       this.activeFolderProjectPath = ''
@@ -1064,7 +1470,7 @@ export const useEditorStore = defineStore('editor', {
       if (loadCached) {
         const project = loadProject()
         if (project) {
-          void this.applyProject(project)
+          await this.applyProject(project)
         }
       }
     },
@@ -1102,6 +1508,7 @@ export const useEditorStore = defineStore('editor', {
           this.pendingFolderMediaPath
         )
         await this.applyFolderProjectPayload(payload, true)
+        void this.refreshFileSystemState().catch((err) => console.warn('[工程] 刷新工程列表失败:', err))
         notice.log('[工程] 文件夹工程已保存', 'success')
       } catch (error) {
         notice.alert(error instanceof Error ? error.message : String(error), 'error', '保存文件夹工程失败', error)
@@ -1122,6 +1529,7 @@ export const useEditorStore = defineStore('editor', {
           this.pendingFolderMediaPath
         )
         await this.applyFolderProjectPayload(payload, true)
+        void this.refreshFileSystemState().catch((err) => console.warn('[工程] 刷新工程列表失败:', err))
         notice.log('[工程] 文件夹工程已保存并备份', 'success')
       } catch (error) {
         notice.alert(error instanceof Error ? error.message : String(error), 'error', '备份文件夹工程失败', error)

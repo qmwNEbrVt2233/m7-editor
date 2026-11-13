@@ -86,6 +86,19 @@ export function evaluateMathExpression(expression: string, variables: Record<str
   return result
 }
 
+export function evaluateSeededRandom(seed: number, index = 0): number {
+  if (typeof seed !== 'number' || !Number.isFinite(seed) || typeof index !== 'number' || !Number.isFinite(index)) {
+    throw new Error('seededRandom 参数必须是有限数字')
+  }
+  const s = Math.trunc(seed * 1000003) | 0
+  const idx = Math.trunc(index * 1000003) | 0
+  let h = (Math.imul(s, 0x9e3779b1) ^ Math.imul(idx, 0x85ebca6b)) >>> 0
+  h = (h + 0x6d2b79f5) >>> 0
+  h = Math.imul(h ^ (h >>> 15), h | 1)
+  h ^= h + Math.imul(h ^ (h >>> 7), h | 61)
+  return ((h ^ (h >>> 14)) >>> 0) / 4294967296
+}
+
 /**
  * 解析随机范围表达式
  */
