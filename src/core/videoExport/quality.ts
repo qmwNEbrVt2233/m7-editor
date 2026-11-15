@@ -1,6 +1,21 @@
-import { Quality } from 'mediabunny'
+import { canEncodeVideo, Quality, type VideoCodec } from 'mediabunny'
 
 export type ExportQuality = 'low' | 'high' | 'very-high' | 'near-lossless'
+
+export type DirectVideoEncodingTarget = {
+  codec: VideoCodec
+  quality: Quality
+  hardwareAcceleration: 'prefer-hardware' | 'no-preference'
+}
+
+export function computeNearLosslessBitrate(width: number, height: number, fps: number): number {
+  const referenceBitrate = 30_000_000
+  const pixelScale = Math.pow((width * height) / (1920 * 1080), 0.95)
+  return Math.min(
+    500_000_000,
+    Math.max(30_000_000, Math.ceil((referenceBitrate * pixelScale * fps) / 30))
+  )
+}
 
 export function createVideoExportQuality(
   quality: ExportQuality,
@@ -9,15 +24,56 @@ export function createVideoExportQuality(
   fps: number
 ) {
   if (quality === 'near-lossless') {
-    const referenceBitrate = 30_000_000
-    const pixelScale = Math.pow((width * height) / (1920 * 1080), 0.95)
-    const fallbackBitrate = Math.min(
-      500_000_000,
-      Math.max(30_000_000, Math.ceil(referenceBitrate * pixelScale * fps / 30))
-    )
+    const bitrate = computeNearLosslessBitrate(width, height, fps)
 
-    return new Quality({ quantizer: 0, bitrate: fallbackBitrate })
+    // Quantizer 0 triggers slow CPU/lossless encoding paths on H.264/HEVC WebCodecs;
+    // high VBR matching the WebKit target keeps hardware encoders fast and visually lossless.
+    return new Quality({ bitrate, bitrateMode: 'variable' })
   }
 
   return new Quality(quality)
+}
+
+export async function resolveDirectVideoEncodingTarget(
+  width: number,
+  height: number,
+  fps: number,
+  quality: ExportQuality
+): Promise<DirectVideoEncodingTarget | null> {
+  const resolvedQuality = createVideoExportQuality(quality, width, height, fps)
+  const exceedsStandard4k = width > 4096 || height > 4096
+  const nearLosslessBitrate =
+    quality === 'near-lossless' ? computeNearLosslessBitrate(width, height, fps) : 0
+
+  const candidates: Array<DirectVideoEncodingTarget> = [
+    { codec: 'avc', quality: resolvedQuality, hardwareAcceleration: 'prefer-hardware' },
+    ...(nearLosslessBitrate > 240_000_000
+      ? [
+          {
+            codec: 'avc' as const,
+            quality: new Quality({ bitrate: 240_000_000, bitrateMode: 'variable' }),
+            hardwareAcceleration: 'prefer-hardware' as const,
+          },
+        ]
+      : []),
+    ...(exceedsStandard4k
+      ? [{ codec: 'hevc' as const, quality: resolvedQuality, hardwareAcceleration: 'prefer-hardware' as const }]
+      : []),
+    { codec: 'avc', quality: resolvedQuality, hardwareAcceleration: 'no-preference' },
+  ]
+
+  for (const candidate of candidates) {
+    const supported = await canEncodeVideo(candidate.codec, {
+      width,
+      height,
+      frameRate: fps,
+      quality: candidate.quality,
+      hardwareAcceleration: candidate.hardwareAcceleration,
+    }).catch(() => false)
+    if (supported) {
+      return candidate
+    }
+  }
+
+  return null
 }

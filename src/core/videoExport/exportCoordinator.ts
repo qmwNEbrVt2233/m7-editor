@@ -1,4 +1,3 @@
-import { canEncodeVideo } from 'mediabunny'
 import { emitTo, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { DanmakuItem } from '@/core/danmaku'
 import {
@@ -18,7 +17,8 @@ import {
   writeFfmpegVideoFrame,
   writeVideoExportChunk
 } from '@/utils/tauriBackend'
-import { createVideoExportQuality, type ExportQuality } from './quality'
+import { resolveDirectVideoEncodingTarget, type ExportQuality } from './quality'
+import { tryRunDirectVideoExport } from './directExportHost'
 
 export type ExportBounds = {
   x: number
@@ -94,9 +94,9 @@ async function runFfmpegFallback(
   let sessionStarted = false
   let completed = false
   const snapshotDanmakus = copySnapshot(job.danmakus)
-  const pngCanvas = new OffscreenCanvas(job.width, job.height)
-  const pngContext = pngCanvas.getContext('2d', { alpha: false })
-  if (!pngContext) throw new Error('无法创建 FFmpeg 帧画布')
+  const frameCanvas = new OffscreenCanvas(job.width, job.height)
+  const frameContext = frameCanvas.getContext('2d', { alpha: false, willReadFrequently: true })
+  if (!frameContext) throw new Error('无法创建 FFmpeg 帧画布')
 
   try {
     await startFfmpegVideoExport({
@@ -108,7 +108,8 @@ async function runFfmpegFallback(
       endMs: job.endMs,
       frameCount: totalFrames,
       width: job.width,
-      height: job.height
+      height: job.height,
+      pixelFormat: 'rgba'
     })
     sessionStarted = true
 
@@ -121,12 +122,17 @@ async function runFfmpegFallback(
       const png = await captureWebviewSnapshot()
       if (signal.aborted) throw makeAbortError()
       const bitmap = await cropExportFrame(png, bounds, job.width, job.height)
-      pngContext.drawImage(bitmap, 0, 0, job.width, job.height)
+      frameContext.drawImage(bitmap, 0, 0, job.width, job.height)
       bitmap.close()
 
-      const frameBlob = await pngCanvas.convertToBlob({ type: 'image/png' })
+      const imageData = frameContext.getImageData(0, 0, job.width, job.height)
+      const rgba = new Uint8Array(
+        imageData.data.buffer,
+        imageData.data.byteOffset,
+        imageData.data.byteLength
+      )
       if (signal.aborted) throw makeAbortError()
-      await writeFfmpegVideoFrame(path, new Uint8Array(await frameBlob.arrayBuffer()))
+      await writeFfmpegVideoFrame(path, rgba)
 
       onProgress({
         completedFrames: index + 1,
@@ -187,6 +193,7 @@ function copySnapshot(danmakus: DanmakuItem[]) {
 
 async function cropExportFrame(png: Uint8Array, bounds: ExportBounds, width: number, height: number) {
   const image = await createImageBitmap(new Blob([png as BlobPart], { type: 'image/png' }))
+  let keepOriginal = false
   try {
     if (
       bounds.x < 0 ||
@@ -204,13 +211,31 @@ async function cropExportFrame(png: Uint8Array, bounds: ExportBounds, width: num
     const sourceWidth = Math.max(1, Math.min(image.width - x, Math.round(bounds.width * scaleX)))
     const sourceHeight = Math.max(1, Math.min(image.height - y, Math.round(bounds.height * scaleY)))
 
+    if (
+      x === 0 &&
+      y === 0 &&
+      sourceWidth === image.width &&
+      sourceHeight === image.height &&
+      sourceWidth === width &&
+      sourceHeight === height
+    ) {
+      keepOriginal = true
+      return image
+    }
+
+    if (sourceWidth === width && sourceHeight === height) {
+      return await createImageBitmap(image, x, y, sourceWidth, sourceHeight)
+    }
+
     return await createImageBitmap(image, x, y, sourceWidth, sourceHeight, {
       resizeWidth: width,
       resizeHeight: height,
       resizeQuality: 'high'
     })
   } finally {
-    image.close()
+    if (!keepOriginal) {
+      image.close()
+    }
   }
 }
 
@@ -299,16 +324,7 @@ export async function captureVideoExportFrame(
   }
 }
 
-export async function runVideoExport(
-  job: ExportJob,
-  stage: ExportRenderStage,
-  signal: AbortSignal,
-  onProgress: (progress: ExportProgress) => void
-) {
-  if (!isTauriRuntime()) {
-    throw new Error('视频导出目前需要 Tauri 桌面运行环境')
-  }
-
+function validateExportJob(job: ExportJob): number {
   if (
     !Number.isFinite(job.startMs) ||
     !Number.isFinite(job.endMs) ||
@@ -339,17 +355,31 @@ export async function runVideoExport(
     throw new Error('导出宽高比例需要与工程画布一致')
   }
 
-  onProgress({ completedFrames: 0, totalFrames: 0, percent: 0, stage: 'preparing' })
-  const h264Available = await canEncodeVideo('avc', {
-    width: job.width,
-    height: job.height,
-    frameRate: job.fps,
-    quality: createVideoExportQuality(job.quality, job.width, job.height, job.fps)
-  }).catch(() => false)
   const totalFrames = Math.ceil((job.endMs - job.startMs) * job.fps / 1000)
   if (!Number.isSafeInteger(totalFrames) || totalFrames <= 0) {
     throw new Error('导出帧数无效')
   }
+  return totalFrames
+}
+
+async function checkH264EncodeAvailable(job: Pick<ExportJob, 'width' | 'height' | 'fps' | 'quality'>) {
+  const target = await resolveDirectVideoEncodingTarget(job.width, job.height, job.fps, job.quality)
+  return target !== null
+}
+
+export async function runVideoExport(
+  job: ExportJob,
+  stage: ExportRenderStage,
+  signal: AbortSignal,
+  onProgress: (progress: ExportProgress) => void
+) {
+  if (!isTauriRuntime()) {
+    throw new Error('视频导出目前需要 Tauri 桌面运行环境')
+  }
+
+  const totalFrames = validateExportJob(job)
+  onProgress({ completedFrames: 0, totalFrames: 0, percent: 0, stage: 'preparing' })
+  const h264Available = await checkH264EncodeAvailable(job)
 
   if (!h264Available) {
     if (job.mediaUrl && !job.mediaFilePath) {
@@ -545,9 +575,27 @@ export async function runVideoExportInRenderWindow(
   }
 
   const jobSnapshot = { ...job, danmakus: copySnapshot(job.danmakus) }
+  validateExportJob(jobSnapshot)
   const outputPath = jobSnapshot.outputPath ?? await chooseVideoExportPath()
   if (!outputPath) return { canceledByUser: true as const }
   if (signal.aborted) throw makeAbortError()
+
+  const h264Available = await checkH264EncodeAvailable(jobSnapshot)
+  if (h264Available) {
+    const directResult = await tryRunDirectVideoExport(
+      { ...jobSnapshot, outputPath },
+      signal,
+      onProgress
+    )
+    if (directResult.status === 'completed') {
+      return {
+        canceledByUser: false as const,
+        path: directResult.path,
+        totalFrames: directResult.totalFrames
+      }
+    }
+    if (signal.aborted) throw makeAbortError()
+  }
 
   const jobId = crypto.randomUUID()
   const renderJob = { ...jobSnapshot, outputPath }

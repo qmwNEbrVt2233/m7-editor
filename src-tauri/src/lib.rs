@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
@@ -15,7 +15,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{ipc::Response, AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{
+    ipc::{InvokeBody, Request, Response},
+    AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+};
 
 #[cfg(desktop)]
 use tauri::{
@@ -45,6 +48,7 @@ struct FileSystemRuntime {
 #[derive(Default)]
 struct VideoExportRuntime {
     ffmpeg_processes: Mutex<HashMap<String, Child>>,
+    export_files: Mutex<HashMap<PathBuf, File>>,
     render_jobs: Mutex<HashMap<String, Value>>,
 }
 
@@ -2214,7 +2218,7 @@ fn finish_video_export_render_window(
                     let _ = child.wait();
                 }
             }
-            let _ = cancel_video_export_file(output_path.to_string());
+            let _ = cancel_video_export_file_inner(&runtime, output_path.to_string());
         }
     }
 
@@ -2667,50 +2671,153 @@ fn validate_video_export_path(path: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+fn decode_hex_utf8(hex: &str) -> Result<String, String> {
+    if hex.len() % 2 != 0 {
+        return Err("无效的十六进制编码长度".to_string());
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    for pair in hex.as_bytes().chunks_exact(2) {
+        let hi = (pair[0] as char)
+            .to_digit(16)
+            .ok_or_else(|| "无效的十六进制字符".to_string())?;
+        let lo = (pair[1] as char)
+            .to_digit(16)
+            .ok_or_else(|| "无效的十六进制字符".to_string())?;
+        bytes.push(((hi << 4) | lo) as u8);
+    }
+    String::from_utf8(bytes).map_err(|_| "UTF-8 路径解码失败".to_string())
+}
+
+fn header_str<'a>(request: &'a Request<'_>, name: &str) -> Result<&'a str, String> {
+    request
+        .headers()
+        .get(name)
+        .ok_or_else(|| format!("缺少请求头 {name}"))?
+        .to_str()
+        .map_err(|_| format!("请求头 {name} 格式无效"))
+}
+
 #[tauri::command]
-fn start_video_export_file(path: String) -> Result<(), String> {
+fn start_video_export_file(
+    runtime: State<'_, VideoExportRuntime>,
+    path: String,
+) -> Result<(), String> {
     let path = validate_video_export_path(&path)?;
-    OpenOptions::new()
+    let file = OpenOptions::new()
         .create(true)
         .truncate(true)
         .write(true)
         .open(&path)
         .map_err(|error| format!("无法创建导出文件 {}: {error}", path.display()))?;
+    let mut files = runtime
+        .export_files
+        .lock()
+        .map_err(|_| "视频导出文件状态不可用".to_string())?;
+    files.insert(path, file);
     Ok(())
 }
 
 #[tauri::command]
-fn write_video_export_chunk(path: String, position: u64, data: Vec<u8>) -> Result<(), String> {
-    let path = validate_video_export_path(&path)?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .open(&path)
-        .map_err(|error| format!("无法打开导出文件 {}: {error}", path.display()))?;
+fn write_video_export_chunk(
+    runtime: State<'_, VideoExportRuntime>,
+    request: Request<'_>,
+) -> Result<(), String> {
+    let (path_str, position, owned_json_data): (String, u64, Option<Vec<u8>>) = match request.body() {
+        InvokeBody::Raw(_) => {
+            let path_hex = header_str(&request, "x-export-path-hex")?;
+            let path = decode_hex_utf8(path_hex)?;
+            let position = header_str(&request, "x-position")?
+                .parse::<u64>()
+                .map_err(|_| "x-position 请求头无效".to_string())?;
+            (path, position, None)
+        }
+        InvokeBody::Json(value) => {
+            let path = value
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "缺少导出文件路径".to_string())?
+                .to_string();
+            let position = value
+                .get("position")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| "缺少写入偏移位置".to_string())?;
+            let data = value
+                .get("data")
+                .and_then(|v| serde_json::from_value::<Vec<u8>>(v.clone()).ok())
+                .ok_or_else(|| "缺少写入字节数据".to_string())?;
+            (path, position, Some(data))
+        }
+    };
+
+    let bytes: &[u8] = match (&owned_json_data, request.body()) {
+        (Some(vec), _) => vec.as_slice(),
+        (None, InvokeBody::Raw(raw)) => raw.as_slice(),
+        _ => unreachable!(),
+    };
+
+    let path = validate_video_export_path(&path_str)?;
+    let mut files = runtime
+        .export_files
+        .lock()
+        .map_err(|_| "视频导出文件状态不可用".to_string())?;
+    if !files.contains_key(&path) {
+        let reopened = OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .map_err(|error| format!("无法打开导出文件 {}: {error}", path.display()))?;
+        files.insert(path.clone(), reopened);
+    }
+    let file = files
+        .get_mut(&path)
+        .ok_or_else(|| format!("无法获取导出文件句柄 {}", path.display()))?;
     file.seek(SeekFrom::Start(position))
-        .and_then(|_| file.write_all(&data))
+        .and_then(|_| file.write_all(bytes))
         .map_err(|error| format!("写入导出文件失败: {error}"))
 }
 
 #[tauri::command]
-fn finish_video_export_file(path: String, file_size: u64) -> Result<(), String> {
+fn finish_video_export_file(
+    runtime: State<'_, VideoExportRuntime>,
+    path: String,
+    file_size: u64,
+) -> Result<(), String> {
     let path = validate_video_export_path(&path)?;
-    let file = OpenOptions::new()
-        .write(true)
-        .open(&path)
-        .map_err(|error| format!("无法最终化导出文件 {}: {error}", path.display()))?;
+    let cached_file = runtime
+        .export_files
+        .lock()
+        .map_err(|_| "视频导出文件状态不可用".to_string())?
+        .remove(&path);
+    let file = match cached_file {
+        Some(f) => f,
+        None => OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .map_err(|error| format!("无法最终化导出文件 {}: {error}", path.display()))?,
+    };
     file.set_len(file_size)
         .and_then(|_| file.sync_all())
         .map_err(|error| format!("最终化导出文件失败: {error}"))
 }
 
-#[tauri::command]
-fn cancel_video_export_file(path: String) -> Result<(), String> {
+fn cancel_video_export_file_inner(runtime: &VideoExportRuntime, path: String) -> Result<(), String> {
     let path = validate_video_export_path(&path)?;
+    if let Ok(mut files) = runtime.export_files.lock() {
+        // Drop the cached File handle before removing the file (required on Windows)
+        files.remove(&path);
+    }
     match fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("删除未完成的导出文件失败: {error}")),
     }
+}
+
+#[tauri::command]
+fn cancel_video_export_file(
+    runtime: State<'_, VideoExportRuntime>,
+    path: String,
+) -> Result<(), String> {
+    cancel_video_export_file_inner(&runtime, path)
 }
 
 fn ffmpeg_command(app: &AppHandle) -> Command {
@@ -2784,6 +2891,7 @@ fn start_ffmpeg_video_export(
     frame_count: u64,
     width: u32,
     height: u32,
+    pixel_format: Option<String>,
 ) -> Result<(), String> {
     let output = validate_video_export_path(&output_path)?;
     let crf = match quality.as_str() {
@@ -2815,20 +2923,40 @@ fn start_ffmpeg_video_export(
     }
 
     let duration_seconds = (end_ms - start_ms) / 1000.0;
+    let input_pix_fmt = pixel_format.unwrap_or_else(|| "png".to_string());
     let mut process = ffmpeg_command(&app);
     process
         .arg("-hide_banner")
         .arg("-loglevel")
         .arg("error")
-        .arg("-y")
-        .arg("-f")
-        .arg("image2pipe")
-        .arg("-vcodec")
-        .arg("png")
-        .arg("-framerate")
-        .arg(fps.to_string())
-        .arg("-i")
-        .arg("pipe:0");
+        .arg("-y");
+    match input_pix_fmt.as_str() {
+        "rgba" => {
+            process
+                .arg("-f")
+                .arg("rawvideo")
+                .arg("-pix_fmt")
+                .arg("rgba")
+                .arg("-video_size")
+                .arg(format!("{width}x{height}"))
+                .arg("-framerate")
+                .arg(fps.to_string())
+                .arg("-i")
+                .arg("pipe:0");
+        }
+        "png" => {
+            process
+                .arg("-f")
+                .arg("image2pipe")
+                .arg("-vcodec")
+                .arg("png")
+                .arg("-framerate")
+                .arg(fps.to_string())
+                .arg("-i")
+                .arg("pipe:0");
+        }
+        _ => return Err("FFmpeg 帧像素格式无效".to_string()),
+    }
     if let Some(media) = media.as_ref() {
         process
             .arg("-ss")
@@ -2844,7 +2972,7 @@ fn start_ffmpeg_video_export(
         .arg("-crf")
         .arg(crf)
         .arg("-preset")
-        .arg("medium")
+        .arg("fast")
         .arg("-pix_fmt")
         .arg("yuv420p")
         .arg("-frames:v")
@@ -2888,9 +3016,33 @@ fn start_ffmpeg_video_export(
 #[tauri::command]
 fn write_ffmpeg_video_frame(
     runtime: State<'_, VideoExportRuntime>,
-    output_path: String,
-    png_frame: Vec<u8>,
+    request: Request<'_>,
 ) -> Result<(), String> {
+    let (output_path, owned_json_frame): (String, Option<Vec<u8>>) = match request.body() {
+        InvokeBody::Raw(_) => {
+            let path_hex = header_str(&request, "x-output-path-hex")?;
+            (decode_hex_utf8(path_hex)?, None)
+        }
+        InvokeBody::Json(value) => {
+            let output_path = value
+                .get("outputPath")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "缺少 FFmpeg 导出路径".to_string())?
+                .to_string();
+            let frame = value
+                .get("pngFrame")
+                .and_then(|v| serde_json::from_value::<Vec<u8>>(v.clone()).ok())
+                .ok_or_else(|| "缺少 FFmpeg 视频帧数据".to_string())?;
+            (output_path, Some(frame))
+        }
+    };
+
+    let bytes: &[u8] = match (&owned_json_frame, request.body()) {
+        (Some(vec), _) => vec.as_slice(),
+        (None, InvokeBody::Raw(raw)) => raw.as_slice(),
+        _ => unreachable!(),
+    };
+
     let mut sessions = runtime
         .ffmpeg_processes
         .lock()
@@ -2902,7 +3054,7 @@ fn write_ffmpeg_video_frame(
         .stdin
         .as_mut()
         .ok_or_else(|| "FFmpeg 视频帧输入已关闭".to_string())?
-        .write_all(&png_frame)
+        .write_all(bytes)
         .map_err(|error| format!("向 FFmpeg 写入视频帧失败: {error}"))
 }
 
@@ -2949,7 +3101,7 @@ fn cancel_ffmpeg_video_export(
         let _ = child.wait();
     }
 
-    cancel_video_export_file(output_path)
+    cancel_video_export_file_inner(&runtime, output_path)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -3090,4 +3242,48 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_hex_utf8_roundtrips_cjk_and_rejects_invalid() {
+        let original = "C:\\测试目录\\m7-导出.mp4";
+        let encoded: String = original.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(decode_hex_utf8(&encoded).unwrap(), original);
+        assert!(decode_hex_utf8("abc").is_err());
+        assert!(decode_hex_utf8("zz").is_err());
+    }
+
+    #[test]
+    fn cancel_video_export_file_drops_cached_handle_and_removes_file() {
+        let dir = std::env::temp_dir();
+        let file_path = dir.join(format!(
+            "m7_export_test_{}.mp4",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path_str = file_path.to_string_lossy().to_string();
+
+        let runtime = VideoExportRuntime::default();
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&file_path)
+            .unwrap();
+        runtime
+            .export_files
+            .lock()
+            .unwrap()
+            .insert(file_path.clone(), file);
+
+        cancel_video_export_file_inner(&runtime, path_str).unwrap();
+        assert!(!file_path.exists());
+        assert!(runtime.export_files.lock().unwrap().is_empty());
+    }
 }

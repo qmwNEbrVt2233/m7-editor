@@ -154,6 +154,15 @@ function waitForMediaEvent(video: HTMLMediaElement, eventName: 'seeked' | 'loade
   })
 }
 
+let fontsReadyPromise: Promise<unknown> | null = null
+
+function waitForFontsOnce() {
+  if (!fontsReadyPromise) {
+    fontsReadyPromise = document.fonts?.ready ?? Promise.resolve()
+  }
+  return fontsReadyPromise
+}
+
 function createPresentedVideoFrameWaiter(video: HTMLVideoElement) {
   let resolveFrame!: () => void
   let callbackId: number | undefined
@@ -196,12 +205,12 @@ function createPresentedVideoFrameWaiter(video: HTMLVideoElement) {
         return
       }
 
-      // Some WebViews don't issue rVFC for a paused seek. The seeked event
-      // already guarantees decoded data, so fall back after 100 ms instead
-      // of stalling every output frame for the old 1.5 s timeout.
+      // Some WebViews don't issue rVFC for a paused seek (or when seeking within the
+      // same decoded source frame). The seeked event already guarantees decoded data,
+      // so fall back after a single frame interval (~20 ms) instead of 100 ms.
       fallbackTimeout = window.setTimeout(
         () => requestAnimationFrame(() => requestAnimationFrame(finish)),
-        100
+        20
       )
     }
   }
@@ -219,6 +228,7 @@ async function renderAt(timeMs: number, snapshotDanmakus: DanmakuItem[]) {
   video?.pause()
   await nextTick()
 
+  let seekedVideo = false
   if (video) {
     if (video.readyState < HTMLMediaElement.HAVE_METADATA) {
       const loaded = waitForMediaEvent(video, 'loadeddata')
@@ -228,6 +238,7 @@ async function renderAt(timeMs: number, snapshotDanmakus: DanmakuItem[]) {
     const targetSeconds = Math.max(0, Math.min(timeMs / 1000, Math.max(0, video.duration - 0.001)))
     const needsSeek = Math.abs(video.currentTime - targetSeconds) > 0.0005
     if (needsSeek) {
+      seekedVideo = true
       const presentedFrame = createPresentedVideoFrameWaiter(video)
       try {
         const seeked = waitForMediaEvent(video, 'seeked')
@@ -246,9 +257,12 @@ async function renderAt(timeMs: number, snapshotDanmakus: DanmakuItem[]) {
     }
   }
 
-  await document.fonts?.ready
-  await nextTick()
-  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+  await waitForFontsOnce()
+  if (!seekedVideo) {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+  } else {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+  }
 
   const viewportWidth = document.documentElement.clientWidth
   const viewportHeight = document.documentElement.clientHeight

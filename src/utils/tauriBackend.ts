@@ -134,12 +134,32 @@ export async function finishVideoExportRenderWindow(jobId: string, keepOutput: b
   await invokeTauri<void>('finish_video_export_render_window', { jobId, keepOutput })
 }
 
+const utf8Encoder = new TextEncoder()
+
+function utf8ToHex(value: string): string {
+  const bytes = utf8Encoder.encode(value)
+  let hex = ''
+  for (let i = 0; i < bytes.length; i += 1) {
+    hex += bytes[i].toString(16).padStart(2, '0')
+  }
+  return hex
+}
+
+function toExactUint8Array(data: Uint8Array): Uint8Array {
+  return data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
+    ? data
+    : data.slice()
+}
+
 export async function startVideoExportFile(path: string): Promise<void> {
   await invokeTauri<void>('start_video_export_file', { path })
 }
 
 export async function writeVideoExportChunk(path: string, position: number, data: Uint8Array): Promise<void> {
-  await invokeTauri<void>('write_video_export_chunk', { path, position, data })
+  await invokeTauriRaw<void>('write_video_export_chunk', data, {
+    'x-export-path-hex': utf8ToHex(path),
+    'x-position': String(position)
+  })
 }
 
 export async function finishVideoExportFile(path: string, fileSize: number): Promise<void> {
@@ -164,12 +184,15 @@ export async function startFfmpegVideoExport(options: {
   frameCount: number
   width: number
   height: number
+  pixelFormat?: 'png' | 'rgba'
 }): Promise<void> {
   await invokeTauri<void>('start_ffmpeg_video_export', options)
 }
 
-export async function writeFfmpegVideoFrame(outputPath: string, pngFrame: Uint8Array): Promise<void> {
-  await invokeTauri<void>('write_ffmpeg_video_frame', { outputPath, pngFrame })
+export async function writeFfmpegVideoFrame(outputPath: string, frameBytes: Uint8Array): Promise<void> {
+  await invokeTauriRaw<void>('write_ffmpeg_video_frame', frameBytes, {
+    'x-output-path-hex': utf8ToHex(outputPath)
+  })
 }
 
 export async function finishFfmpegVideoExport(outputPath: string): Promise<void> {
@@ -178,6 +201,18 @@ export async function finishFfmpegVideoExport(outputPath: string): Promise<void>
 
 export async function cancelFfmpegVideoExport(outputPath: string): Promise<void> {
   await invokeTauri<void>('cancel_ffmpeg_video_export', { outputPath })
+}
+
+async function invokeTauriRaw<T>(
+  command: string,
+  data: Uint8Array,
+  headers: Record<string, string>
+): Promise<T> {
+  if (!isTauriRuntime()) {
+    throw new Error('Tauri invoke API 不可用')
+  }
+
+  return invoke<T>(command, toExactUint8Array(data), { headers })
 }
 
 async function invokeTauri<T>(command: string, payload?: Record<string, unknown>): Promise<T> {
