@@ -87,11 +87,15 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { useEditorStore } from '@/store/editor'
-import { useNoticeStore } from '@/store/notice'
+import {
+  computeVideoExportStats,
+  normalizeEvenVideoDimension,
+  resolveVideoExportDimensions,
+  useEditorStore
+} from '@/store/editor'
 import { formatDuration } from '@/utils/time'
 import { isTauriRuntime } from '@/utils/tauriBackend'
-import { runVideoExportInRenderWindow, type ExportProgress } from '@/core/videoExport/exportCoordinator'
+import type { ExportQuality } from '@/core/videoExport/quality'
 
 const props = defineProps<{
   visible: boolean
@@ -102,9 +106,11 @@ const emit = defineEmits<{
 }>()
 
 const store = useEditorStore()
-const notice = useNoticeStore()
 const nativeRuntime = isTauriRuntime()
-const effectiveUseWebgl = computed(() => (nativeRuntime ? store.useWebglVideoExport : true))
+const busy = computed(() => store.videoExport.status === 'running')
+const effectiveUseWebgl = computed(() => (
+  busy.value ? store.videoExport.useWebgl : (nativeRuntime ? store.useWebglVideoExport : true)
+))
 const dialogRoot = ref<HTMLElement | null>(null)
 const dialogPosition = ref<{ left: number; top: number } | null>(null)
 const dialogPositionStyle: any = computed(() => dialogPosition.value
@@ -118,34 +124,29 @@ const dialogPositionStyle: any = computed(() => dialogPosition.value
 const startMs = ref(0)
 const endMs = ref(store.mediaDuration)
 const fps = ref(60)
-const quality = ref<'low' | 'high' | 'very-high' | 'near-lossless'>('very-high')
+const quality = ref<ExportQuality>('very-high')
 const width = ref(store.screenWidth)
 const height = ref(store.screenHeight)
-const busy = ref(false)
 const errorMessage = ref('')
-const abortController = ref<AbortController | null>(null)
-const progress = ref<ExportProgress>({ completedFrames: 0, totalFrames: 0, percent: 0, stage: 'preparing' })
-const elapsedMs = ref(0)
-let renderStartedAt = 0
-let renderTimer: number | undefined
+const progress = computed(() => store.videoExport.progress)
+const elapsedMs = computed(() => store.videoExport.elapsedMs)
+const exportStats = computed(() => computeVideoExportStats(progress.value, elapsedMs.value))
 let dragOffset = { x: 0, y: 0 }
 let activePointerId: number | null = null
-const averageFrameMs = computed(() => progress.value.completedFrames > 0
-  ? elapsedMs.value / progress.value.completedFrames
-  : null)
 const elapsedTimeText = computed(() => formatDuration(elapsedMs.value))
 const averageFrameTimeText = computed(() => {
-  if (averageFrameMs.value === null) return '计算中'
-  return averageFrameMs.value >= 1000
-    ? `${(averageFrameMs.value / 1000).toFixed(2)} 秒/帧`
-    : `${Math.round(averageFrameMs.value)} 毫秒/帧`
+  const averageFrameMs = exportStats.value.averageFrameMs
+  if (averageFrameMs === null) return '计算中'
+  return averageFrameMs >= 1000
+    ? `${(averageFrameMs / 1000).toFixed(2)} 秒/帧`
+    : `${Math.round(averageFrameMs)} 毫秒/帧`
 })
 const estimatedFinishText = computed(() => {
   const { stage, completedFrames, totalFrames } = progress.value
   if (stage === 'preparing' || totalFrames <= 0 || completedFrames <= 0) return '计算中'
   if (stage === 'finalizing') return '封装中'
-  if (completedFrames >= totalFrames || averageFrameMs.value === null) return '即将完成'
-  const remainingMs = averageFrameMs.value * (totalFrames - completedFrames)
+  const remainingMs = exportStats.value.estimatedRemainingMs
+  if (completedFrames >= totalFrames || remainingMs === null) return '即将完成'
   return formatDuration(remainingMs)
 })
 const renderModeHint = computed(() => {
@@ -172,16 +173,23 @@ watch(() => props.visible, (visible) => {
     stopDialogDrag()
     return
   }
-  if (busy.value) return
+  errorMessage.value = ''
+  if (busy.value) {
+    startMs.value = store.videoExport.startMs
+    endMs.value = store.videoExport.endMs
+    fps.value = store.videoExport.fps
+    quality.value = store.videoExport.quality
+    width.value = store.videoExport.width
+    height.value = store.videoExport.height
+    return
+  }
   startMs.value = 0
-  endMs.value = getDefaultEndMs()
+  endMs.value = store.getDefaultVideoExportEndMs()
   width.value = store.screenWidth
   height.value = store.screenHeight
-  errorMessage.value = ''
 })
 
 onBeforeUnmount(() => {
-  stopRenderTimer()
   stopDialogDrag()
 })
 
@@ -235,77 +243,44 @@ async function startExport() {
     errorMessage.value = '请检查导出时间范围。'
     return
   }
-  if (width.value % 2 !== 0 || height.value % 2 !== 0) {
-    errorMessage.value = 'H.264 视频的宽度和高度需要是偶数。'
-    return
-  }
-  const projectAspectRatio = store.screenWidth / store.screenHeight
-  const outputAspectRatio = width.value / height.value
-  if (Math.abs(outputAspectRatio - projectAspectRatio) / projectAspectRatio > 0.002) {
-    errorMessage.value = '导出宽高比例需要与工程画布一致。修改宽度或高度后离开输入框即可自动匹配。'
+  let resolvedSize: { width: number; height: number }
+  try {
+    resolvedSize = resolveVideoExportDimensions(
+      store.screenWidth,
+      store.screenHeight,
+      width.value,
+      height.value
+    )
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : String(error)
     return
   }
 
-  busy.value = true
-  notice.log('开始导出视频', 'info')
-  elapsedMs.value = 0
-  renderStartedAt = 0
-  progress.value = { completedFrames: 0, totalFrames: 0, percent: 0, stage: 'preparing' }
-  abortController.value = new AbortController()
   try {
-    const result = await runVideoExportInRenderWindow({
+    const result = await store.startVideoExportFromDialog({
       startMs: startMs.value,
       endMs: endMs.value,
       fps: fps.value,
       quality: quality.value,
-      width: width.value,
-      height: height.value,
-      screenWidth: store.screenWidth,
-      screenHeight: store.screenHeight,
-      mediaUrl: store.mediaUrl,
-      mediaFilePath: store.mediaUrl ? store.mediaFilePath : '',
-      mediaDuration: store.mediaDuration,
-      danmakus: store.danmakus,
+      width: resolvedSize.width,
+      height: resolvedSize.height,
       useWebgl: effectiveUseWebgl.value
-    }, abortController.value.signal, (value) => {
-      progress.value = value
-      if (value.stage === 'preparing' && renderStartedAt === 0) startRenderTimer()
     })
-
-    if (!result.canceledByUser) {
-      const doneMessage = result.delivery === 'download'
-        ? `视频导出完成，已触发浏览器下载：${result.path} 耗时：${elapsedTimeText.value}`
-        : `视频导出完成：${result.path} 耗时：${elapsedTimeText.value}`
-      notice.alert(doneMessage, 'success', '视频导出成功', result)
+    if (result.status === 'completed') {
       emit('update:visible', false)
+    } else if (result.status === 'failed' && result.error) {
+      errorMessage.value = result.error
     }
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      notice.log('视频导出已取消', 'info')
-    } else {
-      errorMessage.value = error instanceof Error ? error.message : String(error)
-      notice.alert(errorMessage.value, 'error', '视频导出失败')
-    }
-  } finally {
-    stopRenderTimer()
-    busy.value = false
-    abortController.value = null
+    errorMessage.value = error instanceof Error ? error.message : String(error)
   }
-}
-
-function getDefaultEndMs() {
-  return store.danmakus.reduce((latest: number, danmaku: any) => Math.max(
-    latest,
-    danmaku.startTime + danmaku.animation.duration,
-    store.mediaUrl ? store.mediaDuration : 0
-  ), 0)
 }
 
 function syncHeightToWidth() {
   const widthValue = Number(width.value)
   const aspectRatio = store.screenWidth / store.screenHeight
   if (Number.isFinite(widthValue) && widthValue > 0 && Number.isFinite(aspectRatio)) {
-    height.value = Math.max(16, Math.round(widthValue / aspectRatio / 2) * 2)
+    height.value = normalizeEvenVideoDimension(widthValue / aspectRatio)
   }
 }
 
@@ -313,30 +288,12 @@ function syncWidthToHeight() {
   const heightValue = Number(height.value)
   const aspectRatio = store.screenWidth / store.screenHeight
   if (Number.isFinite(heightValue) && heightValue > 0 && Number.isFinite(aspectRatio)) {
-    width.value = Math.max(16, Math.round(heightValue * aspectRatio / 2) * 2)
+    width.value = normalizeEvenVideoDimension(heightValue * aspectRatio)
   }
-}
-
-function startRenderTimer() {
-  stopRenderTimer()
-  renderStartedAt = Date.now()
-  elapsedMs.value = 0
-  renderTimer = window.setInterval(() => {
-    elapsedMs.value = Date.now() - renderStartedAt
-  }, 500)
-}
-
-function stopRenderTimer() {
-  if (renderTimer !== undefined) {
-    window.clearInterval(renderTimer)
-    renderTimer = undefined
-  }
-  if (renderStartedAt > 0) elapsedMs.value = Date.now() - renderStartedAt
-  renderStartedAt = 0
 }
 
 function cancelExport() {
-  abortController.value?.abort()
+  void store.cancelVideoExport()
 }
 
 function close() {

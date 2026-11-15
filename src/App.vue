@@ -162,6 +162,7 @@ async function handleMcpCommand(payload: McpCommandPayload) {
       result = await store.skipProjectManager()
       editorReady.value = true
     } else if (method === 'editor.reloadApp') {
+      await store.cancelVideoExport().catch(() => {})
       shouldReload = true
       notice.log('[MCP] 即将重新加载应用（历史快照与未保存状态将被清空）', 'warn')
       result = {
@@ -231,6 +232,13 @@ async function handleMcpCommand(payload: McpCommandPayload) {
     } else if (method === 'editor.saveFolderProject' || method === 'editor.backupFolderProject') {
       if (!editorReady.value) throw new Error('编辑器尚未加载工程')
       result = await store.saveFolderProjectForMcp(method === 'editor.backupFolderProject')
+    } else if (method === 'editor.exportVideo') {
+      if (!editorReady.value) throw new Error('编辑器尚未加载工程，暂不能导出视频')
+      result = await store.exportVideoForMcp(params as any)
+    } else if (method === 'editor.getVideoExportStatus') {
+      result = await store.getVideoExportStatusForMcp(params as any)
+    } else if (method === 'editor.cancelVideoExport') {
+      result = await store.cancelVideoExportForMcp(params as any)
     } else if (method === 'editor.applyFieldUpdate') {
       if (!editorReady.value) throw new Error('编辑器尚未加载工程，暂不能编辑')
       if (typeof params.field !== 'string' || !params.field) throw new Error('字段或操作名称不能为空')

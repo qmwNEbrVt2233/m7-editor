@@ -164,7 +164,7 @@ async function createWebKitEncoder(configParams: {
   for (const candidate of configs) {
     try {
       const support = await VideoEncoder.isConfigSupported(candidate)
-      if (support.supported) {
+      if (support.supported && support.config) {
         config = support.config
         break
       }

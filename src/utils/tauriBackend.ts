@@ -117,6 +117,10 @@ export async function chooseVideoExportPath(): Promise<string | null> {
   return invokeTauri<string | null>('choose_video_export_path')
 }
 
+export async function prepareVideoExportPath(path: string): Promise<string> {
+  return invokeTauri<string>('prepare_video_export_path', { path })
+}
+
 export async function createVideoExportRenderWindow(jobId: string, job: unknown): Promise<void> {
   const record = job as Record<string, unknown>
   await invokeTauri<void>('create_video_export_render_window', {

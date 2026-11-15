@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFile, readdir, stat } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { extname, join, resolve } from 'node:path'
 import { McpServer } from '@modelcontextprotocol/server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import { z } from 'zod'
@@ -69,6 +69,13 @@ async function readBridgeDescriptors(): Promise<BridgeDescriptor[]> {
   return descriptors
 }
 
+const longBridgeMethods = new Set([
+  'editor.captureFrame',
+  'editor.exportVideo',
+  'editor.getVideoExportStatus',
+  'editor.cancelVideoExport'
+])
+
 async function callEditor(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
   let descriptors: BridgeDescriptor[]
   try {
@@ -96,7 +103,7 @@ async function callEditor(method: string, params: Record<string, unknown> = {}):
           'content-type': 'application/json'
         },
         body: requestBody,
-        signal: AbortSignal.timeout(method === 'editor.captureFrame' ? 95_000 : 35_000)
+        signal: AbortSignal.timeout(longBridgeMethods.has(method) ? 95_000 : 35_000)
       })
     } catch {
       continue
@@ -221,7 +228,7 @@ function resolveOptionalPath(value?: string): string | undefined {
 function createMcpServer() {
   const server = new McpServer({ name: 'm7-editor', version: '1.11.0' }, {
     capabilities: { tools: {} },
-    instructions: '控制当前运行的 m7-editor 编辑会话。当 get_editor_state 返回 ready=false 时，可先调用工具打开或创建工程。字段、工具栏、弹幕创建/删除、播放头和画布设置最终统一通过 applyFieldUpdate 操作；普通编辑默认作用于当前选择。使用 create_generated_danmakus 按规则批量生成；get_frame 返回指定时间的图片内容，供视觉模型检查。保存/备份仅支持文件夹工程。先用 list_history_snapshots 获取快照 ID，再查询详情。reload_app 会调用 window.location.reload() 清空内存历史快照与未保存状态，仅在需从本地更新工程信息时使用。'
+    instructions: '控制当前运行的 m7-editor 编辑会话。当 get_editor_state 返回 ready=false 时，可先调用工具打开或创建工程。字段、工具栏、弹幕创建/删除、播放头和画布设置最终统一通过 applyFieldUpdate 操作；普通编辑默认作用于当前选择。使用 create_generated_danmakus 按规则批量生成；get_frame 返回指定时间的图片内容，供视觉模型检查。export_video 异步/短等待导出 .mp4 视频（必填 outputPath，开始后锁定弹幕快照不阻塞继续编辑），配合 get_video_export_status 与 cancel_video_export 查询和取消。保存/备份仅支持文件夹工程。先用 list_history_snapshots 获取快照 ID，再查询详情。reload_app 会调用 window.location.reload() 清空内存历史快照与未保存状态，仅在需从本地更新工程信息时使用。'
   })
 
   function registerTool<Schema extends z.ZodType>(
@@ -252,7 +259,7 @@ function createMcpServer() {
   registerTool(
     'get_editor_state',
     '读取编辑器状态',
-    '读取当前运行的 m7-editor 会话、工程、播放头、画布、时间轴弹幕范围（timelineRange）和选择状态。',
+    '读取当前运行的 m7-editor 会话、工程、播放头、画布、媒体信息（media）、时间轴弹幕范围（timelineRange）、视频导出设置与状态（useWebglVideoExport / videoExport）和选择状态。',
     emptyInput,
     () => callEditor('editor.getState'),
     true
@@ -723,6 +730,53 @@ function createMcpServer() {
     '重做最近撤销的编辑操作。',
     emptyInput,
     () => callEditor('editor.applyFieldUpdate', { field: '@history.redo', method: null })
+  )
+  registerTool(
+    'export_video',
+    '导出视频',
+    '将当前工程导出为 .mp4 视频。outputPath 必填（绝对或相对路径，必须以 .mp4 结尾，缺失父目录会自动创建）。startMs/endMs 默认为 0 到源视频时长或弹幕最晚结束时间；width/height 默认使用工程画布尺寸（仅传单边时按画布比例自动计算另一边，均须为偶数且比例一致）；fps 默认 60（可选 24/30/60/120）；quality 默认 very-high；useWebgl 默认沿用全局设置（默认开启）。waitMs 默认 15000（0~60000 毫秒）：若在 waitMs 内完成则直接返回结果，超时则在后台继续运行并返回 status=running 与 jobId 供 get_video_export_status 查询。导出锁定开始时刻的弹幕快照，期间可继续编辑或截图。',
+    z.object({
+      outputPath: z.string().trim().min(1, 'outputPath 不能为空').refine(
+        (value) => extname(value).toLowerCase() === '.mp4',
+        'outputPath 必须以 .mp4 结尾'
+      ),
+      startMs: z.number().finite().min(0).optional(),
+      endMs: z.number().finite().positive().optional(),
+      width: z.number().int().min(16).max(7680).refine((value) => value % 2 === 0, 'width 必须是偶数').optional(),
+      height: z.number().int().min(16).max(4320).refine((value) => value % 2 === 0, 'height 必须是偶数').optional(),
+      fps: z.union([z.literal(24), z.literal(30), z.literal(60), z.literal(120)]).optional(),
+      quality: z.enum(['low', 'high', 'very-high', 'near-lossless']).optional(),
+      useWebgl: z.boolean().optional(),
+      waitMs: z.number().int().min(0).max(60000).optional()
+    }).strict().superRefine((value, context) => {
+      if (value.endMs !== undefined && value.startMs !== undefined && value.endMs <= value.startMs) {
+        context.addIssue({ code: 'custom', message: 'endMs 必须大于 startMs' })
+      }
+    }),
+    (input) => callEditor('editor.exportVideo', {
+      ...input,
+      outputPath: resolveRequiredPath(input.outputPath, 'outputPath')
+    })
+  )
+  registerTool(
+    'get_video_export_status',
+    '查询视频导出状态',
+    '只读查询视频导出任务状态与进度。不传 jobId 时返回当前活跃任务或最近一次任务状态；可传入 waitMs（0~60000 毫秒，默认 0）在任务运行中时等待完成或超时再返回最新快照。',
+    z.object({
+      jobId: z.string().trim().min(1, 'jobId 不能为空').optional(),
+      waitMs: z.number().int().min(0).max(60000).optional()
+    }).strict(),
+    (input) => callEditor('editor.getVideoExportStatus', input),
+    true
+  )
+  registerTool(
+    'cancel_video_export',
+    '取消视频导出',
+    '取消正在进行的视频导出任务并等待编码器、独立渲染窗口和临时文件句柄彻底清理完成后返回。不传 jobId 时取消当前活跃任务；若目标任务已结束则安全返回当前状态。',
+    z.object({
+      jobId: z.string().trim().min(1, 'jobId 不能为空').optional()
+    }).strict(),
+    (input) => callEditor('editor.cancelVideoExport', input)
   )
   registerTool(
     'reload_app',

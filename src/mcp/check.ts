@@ -89,6 +89,7 @@ async function main() {
       'import_folder_project', 'edit_folder_project', 'delete_folder_project',
       'import_single_project', 'import_xml_danmakus', 'skip_folder_project',
       'reload_app', 'get_editor_logs',
+      'export_video', 'get_video_export_status', 'cancel_video_export',
       'list_history_snapshots', 'get_history_snapshot', 'create_generated_danmakus', 'get_frame',
       'apply_field_updates', 'measure_text'
     ]
@@ -192,7 +193,26 @@ async function main() {
     if (!invalidReloadApp.error && invalidReloadApp.result?.isError !== true) {
       throw new Error('应用重启工具没有拒绝未知参数')
     }
-    console.log('文件系统与重启工具参数检查正常，无效组合与未知参数已在调用编辑器前拒绝。')
+    const statusTool = tools.find((tool: { name?: string }) => tool.name === 'get_video_export_status') as
+      | { annotations?: { readOnlyHint?: boolean } }
+      | undefined
+    if (statusTool?.annotations?.readOnlyHint !== true) {
+      throw new Error('get_video_export_status 没有声明 readOnlyHint=true')
+    }
+    for (const [label, name, args] of [
+      ['非 .mp4 路径', 'export_video', { outputPath: 'demo.mov' }],
+      ['奇数宽度', 'export_video', { outputPath: 'demo.mp4', width: 1921 }],
+      ['无效时间范围', 'export_video', { outputPath: 'demo.mp4', startMs: 1000, endMs: 500 }],
+      ['不支持的帧率', 'export_video', { outputPath: 'demo.mp4', fps: 50 }],
+      ['越界 waitMs', 'get_video_export_status', { waitMs: 70000 }],
+      ['空 jobId', 'cancel_video_export', { jobId: '   ' }]
+    ] as const) {
+      const invalidExportCall = await request('tools/call', { name, arguments: args })
+      if (!invalidExportCall.error && invalidExportCall.result?.isError !== true) {
+        throw new Error(`视频导出工具没有拒绝${label}`)
+      }
+    }
+    console.log('文件系统、视频导出与重启工具参数检查正常，无效组合与未知参数已在调用编辑器前拒绝。')
 
     const state = await request('tools/call', { name: 'get_editor_state', arguments: {} })
     if (state.error) throw new Error(state.error.message)

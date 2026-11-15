@@ -146,7 +146,7 @@ export async function runDirectVideoExportSession(
           }
           const trackDuration =
             (await videoTrack.computeDuration()) || (await videoTrack.getDurationFromMetadata())
-          if (Number.isFinite(trackDuration) && trackDuration > 0) {
+          if (typeof trackDuration === 'number' && Number.isFinite(trackDuration) && trackDuration > 0) {
             videoDurationSec = trackDuration
           }
 
@@ -159,11 +159,8 @@ export async function runDirectVideoExportSession(
           sampleIterator = sink.samples(queryStartSec, Infinity)[Symbol.asyncIterator]()
           const firstResult = await sampleIterator.next()
           if (firstResult.done && videoDurationSec > 0) {
-            const firstEncodedPacket = await videoTrack.getFirstPacket({ metadataOnly: true })
-            if (firstEncodedPacket !== null) {
-              hooks.onFallback('video-sample-stream-empty')
-              return 'fallback'
-            }
+            hooks.onFallback('video-sample-stream-empty')
+            return 'fallback'
           }
           nextSample = firstResult.done ? null : firstResult.value
         }

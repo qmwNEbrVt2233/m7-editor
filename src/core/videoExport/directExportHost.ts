@@ -435,7 +435,7 @@ async function runMainThreadWebGLDirectExport(
           }
           const trackDuration =
             (await videoTrack.computeDuration()) || (await videoTrack.getDurationFromMetadata())
-          if (Number.isFinite(trackDuration) && trackDuration > 0) {
+          if (trackDuration !== null && Number.isFinite(trackDuration) && trackDuration > 0) {
             videoDurationSec = trackDuration
           }
           const sink = new VideoSampleSink(videoTrack)
@@ -447,10 +447,7 @@ async function runMainThreadWebGLDirectExport(
           sampleIterator = sink.samples(queryStartSec, Infinity)[Symbol.asyncIterator]()
           const first = await sampleIterator.next()
           if (first.done && videoDurationSec > 0) {
-            const firstPacket = await videoTrack.getFirstPacket({ metadataOnly: true })
-            if (firstPacket !== null) {
-              return { status: 'fallback', reason: 'video-sample-stream-empty' }
-            }
+            return { status: 'fallback', reason: 'video-sample-stream-empty' }
           }
           nextSample = first.done ? null : first.value
         }

@@ -248,10 +248,12 @@ impl McpBridgeRuntime {
             return Err((503, format!("编辑器窗口未连接 MCP 桥: {error}")));
         }
 
-        let response_timeout = if method == "editor.captureFrame" {
-            Duration::from_secs(90)
-        } else {
-            Duration::from_secs(30)
+        let response_timeout = match method {
+            "editor.captureFrame"
+            | "editor.exportVideo"
+            | "editor.getVideoExportStatus"
+            | "editor.cancelVideoExport" => Duration::from_secs(90),
+            _ => Duration::from_secs(30),
         };
         match receiver.recv_timeout(response_timeout) {
             Ok(Ok(value)) => Ok(value),
@@ -262,7 +264,10 @@ impl McpBridgeRuntime {
                     .lock()
                     .ok()
                     .and_then(|mut pending| pending.remove(&request_id));
-                Err((504, "编辑器未在 30 秒内响应 MCP 请求".to_string()))
+                Err((
+                    504,
+                    format!("编辑器未在 {} 秒内响应 MCP 请求", response_timeout.as_secs()),
+                ))
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => Err((503, "编辑器 MCP 请求通道已关闭".to_string())),
         }
@@ -2678,6 +2683,27 @@ fn validate_video_export_path(path: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+fn prepare_video_export_path_inner(path: &str) -> Result<PathBuf, String> {
+    let path = validate_video_export_path(path)?;
+    if path.is_dir() {
+        return Err(format!("视频导出路径不能是目录: {}", path.display()));
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!("无法创建导出目录 {}: {error}", parent.display())
+            })?;
+        }
+    }
+    Ok(path)
+}
+
+#[tauri::command]
+fn prepare_video_export_path(path: String) -> Result<String, String> {
+    let prepared = prepare_video_export_path_inner(&path)?;
+    Ok(prepared.to_string_lossy().to_string())
+}
+
 fn decode_hex_utf8(hex: &str) -> Result<String, String> {
     if hex.len() % 2 != 0 {
         return Err("无效的十六进制编码长度".to_string());
@@ -2709,7 +2735,7 @@ fn start_video_export_file(
     runtime: State<'_, VideoExportRuntime>,
     path: String,
 ) -> Result<(), String> {
-    let path = validate_video_export_path(&path)?;
+    let path = prepare_video_export_path_inner(&path)?;
     let file = OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -2900,7 +2926,7 @@ fn start_ffmpeg_video_export(
     height: u32,
     pixel_format: Option<String>,
 ) -> Result<(), String> {
-    let output = validate_video_export_path(&output_path)?;
+    let output = prepare_video_export_path_inner(&output_path)?;
     let crf = match quality.as_str() {
         "low" => "32",
         "high" => "20",
@@ -3142,6 +3168,7 @@ pub fn run() {
             finish_video_export_render_window,
             capture_webview_snapshot,
             choose_video_export_path,
+            prepare_video_export_path,
             start_video_export_file,
             write_video_export_chunk,
             finish_video_export_file,
@@ -3312,5 +3339,32 @@ mod tests {
         }"#;
         let disabled: GlobalSettings = serde_json::from_str(disabled_json).unwrap();
         assert!(!disabled.use_webgl_video_export);
+    }
+
+    #[test]
+    fn prepare_video_export_path_validates_and_creates_parent() {
+        let unique = format!(
+            "m7_editor_export_path_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let nested_mp4 = root.join("nested").join("output.mp4");
+        let prepared = prepare_video_export_path_inner(&nested_mp4.to_string_lossy()).unwrap();
+        assert_eq!(prepared, nested_mp4);
+        assert!(root.join("nested").is_dir());
+
+        assert!(prepare_video_export_path_inner("relative/output.mp4").is_err());
+
+        let wrong_ext = root.join("output.mov");
+        assert!(prepare_video_export_path_inner(&wrong_ext.to_string_lossy()).is_err());
+
+        let dir_named_mp4 = root.join("folder.mp4");
+        std::fs::create_dir_all(&dir_named_mp4).unwrap();
+        assert!(prepare_video_export_path_inner(&dir_named_mp4.to_string_lossy()).is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -78,7 +78,7 @@ const FRAME_CAPTURE_FINISHED_TIMEOUT_MS = 35_000
 type RenderEventPayload = { jobId: string }
 type RenderProgressPayload = RenderEventPayload & { progress: ExportProgress }
 type RenderFinishedPayload = RenderEventPayload & {
-  result?: { canceledByUser: boolean; path?: string; totalFrames?: number; frame?: CapturedVideoFrame }
+  result?: { canceledByUser: boolean; path?: string; encoder?: 'ffmpeg'; totalFrames?: number; frame?: CapturedVideoFrame }
   error?: string
 }
 

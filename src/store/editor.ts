@@ -8,6 +8,13 @@ import { parseXML, toXML } from '@/core/converter'
 import { applyEditorApi, rotatedBox, type EditorApiMethod, type EditorApiResult } from '@/core/editorApi'
 import { measureDanmakus } from '@/core/danmakuMeasurement'
 import {
+  runVideoExportInRenderWindow,
+  type ExportProgress
+} from '@/core/videoExport/exportCoordinator'
+import type { ExportOutputDelivery } from '@/core/videoExport/outputSink'
+import type { ExportQuality } from '@/core/videoExport/quality'
+import { formatDuration } from '@/utils/time'
+import {
   backupFolderProject,
   checkFolderProjectPath,
   convertMediaPathToUrl,
@@ -28,6 +35,7 @@ import {
   type ProjectPathCheck,
   getProjectMediaPath,
   isTauriRuntime,
+  prepareVideoExportPath,
   registerMediaPath,
   saveFolderProject,
   updateGlobalSettings,
@@ -38,6 +46,193 @@ import {
   deleteDanmakuTemplate,
   type DanmakuTemplateRecord
 } from '@/utils/tauriBackend'
+
+export type VideoExportStatus = 'running' | 'completed' | 'failed' | 'canceled'
+
+export type VideoExportOptions = {
+  outputPath?: string
+  startMs?: number
+  endMs?: number
+  width?: number
+  height?: number
+  fps?: number
+  quality?: ExportQuality
+  useWebgl?: boolean
+  waitMs?: number
+}
+
+export type VideoExportJobSnapshot = {
+  jobId: string
+  source: 'ui' | 'mcp'
+  status: VideoExportStatus
+  outputPath: string | null
+  delivery: ExportOutputDelivery | null
+  encoder: 'webcodecs' | 'ffmpeg' | null
+  startMs: number
+  endMs: number
+  durationMs: number
+  fps: number
+  quality: ExportQuality
+  width: number
+  height: number
+  useWebgl: boolean
+  startedAt: string
+  finishedAt: string | null
+  elapsedMs: number
+  completedFrames: number
+  totalFrames: number
+  percent: number
+  stage: ExportProgress['stage']
+  detail: string | null
+  averageFrameMs: number | null
+  estimatedRemainingMs: number | null
+  error: string | null
+}
+
+type VideoExportSpec = {
+  source: 'ui' | 'mcp'
+  outputPath?: string
+  startMs: number
+  endMs: number
+  fps: number
+  quality: ExportQuality
+  width: number
+  height: number
+  useWebgl: boolean
+}
+
+type ActiveVideoExportRuntime = {
+  jobId: string
+  abortController: AbortController
+  renderTimer: number | undefined
+  renderStartedAt: number
+  completionPromise: Promise<VideoExportJobSnapshot>
+  resolveCompletion: (snapshot: VideoExportJobSnapshot) => void
+}
+
+const MAX_VIDEO_EXPORT_HISTORY = 20
+const VALID_EXPORT_FPS = new Set([24, 30, 60, 120])
+const VALID_EXPORT_QUALITIES = new Set<ExportQuality>(['low', 'high', 'very-high', 'near-lossless'])
+
+let activeVideoExportRuntime: ActiveVideoExportRuntime | null = null
+let videoExportPreflightBusy = false
+const videoExportJobs = new Map<string, VideoExportJobSnapshot>()
+let latestVideoExportJobId: string | null = null
+let nextVideoExportSequence = 0
+
+export function computeVideoExportStats(progress: ExportProgress, elapsedMs: number) {
+  const averageFrameMs = progress.completedFrames > 0
+    ? elapsedMs / progress.completedFrames
+    : null
+  let estimatedRemainingMs: number | null = null
+  if (
+    progress.stage !== 'preparing' &&
+    progress.stage !== 'finalizing' &&
+    progress.totalFrames > 0 &&
+    progress.completedFrames > 0 &&
+    averageFrameMs !== null
+  ) {
+    estimatedRemainingMs = progress.completedFrames >= progress.totalFrames
+      ? 0
+      : Math.max(0, averageFrameMs * (progress.totalFrames - progress.completedFrames))
+  }
+  return { averageFrameMs, estimatedRemainingMs }
+}
+
+export function normalizeEvenVideoDimension(value: number, min = 16): number {
+  return Math.max(min, Math.round(value / 2) * 2)
+}
+
+export function resolveVideoExportDimensions(
+  screenWidth: number,
+  screenHeight: number,
+  widthInput?: number,
+  heightInput?: number
+): { width: number; height: number } {
+  const aspectRatio = screenWidth / screenHeight
+  if (!Number.isFinite(aspectRatio) || aspectRatio <= 0) {
+    throw new Error('当前工程画布尺寸无效')
+  }
+
+  let width: number
+  let height: number
+  if (widthInput === undefined && heightInput === undefined) {
+    width = normalizeEvenVideoDimension(screenWidth)
+    height = normalizeEvenVideoDimension(screenHeight)
+  } else if (widthInput !== undefined && heightInput === undefined) {
+    if (!Number.isInteger(widthInput) || widthInput < 16 || widthInput > 7680) {
+      throw new Error('导出宽度必须是 16 到 7680 之间的整数')
+    }
+    if (widthInput % 2 !== 0) {
+      throw new Error('H.264 视频的宽度和高度需要是偶数')
+    }
+    width = widthInput
+    height = normalizeEvenVideoDimension(widthInput / aspectRatio)
+  } else if (widthInput === undefined && heightInput !== undefined) {
+    if (!Number.isInteger(heightInput) || heightInput < 16 || heightInput > 4320) {
+      throw new Error('导出高度必须是 16 到 4320 之间的整数')
+    }
+    if (heightInput % 2 !== 0) {
+      throw new Error('H.264 视频的宽度和高度需要是偶数')
+    }
+    height = heightInput
+    width = normalizeEvenVideoDimension(heightInput * aspectRatio)
+  } else {
+    width = widthInput!
+    height = heightInput!
+  }
+
+  if (!Number.isInteger(width) || width < 16 || width > 7680) {
+    throw new Error('导出宽度必须是 16 到 7680 之间的偶数')
+  }
+  if (!Number.isInteger(height) || height < 16 || height > 4320) {
+    throw new Error('导出高度必须是 16 到 4320 之间的偶数')
+  }
+  if (width % 2 !== 0 || height % 2 !== 0) {
+    throw new Error('H.264 视频的宽度和高度需要是偶数')
+  }
+  const outputAspectRatio = width / height
+  if (Math.abs(outputAspectRatio - aspectRatio) / aspectRatio > 0.002) {
+    throw new Error('导出宽高比例需要与工程画布一致')
+  }
+  return { width, height }
+}
+
+function recordVideoExportSnapshot(snapshot: VideoExportJobSnapshot) {
+  if (videoExportJobs.has(snapshot.jobId)) {
+    videoExportJobs.delete(snapshot.jobId)
+  }
+  videoExportJobs.set(snapshot.jobId, snapshot)
+  latestVideoExportJobId = snapshot.jobId
+  while (videoExportJobs.size > MAX_VIDEO_EXPORT_HISTORY) {
+    const oldestKey = videoExportJobs.keys().next().value as string | undefined
+    if (!oldestKey) break
+    if (oldestKey === activeVideoExportRuntime?.jobId) {
+      const active = videoExportJobs.get(oldestKey)!
+      videoExportJobs.delete(oldestKey)
+      videoExportJobs.set(oldestKey, active)
+      continue
+    }
+    videoExportJobs.delete(oldestKey)
+  }
+}
+
+async function waitForPromiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  if (timeoutMs <= 0) return null
+  let timer: number | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<null>((resolve) => {
+        timer = window.setTimeout(() => resolve(null), timeoutMs)
+      })
+    ])
+  } finally {
+    if (timer !== undefined) {
+      window.clearTimeout(timer)
+    }
+  }
+}
 
 let editorApiQueue: Promise<void> = Promise.resolve()
 
@@ -390,6 +585,31 @@ export const useEditorStore = defineStore('editor', {
       useWebglVideoExport: typeof savedGlobalSettings?.useWebglVideoExport === 'boolean'
         ? savedGlobalSettings.useWebglVideoExport
         : true,
+      videoExport: {
+        activeJobId: null as string | null,
+        source: null as 'ui' | 'mcp' | null,
+        status: 'idle' as 'idle' | VideoExportStatus,
+        outputPath: '' as string,
+        delivery: null as ExportOutputDelivery | null,
+        encoder: null as 'webcodecs' | 'ffmpeg' | null,
+        useWebgl: true,
+        startMs: 0,
+        endMs: 0,
+        fps: 60,
+        quality: 'very-high' as ExportQuality,
+        width: 1920,
+        height: 1080,
+        progress: {
+          completedFrames: 0,
+          totalFrames: 0,
+          percent: 0,
+          stage: 'preparing'
+        } as ExportProgress,
+        elapsedMs: 0,
+        startedAt: 0,
+        finishedAt: 0,
+        error: ''
+      },
       danmakuTemplatesLoaded: false,
       showSpectrogram: saved?.timeline?.showSpectrogram || false,
       spectrogramColorScheme: saved?.timeline?.spectrogramColorScheme || 'default',
@@ -646,7 +866,14 @@ export const useEditorStore = defineStore('editor', {
         screen: { width: this.screenWidth, height: this.screenHeight },
         maxLayers: this.maxLayers,
         canUndo: history.canUndo,
-        canRedo: history.canRedo
+        canRedo: history.canRedo,
+        media: {
+          hasMedia: Boolean(this.mediaUrl),
+          filePath: this.mediaFilePath || null,
+          durationMs: this.getCachedMediaDurationMs()
+        },
+        useWebglVideoExport: this.useWebglVideoExport,
+        videoExport: this.getVideoExportJobSnapshot() ?? { status: 'idle' as const }
       }
     },
 
@@ -761,6 +988,548 @@ export const useEditorStore = defineStore('editor', {
 
     getMcpHistorySnapshot(snapshotId: string, options: { offset?: number; limit?: number } = {}) {
       return historyManager.getSnapshotDanmakus(snapshotId, options.offset, options.limit)
+    },
+
+    getCachedMediaDurationMs(): number {
+      if (!this.mediaUrl) return 0
+      if (Number.isFinite(this.mediaDuration) && this.mediaDuration > 0) {
+        return this.mediaDuration
+      }
+      const elementDuration = this.mediaElement?.duration
+      if (typeof elementDuration === 'number' && Number.isFinite(elementDuration) && elementDuration > 0) {
+        this.mediaDuration = elementDuration * 1000
+        return this.mediaDuration
+      }
+      return 0
+    },
+
+    async resolveEffectiveMediaDurationMs(timeoutMs = 5000): Promise<number> {
+      const cached = this.getCachedMediaDurationMs()
+      if (cached > 0 || !this.mediaUrl) return cached
+
+      const element = this.mediaElement
+      if (!element) return 0
+
+      await new Promise<void>((resolve) => {
+        let settled = false
+        const finish = () => {
+          if (settled) return
+          settled = true
+          window.clearTimeout(timer)
+          element.removeEventListener('loadedmetadata', finish)
+          element.removeEventListener('error', finish)
+          resolve()
+        }
+        const timer = window.setTimeout(finish, timeoutMs)
+        element.addEventListener('loadedmetadata', finish)
+        element.addEventListener('error', finish)
+        if (
+          element.readyState >= 1 &&
+          Number.isFinite(element.duration) &&
+          element.duration > 0
+        ) {
+          finish()
+        }
+      })
+
+      return this.getCachedMediaDurationMs()
+    },
+
+    getDefaultVideoExportEndMs(
+      this: { getCachedMediaDurationMs: () => number; danmakus: DanmakuItem[]; mediaUrl: string },
+      mediaDurationMs = this.getCachedMediaDurationMs()
+    ): number {
+      return this.danmakus.reduce((latest: number, danmaku: any) => Math.max(
+        latest,
+        danmaku.startTime + danmaku.animation.duration,
+        this.mediaUrl ? mediaDurationMs : 0
+      ), 0)
+    },
+
+    buildVideoExportSnapshot(): VideoExportJobSnapshot | null {
+      const state = this.videoExport
+      if (!state.activeJobId || state.status === 'idle') return null
+      const liveElapsedMs = activeVideoExportRuntime &&
+        activeVideoExportRuntime.jobId === state.activeJobId &&
+        activeVideoExportRuntime.renderStartedAt > 0 &&
+        state.status === 'running'
+        ? Date.now() - activeVideoExportRuntime.renderStartedAt
+        : state.elapsedMs
+      const progress: ExportProgress = {
+        completedFrames: state.progress.completedFrames,
+        totalFrames: state.progress.totalFrames,
+        percent: state.progress.percent,
+        stage: state.progress.stage,
+        ...(state.progress.detail ? { detail: state.progress.detail } : {})
+      }
+      const { averageFrameMs, estimatedRemainingMs } = computeVideoExportStats(progress, liveElapsedMs)
+      return {
+        jobId: state.activeJobId,
+        source: state.source ?? 'ui',
+        status: state.status as VideoExportStatus,
+        outputPath: state.outputPath || null,
+        delivery: state.delivery,
+        encoder: state.encoder,
+        startMs: state.startMs,
+        endMs: state.endMs,
+        durationMs: Math.max(0, state.endMs - state.startMs),
+        fps: state.fps,
+        quality: state.quality,
+        width: state.width,
+        height: state.height,
+        useWebgl: state.useWebgl,
+        startedAt: state.startedAt > 0 ? new Date(state.startedAt).toISOString() : new Date().toISOString(),
+        finishedAt: state.finishedAt > 0 ? new Date(state.finishedAt).toISOString() : null,
+        elapsedMs: liveElapsedMs,
+        completedFrames: progress.completedFrames,
+        totalFrames: progress.totalFrames,
+        percent: progress.percent,
+        stage: progress.stage,
+        detail: progress.detail ?? null,
+        averageFrameMs,
+        estimatedRemainingMs,
+        error: state.error || null
+      }
+    },
+
+    getVideoExportJobSnapshot(jobId?: string): VideoExportJobSnapshot | null {
+      if (jobId) {
+        if (activeVideoExportRuntime && activeVideoExportRuntime.jobId === jobId) {
+          return this.buildVideoExportSnapshot()
+        }
+        return videoExportJobs.get(jobId) ?? null
+      }
+      if (activeVideoExportRuntime) {
+        return this.buildVideoExportSnapshot()
+      }
+      if (latestVideoExportJobId) {
+        return videoExportJobs.get(latestVideoExportJobId) ?? null
+      }
+      return null
+    },
+
+    startVideoExportJob(spec: VideoExportSpec): ActiveVideoExportRuntime {
+      if (activeVideoExportRuntime) {
+        throw new Error('已有视频导出任务正在进行中，请等待完成或先取消后再试')
+      }
+
+      const notice = useNoticeStore()
+      const jobId = `export_${Date.now()}_${++nextVideoExportSequence}`
+      const abortController = new AbortController()
+      let resolveCompletion!: (snapshot: VideoExportJobSnapshot) => void
+      const completionPromise = new Promise<VideoExportJobSnapshot>((resolve) => {
+        resolveCompletion = resolve
+      })
+
+      const runtime: ActiveVideoExportRuntime = {
+        jobId,
+        abortController,
+        renderTimer: undefined,
+        renderStartedAt: 0,
+        completionPromise,
+        resolveCompletion
+      }
+      activeVideoExportRuntime = runtime
+
+      this.videoExport = {
+        activeJobId: jobId,
+        source: spec.source,
+        status: 'running',
+        outputPath: spec.outputPath ?? '',
+        delivery: null,
+        encoder: null,
+        useWebgl: spec.useWebgl,
+        startMs: spec.startMs,
+        endMs: spec.endMs,
+        fps: spec.fps,
+        quality: spec.quality,
+        width: spec.width,
+        height: spec.height,
+        progress: {
+          completedFrames: 0,
+          totalFrames: 0,
+          percent: 0,
+          stage: 'preparing'
+        },
+        elapsedMs: 0,
+        startedAt: Date.now(),
+        finishedAt: 0,
+        error: ''
+      }
+      recordVideoExportSnapshot(this.buildVideoExportSnapshot()!)
+      notice.log('开始导出视频', 'info')
+
+      const mediaDuration = this.mediaUrl ? this.getCachedMediaDurationMs() : 0
+      let exportPromise: ReturnType<typeof runVideoExportInRenderWindow>
+      try {
+        exportPromise = runVideoExportInRenderWindow({
+          startMs: spec.startMs,
+          endMs: spec.endMs,
+          fps: spec.fps,
+          quality: spec.quality,
+          width: spec.width,
+          height: spec.height,
+          screenWidth: this.screenWidth,
+          screenHeight: this.screenHeight,
+          mediaUrl: this.mediaUrl,
+          mediaFilePath: this.mediaUrl ? this.mediaFilePath : '',
+          mediaDuration,
+          danmakus: this.danmakus,
+          outputPath: spec.outputPath,
+          useWebgl: spec.useWebgl
+        }, abortController.signal, (progress) => {
+          if (activeVideoExportRuntime?.jobId !== jobId) return
+          this.videoExport.progress = progress
+          if (progress.stage === 'preparing' && runtime.renderStartedAt === 0) {
+            runtime.renderStartedAt = Date.now()
+            this.videoExport.elapsedMs = 0
+            runtime.renderTimer = window.setInterval(() => {
+              if (activeVideoExportRuntime?.jobId !== jobId || runtime.renderStartedAt <= 0) return
+              this.videoExport.elapsedMs = Date.now() - runtime.renderStartedAt
+            }, 500)
+          }
+        })
+      } catch (error) {
+        exportPromise = Promise.reject(error)
+      }
+
+      void (async () => {
+        try {
+          const result = await exportPromise
+          if (runtime.renderTimer !== undefined) {
+            window.clearInterval(runtime.renderTimer)
+            runtime.renderTimer = undefined
+          }
+          if (runtime.renderStartedAt > 0) {
+            this.videoExport.elapsedMs = Date.now() - runtime.renderStartedAt
+            runtime.renderStartedAt = 0
+          }
+          this.videoExport.finishedAt = Date.now()
+
+          if (result.canceledByUser) {
+            this.videoExport.status = 'canceled'
+            this.videoExport.error = ''
+            if (abortController.signal.aborted) {
+              notice.log('视频导出已取消', 'info')
+            }
+          } else {
+            const finalTotalFrames = result.totalFrames ?? this.videoExport.progress.totalFrames
+            this.videoExport.status = 'completed'
+            this.videoExport.outputPath = result.path ?? this.videoExport.outputPath
+            this.videoExport.delivery = result.delivery
+            this.videoExport.encoder = result.encoder === 'ffmpeg' ? 'ffmpeg' : 'webcodecs'
+            this.videoExport.error = ''
+            if (finalTotalFrames > 0) {
+              this.videoExport.progress = {
+                completedFrames: finalTotalFrames,
+                totalFrames: finalTotalFrames,
+                percent: 1,
+                stage: 'finalizing'
+              }
+            } else {
+              this.videoExport.progress = {
+                ...this.videoExport.progress,
+                percent: 1,
+                stage: 'finalizing'
+              }
+            }
+            const durationText = formatDuration(this.videoExport.elapsedMs)
+            const doneMessage = result.delivery === 'download'
+              ? `视频导出完成，已触发浏览器下载：${this.videoExport.outputPath} 耗时：${durationText}`
+              : `视频导出完成：${this.videoExport.outputPath} 耗时：${durationText}`
+            notice.log(doneMessage, 'success')
+            if (spec.source === 'ui') {
+              notice.alert(doneMessage, 'success', '视频导出成功', result)
+            }
+          }
+        } catch (error) {
+          if (runtime.renderTimer !== undefined) {
+            window.clearInterval(runtime.renderTimer)
+            runtime.renderTimer = undefined
+          }
+          if (runtime.renderStartedAt > 0) {
+            this.videoExport.elapsedMs = Date.now() - runtime.renderStartedAt
+            runtime.renderStartedAt = 0
+          }
+          this.videoExport.finishedAt = Date.now()
+
+          if (error instanceof DOMException && error.name === 'AbortError') {
+            this.videoExport.status = 'canceled'
+            this.videoExport.error = ''
+            notice.log('视频导出已取消', 'info')
+          } else {
+            const message = error instanceof Error ? error.message : String(error)
+            this.videoExport.status = 'failed'
+            this.videoExport.error = message
+            notice.log(`视频导出失败：${message}`, 'error')
+            if (spec.source === 'ui') {
+              notice.alert(message, 'error', '视频导出失败')
+            }
+          }
+        } finally {
+          const finalSnapshot = this.buildVideoExportSnapshot()!
+          recordVideoExportSnapshot(finalSnapshot)
+          if (activeVideoExportRuntime?.jobId === jobId) {
+            activeVideoExportRuntime = null
+          }
+          resolveCompletion(finalSnapshot)
+        }
+      })()
+
+      return runtime
+    },
+
+    startVideoExportFromDialog(options: {
+      startMs: number
+      endMs: number
+      fps: number
+      quality: ExportQuality
+      width: number
+      height: number
+      useWebgl: boolean
+    }): Promise<VideoExportJobSnapshot> {
+      if (activeVideoExportRuntime || videoExportPreflightBusy) {
+        throw new Error('已有视频导出任务正在进行中，请等待完成或先取消后再试')
+      }
+      const runtime = this.startVideoExportJob({
+        source: 'ui',
+        startMs: options.startMs,
+        endMs: options.endMs,
+        fps: options.fps,
+        quality: options.quality,
+        width: options.width,
+        height: options.height,
+        useWebgl: options.useWebgl
+      })
+      return runtime.completionPromise
+    },
+
+    async exportVideoForMcp(options: VideoExportOptions = {}) {
+      if (this.InitializationPhase) {
+        throw new Error('编辑器尚未加载工程，暂不能导出视频')
+      }
+      if (!isTauriRuntime()) {
+        throw new Error('MCP 视频导出仅支持桌面端（Tauri）运行环境')
+      }
+      if (activeVideoExportRuntime || videoExportPreflightBusy) {
+        throw new Error('已有视频导出任务正在进行中，请等待完成或先取消后再试')
+      }
+      if (typeof options.outputPath !== 'string' || !options.outputPath.trim()) {
+        throw new Error('outputPath 不能为空')
+      }
+
+      const useWebgl = typeof options.useWebgl === 'boolean' ? options.useWebgl : this.useWebglVideoExport
+      if (!useWebgl && this.mediaUrl && !this.mediaFilePath) {
+        throw new Error('独立渲染窗口需要本地媒体文件路径，请从本地文件重新导入视频后再导出')
+      }
+
+      const fps = options.fps ?? 60
+      if (!VALID_EXPORT_FPS.has(fps)) {
+        throw new Error('导出帧率仅支持 24、30、60 或 120 fps')
+      }
+
+      const quality = options.quality ?? 'very-high'
+      if (!VALID_EXPORT_QUALITIES.has(quality)) {
+        throw new Error('不支持的导出画质选项')
+      }
+
+      const startMs = options.startMs ?? 0
+      if (!Number.isFinite(startMs) || startMs < 0) {
+        throw new Error('导出开始时间必须为大于等于 0 的有限数字')
+      }
+
+      if (options.endMs !== undefined && (!Number.isFinite(options.endMs) || options.endMs <= startMs)) {
+        throw new Error('导出结束时间必须大于开始时间')
+      }
+
+      const waitMs = options.waitMs ?? 15000
+      if (!Number.isFinite(waitMs) || waitMs < 0 || waitMs > 60000) {
+        throw new Error('waitMs 必须在 0 到 60000 毫秒之间')
+      }
+
+      const { width, height } = resolveVideoExportDimensions(
+        this.screenWidth,
+        this.screenHeight,
+        options.width,
+        options.height
+      )
+
+      videoExportPreflightBusy = true
+      let runtime: ActiveVideoExportRuntime
+      try {
+        const effectiveMediaDuration = this.mediaUrl
+          ? await this.resolveEffectiveMediaDurationMs()
+          : 0
+
+        let endMs: number
+        if (options.endMs !== undefined) {
+          endMs = options.endMs
+        } else {
+          if (this.mediaUrl && effectiveMediaDuration <= 0) {
+            throw new Error('未能获取当前视频时长，请确认媒体已加载完成或显式传入 endMs')
+          }
+          endMs = this.getDefaultVideoExportEndMs(effectiveMediaDuration)
+          if (!Number.isFinite(endMs) || endMs <= startMs) {
+            throw new Error('当前工程没有可用于推导默认时长的视频或弹幕范围，请显式传入 endMs')
+          }
+        }
+
+        const preparedOutputPath = await prepareVideoExportPath(options.outputPath.trim())
+
+        runtime = this.startVideoExportJob({
+          source: 'mcp',
+          outputPath: preparedOutputPath,
+          startMs,
+          endMs,
+          fps,
+          quality,
+          width,
+          height,
+          useWebgl
+        })
+      } finally {
+        videoExportPreflightBusy = false
+      }
+
+      const settled = waitMs > 0
+        ? await waitForPromiseWithTimeout(runtime.completionPromise, waitMs)
+        : null
+
+      if (!settled) {
+        return {
+          ok: true,
+          completed: false,
+          ...(this.getVideoExportJobSnapshot(runtime.jobId)!)
+        }
+      }
+
+      if (settled.status === 'failed') {
+        throw new Error(settled.error || '视频导出失败')
+      }
+
+      return {
+        ok: true,
+        completed: settled.status === 'completed',
+        ...settled
+      }
+    },
+
+    async getVideoExportStatusForMcp(options: { jobId?: string; waitMs?: number } = {}) {
+      const waitMs = options.waitMs ?? 0
+      if (!Number.isFinite(waitMs) || waitMs < 0 || waitMs > 60000) {
+        throw new Error('waitMs 必须在 0 到 60000 毫秒之间')
+      }
+
+      if (options.jobId !== undefined) {
+        if (typeof options.jobId !== 'string' || !options.jobId.trim()) {
+          throw new Error('jobId 不能为空字符串')
+        }
+        const jobId = options.jobId.trim()
+        let snapshot = this.getVideoExportJobSnapshot(jobId)
+        if (!snapshot) {
+          throw new Error(`未找到视频导出任务: ${jobId}`)
+        }
+        if (
+          snapshot.status === 'running' &&
+          waitMs > 0 &&
+          activeVideoExportRuntime?.jobId === jobId
+        ) {
+          const finished = await waitForPromiseWithTimeout(activeVideoExportRuntime.completionPromise, waitMs)
+          snapshot = finished ?? this.getVideoExportJobSnapshot(jobId)!
+        }
+        return {
+          ok: true,
+          hasActiveJob: activeVideoExportRuntime !== null,
+          ...snapshot
+        }
+      }
+
+      if (activeVideoExportRuntime && waitMs > 0) {
+        const activeRuntime = activeVideoExportRuntime
+        const finished = await waitForPromiseWithTimeout(activeRuntime.completionPromise, waitMs)
+        const snapshot = finished ?? this.getVideoExportJobSnapshot(activeRuntime.jobId)
+        if (!snapshot) {
+          return {
+            ok: true,
+            hasActiveJob: false,
+            status: 'idle' as const
+          }
+        }
+        return {
+          ok: true,
+          hasActiveJob: activeVideoExportRuntime !== null,
+          ...snapshot
+        }
+      }
+
+      const snapshot = this.getVideoExportJobSnapshot()
+      if (!snapshot) {
+        return {
+          ok: true,
+          hasActiveJob: false,
+          status: 'idle' as const
+        }
+      }
+
+      return {
+        ok: true,
+        hasActiveJob: activeVideoExportRuntime !== null,
+        ...snapshot
+      }
+    },
+
+    async cancelVideoExport(jobId?: string) {
+      if (jobId !== undefined) {
+        if (typeof jobId !== 'string' || !jobId.trim()) {
+          throw new Error('jobId 不能为空字符串')
+        }
+        const trimmed = jobId.trim()
+        if (activeVideoExportRuntime && activeVideoExportRuntime.jobId === trimmed) {
+          const runtime = activeVideoExportRuntime
+          runtime.abortController.abort()
+          const snapshot = await runtime.completionPromise
+          return {
+            ok: true,
+            canceled: snapshot.status === 'canceled',
+            alreadyFinished: false,
+            ...snapshot
+          }
+        }
+        const existing = videoExportJobs.get(trimmed)
+        if (!existing) {
+          throw new Error(`未找到视频导出任务: ${trimmed}`)
+        }
+        return {
+          ok: true,
+          canceled: false,
+          alreadyFinished: true,
+          ...existing
+        }
+      }
+
+      if (!activeVideoExportRuntime) {
+        const latest = this.getVideoExportJobSnapshot()
+        return {
+          ok: true,
+          canceled: false,
+          alreadyFinished: Boolean(latest),
+          ...(latest ?? { status: 'idle' as const })
+        }
+      }
+
+      const runtime = activeVideoExportRuntime
+      runtime.abortController.abort()
+      const snapshot = await runtime.completionPromise
+      return {
+        ok: true,
+        canceled: snapshot.status === 'canceled',
+        alreadyFinished: false,
+        ...snapshot
+      }
+    },
+
+    async cancelVideoExportForMcp(options: { jobId?: string } = {}) {
+      return this.cancelVideoExport(options.jobId)
     },
 
     async saveFolderProjectForMcp(backup = false) {
@@ -927,8 +1696,7 @@ export const useEditorStore = defineStore('editor', {
             if (summary.mediaPath) {
               await this.resolveMediaPath(summary.mediaPath)
             } else {
-              this.mediaFilePath = ''
-              this.mediaUrl = ''
+              this.setMediaSource('', '')
             }
           }
         }
@@ -1419,6 +2187,9 @@ export const useEditorStore = defineStore('editor', {
     },
 
     setMediaSource(url: string, path = '') {
+      if (!url || this.mediaUrl !== url) {
+        this.mediaDuration = 0
+      }
       this.mediaUrl = url
       this.mediaFilePath = path
     },
@@ -1447,19 +2218,18 @@ export const useEditorStore = defineStore('editor', {
 
       if (!isTauriRuntime()) {
         if (path.startsWith('file://')) {
-          this.mediaUrl = path
+          this.setMediaSource(path, path)
         }
         return
       }
 
       try {
         const media = await registerMediaPath(path)
-        this.mediaFilePath = media.path
-        this.mediaUrl = media.url
+        this.setMediaSource(media.url, media.path)
         notice.log('成功读取媒体文件', 'success')
       } catch (error) {
         notice.alert('无法读取工程中指向的媒体文件，请重新选择', 'error', '错误', path + error)
-        this.mediaUrl = ''
+        this.setMediaSource('', this.mediaFilePath)
       }
     },
 
@@ -1492,8 +2262,7 @@ export const useEditorStore = defineStore('editor', {
       await this.applyProject(payload.project, isEditing)
 
       if (payload.mediaFile?.path) {
-        this.mediaFilePath = payload.mediaFile.path
-        this.mediaUrl = convertMediaPathToUrl(payload.mediaFile.path)
+        this.setMediaSource(convertMediaPathToUrl(payload.mediaFile.path), payload.mediaFile.path)
       }
 
       historyManager.clear()
@@ -1570,11 +2339,9 @@ export const useEditorStore = defineStore('editor', {
       if (mediaPath) {
         await this.resolveMediaPath(mediaPath)
       } else if (project.media?.url) {
-        this.mediaFilePath = ''
-        this.mediaUrl = project.media.url
+        this.setMediaSource(project.media.url, '')
       } else {
-        this.mediaFilePath = ''
-        this.mediaUrl = ''
+        this.setMediaSource('', '')
       }
 
       if (typeof project.player?.screenWidth === 'number') {
