@@ -422,6 +422,10 @@ struct AppConfig {
     global_settings: GlobalSettings,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GlobalSettings {
@@ -432,6 +436,8 @@ struct GlobalSettings {
     selected_danmaku_template_name: Option<String>,
     #[serde(default)]
     replace_default_danmaku_with_template: bool,
+    #[serde(default = "default_true")]
+    use_webgl_video_export: bool,
 }
 
 impl Default for GlobalSettings {
@@ -442,6 +448,7 @@ impl Default for GlobalSettings {
             aggressive_optimization: false,
             selected_danmaku_template_name: None,
             replace_default_danmaku_with_template: false,
+            use_webgl_video_export: true,
         }
     }
 }
@@ -3285,5 +3292,25 @@ mod tests {
         cancel_video_export_file_inner(&runtime, path_str).unwrap();
         assert!(!file_path.exists());
         assert!(runtime.export_files.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn global_settings_defaults_use_webgl_video_export_to_true_for_legacy_configs() {
+        let legacy_json = r#"{
+            "playheadStepMs": 16.666667,
+            "danmakuDuration": { "mode": "ms", "value": 5000 },
+            "aggressiveOptimization": false
+        }"#;
+        let parsed: GlobalSettings = serde_json::from_str(legacy_json).unwrap();
+        assert!(parsed.use_webgl_video_export);
+
+        let disabled_json = r#"{
+            "playheadStepMs": 16.666667,
+            "danmakuDuration": { "mode": "ms", "value": 5000 },
+            "aggressiveOptimization": false,
+            "useWebglVideoExport": false
+        }"#;
+        let disabled: GlobalSettings = serde_json::from_str(disabled_json).unwrap();
+        assert!(!disabled.use_webgl_video_export);
     }
 }

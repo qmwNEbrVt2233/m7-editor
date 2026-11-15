@@ -59,6 +59,7 @@ export type GlobalSettings = {
   aggressiveOptimization: boolean
   selectedDanmakuTemplateName?: string | null
   replaceDefaultDanmakuWithTemplate?: boolean
+  useWebglVideoExport?: boolean
 }
 
 export type FolderProjectPayload = {

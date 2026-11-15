@@ -19,6 +19,12 @@ import {
 } from '@/utils/tauriBackend'
 import { resolveDirectVideoEncodingTarget, type ExportQuality } from './quality'
 import { tryRunDirectVideoExport } from './directExportHost'
+import type { ExportOutputDelivery } from './outputSink'
+import {
+  chooseBrowserExportOutputSink,
+  createBlobDownloadOutputSink,
+  formatDefaultVideoExportFilename,
+} from './outputSink'
 
 export type ExportBounds = {
   x: number
@@ -48,6 +54,7 @@ export type ExportJob = {
   mediaFilePath: string
   danmakus: DanmakuItem[]
   outputPath?: string
+  useWebgl?: boolean
   frameCapture?: { timeMs: number }
 }
 
@@ -565,25 +572,53 @@ export async function runVideoExport(
   }
 }
 
+function formatBrowserDirectExportUnsupportedError(reason: string): Error {
+  if (
+    reason === 'video-track-undecodable' ||
+    reason === 'video-sample-stream-empty' ||
+    reason === 'main-thread-media-probe-failed'
+  ) {
+    return new Error('当前浏览器无法通过 WebCodecs 解码导入的视频轨道，请尝试转码为常见 MP4 (H.264/AAC) 或使用桌面端导出。')
+  }
+  if (reason === 'worker-webgl2-unavailable' || reason === 'main-thread-webgl2-unavailable') {
+    return new Error('当前浏览器无法初始化 WebGL2 离屏渲染上下文，请检查硬件加速设置或更换浏览器。')
+  }
+  if (reason === 'webcodecs-or-worker-unavailable') {
+    return new Error('当前浏览器不支持 WebCodecs 离线视频编码，请使用最新版 Chrome、Edge 或 Safari。')
+  }
+  return new Error(`当前浏览器暂不支持离线直出此视频（${reason}），请尝试更换浏览器或使用桌面端导出。`)
+}
+
 export async function runVideoExportInRenderWindow(
   job: ExportJob,
   signal: AbortSignal,
   onProgress: (progress: ExportProgress) => void
 ) {
-  if (!isTauriRuntime()) {
-    throw new Error('视频导出目前需要 Tauri 桌面运行环境')
-  }
-
   const jobSnapshot = { ...job, danmakus: copySnapshot(job.danmakus) }
   validateExportJob(jobSnapshot)
-  const outputPath = jobSnapshot.outputPath ?? await chooseVideoExportPath()
-  if (!outputPath) return { canceledByUser: true as const }
-  if (signal.aborted) throw makeAbortError()
+  const useWebgl = jobSnapshot.useWebgl !== false
 
-  const h264Available = await checkH264EncodeAvailable(jobSnapshot)
-  if (h264Available) {
+  if (!isTauriRuntime()) {
+    if (!useWebgl) {
+      throw new Error('网页版不支持独立渲染窗口模式，请开启 WebGL 渲染后重试')
+    }
+    if (typeof Worker === 'undefined' || typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
+      throw new Error('当前浏览器不支持 WebCodecs 离线视频编码，请使用最新版 Chrome、Edge 或 Safari。')
+    }
+    const h264Available = await checkH264EncodeAvailable(jobSnapshot)
+    if (!h264Available) {
+      throw new Error('当前浏览器或设备不支持所需的 H.264 / HEVC 视频编码配置，请尝试降低分辨率/帧率或改用桌面端。')
+    }
+    if (signal.aborted) throw makeAbortError()
+
+    const outputSink = jobSnapshot.outputPath
+      ? createBlobDownloadOutputSink(jobSnapshot.outputPath)
+      : await chooseBrowserExportOutputSink(formatDefaultVideoExportFilename())
+    if (!outputSink) return { canceledByUser: true as const }
+    if (signal.aborted) throw makeAbortError()
+
     const directResult = await tryRunDirectVideoExport(
-      { ...jobSnapshot, outputPath },
+      { ...jobSnapshot, outputSink },
       signal,
       onProgress
     )
@@ -591,10 +626,40 @@ export async function runVideoExportInRenderWindow(
       return {
         canceledByUser: false as const,
         path: directResult.path,
+        delivery: directResult.delivery,
         totalFrames: directResult.totalFrames
       }
     }
     if (signal.aborted) throw makeAbortError()
+    throw formatBrowserDirectExportUnsupportedError(directResult.reason)
+  }
+
+  const outputPath = jobSnapshot.outputPath ?? await chooseVideoExportPath()
+  if (!outputPath) return { canceledByUser: true as const }
+  if (signal.aborted) throw makeAbortError()
+
+  if (useWebgl) {
+    const h264Available = await checkH264EncodeAvailable(jobSnapshot)
+    if (h264Available) {
+      const directResult = await tryRunDirectVideoExport(
+        { ...jobSnapshot, outputPath },
+        signal,
+        onProgress
+      )
+      if (directResult.status === 'completed') {
+        return {
+          canceledByUser: false as const,
+          path: directResult.path,
+          delivery: directResult.delivery,
+          totalFrames: directResult.totalFrames
+        }
+      }
+      if (signal.aborted) throw makeAbortError()
+    }
+  }
+
+  if (jobSnapshot.mediaUrl && !jobSnapshot.mediaFilePath) {
+    throw new Error('独立渲染窗口需要本地媒体文件路径，请从本地文件重新导入视频后再导出。')
   }
 
   const jobId = crypto.randomUUID()
@@ -655,7 +720,14 @@ export async function runVideoExportInRenderWindow(
     if (completion.error) throw new Error(completion.error)
     if (!completion.result) throw new Error('独立渲染窗口未返回导出结果')
     keepOutput = !completion.result.canceledByUser
-    return completion.result
+    if (completion.result.canceledByUser) {
+      return { canceledByUser: true as const }
+    }
+    return {
+      ...completion.result,
+      canceledByUser: false as const,
+      delivery: 'file' as ExportOutputDelivery,
+    }
   } finally {
     clearReadyTimeout()
     signal.removeEventListener('abort', onAbort)

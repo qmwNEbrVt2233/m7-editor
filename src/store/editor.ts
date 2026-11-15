@@ -387,6 +387,9 @@ export const useEditorStore = defineStore('editor', {
       danmakuTemplates: [] as DanmakuTemplateRecord[],
       selectedDanmakuTemplateName: savedGlobalSettings?.selectedDanmakuTemplateName || '',
       replaceDefaultDanmakuWithTemplate: savedGlobalSettings?.replaceDefaultDanmakuWithTemplate || false,
+      useWebglVideoExport: typeof savedGlobalSettings?.useWebglVideoExport === 'boolean'
+        ? savedGlobalSettings.useWebglVideoExport
+        : true,
       danmakuTemplatesLoaded: false,
       showSpectrogram: saved?.timeline?.showSpectrogram || false,
       spectrogramColorScheme: saved?.timeline?.spectrogramColorScheme || 'default',
@@ -1108,6 +1111,9 @@ export const useEditorStore = defineStore('editor', {
       this.aggressiveOptimization = settings.aggressiveOptimization
       this.selectedDanmakuTemplateName = settings.selectedDanmakuTemplateName || ''
       this.replaceDefaultDanmakuWithTemplate = settings.replaceDefaultDanmakuWithTemplate || false
+      this.useWebglVideoExport = typeof settings.useWebglVideoExport === 'boolean'
+        ? settings.useWebglVideoExport
+        : true
       this.globalSettingsLoaded = true
       if (this.danmakuTemplatesLoaded && !this.danmakuTemplates.some(
         (template) => template.name === this.selectedDanmakuTemplateName
@@ -1123,7 +1129,8 @@ export const useEditorStore = defineStore('editor', {
         danmakuDuration: { ...this.danmakuDuration },
         aggressiveOptimization: this.aggressiveOptimization,
         selectedDanmakuTemplateName: this.selectedDanmakuTemplateName || null,
-        replaceDefaultDanmakuWithTemplate: this.replaceDefaultDanmakuWithTemplate
+        replaceDefaultDanmakuWithTemplate: this.replaceDefaultDanmakuWithTemplate,
+        useWebglVideoExport: this.useWebglVideoExport
       }
 
       if (isTauriRuntime()) {
@@ -1686,6 +1693,11 @@ export const useEditorStore = defineStore('editor', {
 
     setAggressiveOptimization(enabled: boolean) {
       this.aggressiveOptimization = enabled
+      this.persistGlobalSettings()
+    },
+
+    setUseWebglVideoExport(enabled: boolean) {
+      this.useWebglVideoExport = enabled
       this.persistGlobalSettings()
     },
 

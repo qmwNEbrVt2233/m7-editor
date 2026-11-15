@@ -41,6 +41,16 @@
             <option value="near-lossless">近无损（速度很慢、文件极大）</option>
           </select>
         </label>
+        <label class="checkbox-field" :class="{ disabled: busy || !nativeRuntime }">
+          <input
+            type="checkbox"
+            :checked="effectiveUseWebgl"
+            :disabled="busy || !nativeRuntime"
+            @change="onUseWebglChange"
+          />
+          <span>使用 WebGL 渲染{{ nativeRuntime ? '' : '（网页版仅支持此模式）' }}</span>
+        </label>
+        <p class="output-hint">{{ renderModeHint }}</p>
         <p class="output-hint">{{ outputHint }}</p>
 
         <div v-if="busy" class="progress-section">
@@ -69,8 +79,8 @@
       </footer>
     </section>
   </div>
-  <div v-if="busy && !visible" class="progress-notice no-select">
-    <span>{{ progressText }}</span>
+  <div v-if="busy && !visible" class="progress-notice no-select" @click="emit('update:visible', true)">
+    <span>{{ progressText + '　预计剩余时间：' + estimatedFinishText }}</span>
     <progress :value="progress.percent" max="1"></progress>
   </div>
 </template>
@@ -80,6 +90,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useEditorStore } from '@/store/editor'
 import { useNoticeStore } from '@/store/notice'
 import { formatDuration } from '@/utils/time'
+import { isTauriRuntime } from '@/utils/tauriBackend'
 import { runVideoExportInRenderWindow, type ExportProgress } from '@/core/videoExport/exportCoordinator'
 
 const props = defineProps<{
@@ -92,6 +103,8 @@ const emit = defineEmits<{
 
 const store = useEditorStore()
 const notice = useNoticeStore()
+const nativeRuntime = isTauriRuntime()
+const effectiveUseWebgl = computed(() => (nativeRuntime ? store.useWebglVideoExport : true))
 const dialogRoot = ref<HTMLElement | null>(null)
 const dialogPosition = ref<{ left: number; top: number } | null>(null)
 const dialogPositionStyle: any = computed(() => dialogPosition.value
@@ -134,6 +147,15 @@ const estimatedFinishText = computed(() => {
   if (completedFrames >= totalFrames || averageFrameMs.value === null) return '即将完成'
   const remainingMs = averageFrameMs.value * (totalFrames - completedFrames)
   return formatDuration(remainingMs)
+})
+const renderModeHint = computed(() => {
+  if (!nativeRuntime) {
+    return '网页版通过 WebGL + WebCodecs 离线渲染，导出完成后将直接写入所选文件或触发浏览器下载。'
+  }
+  if (effectiveUseWebgl.value) {
+    return '已开启 WebGL 离屏渲染（默认开启，速度快数十倍；极小字号文字与预览的细微字距可能略有差异）。'
+  }
+  return '已关闭 WebGL：将使用独立桌面渲染窗口逐帧截图（所见即所得），但耗时将大幅增加数十倍。'
 })
 const outputHint = computed(() => store.mediaUrl
   ? 'MP4 / H.264，默认使用工程画布尺寸并保留源视频音轨；输出宽高跟随工程比例。'
@@ -192,10 +214,15 @@ function stopDialogDrag(event?: PointerEvent) {
   window.removeEventListener('pointercancel', stopDialogDrag)
 }
 
+function onUseWebglChange(event: Event) {
+  if (!nativeRuntime) return
+  store.setUseWebglVideoExport((event.target as HTMLInputElement).checked)
+}
+
 async function startExport() {
   if (busy.value) return
   errorMessage.value = ''
-  if (store.mediaUrl && !store.mediaFilePath) {
+  if (nativeRuntime && !effectiveUseWebgl.value && store.mediaUrl && !store.mediaFilePath) {
     errorMessage.value = '独立渲染窗口需要本地媒体文件路径，请从本地文件重新导入视频后再导出。'
     return
   }
@@ -238,14 +265,18 @@ async function startExport() {
       mediaUrl: store.mediaUrl,
       mediaFilePath: store.mediaUrl ? store.mediaFilePath : '',
       mediaDuration: store.mediaDuration,
-      danmakus: store.danmakus
+      danmakus: store.danmakus,
+      useWebgl: effectiveUseWebgl.value
     }, abortController.value.signal, (value) => {
       progress.value = value
       if (value.stage === 'preparing' && renderStartedAt === 0) startRenderTimer()
     })
 
     if (!result.canceledByUser) {
-      notice.alert(`视频导出完成：${result.path} 耗时：${elapsedTimeText.value}`, 'success', '视频导出成功', result)
+      const doneMessage = result.delivery === 'download'
+        ? `视频导出完成，已触发浏览器下载：${result.path} 耗时：${elapsedTimeText.value}`
+        : `视频导出完成：${result.path} 耗时：${elapsedTimeText.value}`
+      notice.alert(doneMessage, 'success', '视频导出成功', result)
       emit('update:visible', false)
     }
   } catch (error) {
@@ -386,6 +417,28 @@ select {
   border-radius: 3px;
   background: #151617;
   color: #eee;
+}
+
+.checkbox-field {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.checkbox-field.disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.checkbox-field input[type='checkbox'] {
+  width: auto;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  accent-color: #66aaff;
+  cursor: inherit;
 }
 
 .output-hint,

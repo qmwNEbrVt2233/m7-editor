@@ -14,6 +14,7 @@ import {
   type DanmakuSpriteSpec,
 } from './danmakuRenderer'
 import type { DirectExportSpritePayload } from './directExportSession'
+import type { DirectExportOutputSink, ExportOutputDelivery } from './outputSink'
 import type { ExportQuality } from './quality'
 
 export type DirectExportJob = {
@@ -28,7 +29,8 @@ export type DirectExportJob = {
   mediaDuration: number
   mediaUrl: string
   danmakus: DanmakuItem[]
-  outputPath: string
+  outputPath?: string
+  outputSink?: DirectExportOutputSink
 }
 
 export type DirectExportProgress = {
@@ -40,7 +42,7 @@ export type DirectExportProgress = {
 }
 
 export type DirectExportAttemptResult =
-  | { status: 'completed'; path: string; totalFrames: number }
+  | { status: 'completed'; path: string; delivery: ExportOutputDelivery; totalFrames: number }
   | { status: 'fallback'; reason: string }
 
 type WorkerIncomingEvent =
@@ -71,6 +73,60 @@ const MAIN_THREAD_WEBGL_ELIGIBLE_FALLBACKS = new Set([
   'worker-webgl2-unavailable',
   'webkit-videoframe-offscreen-unsupported',
 ])
+
+function createTauriOutputSink(outputPath: string): DirectExportOutputSink {
+  return {
+    displayPath: outputPath,
+    delivery: 'file',
+    start: () => startVideoExportFile(outputPath),
+    writeChunk: (position, bytes) => writeVideoExportChunk(outputPath, position, bytes),
+    finish: (fileSize) => finishVideoExportFile(outputPath, fileSize),
+    cancel: () => cancelVideoExportFile(outputPath),
+  }
+}
+
+function createQueuedSinkWriter(
+  sink: DirectExportOutputSink,
+  onWriteError: (error: unknown) => void
+) {
+  let fileStarted = false
+  let fileSize = 0
+  let finished = false
+  let writeChain: Promise<void> = Promise.resolve()
+
+  return {
+    get displayPath() {
+      return sink.displayPath
+    },
+    get delivery() {
+      return sink.delivery
+    },
+    get isFinished() {
+      return finished
+    },
+    start() {
+      fileStarted = true
+      writeChain = writeChain.then(() => sink.start())
+      writeChain.catch(onWriteError)
+    },
+    write(position: number, bytes: Uint8Array<ArrayBuffer>) {
+      fileSize = Math.max(fileSize, position + bytes.byteLength)
+      writeChain = writeChain.then(() => sink.writeChunk(position, bytes))
+      writeChain.catch(onWriteError)
+    },
+    async finish() {
+      await writeChain
+      await sink.finish(fileSize)
+      finished = true
+    },
+    async cleanup() {
+      await writeChain.catch(() => undefined)
+      if (fileStarted && !finished) {
+        await sink.cancel().catch(() => undefined)
+      }
+    },
+  }
+}
 
 function makeAbortError() {
   return new DOMException('视频导出已取消', 'AbortError')
@@ -137,6 +193,7 @@ async function rasterizeSpriteBatch(
 
 async function runWorkerDirectExport(
   job: DirectExportJob,
+  sink: DirectExportOutputSink,
   totalFrames: number,
   signal: AbortSignal,
   onProgress: (progress: DirectExportProgress) => void
@@ -149,10 +206,8 @@ async function runWorkerDirectExport(
   const worker = new Worker(new URL('./videoEncoder.worker.ts', import.meta.url), { type: 'module' })
   let rasterizer: DanmakuSpriteRasterizer | null = null
 
-  let fileStarted = false
-  let fileSize = 0
-  let finished = false
-  let writeChain: Promise<void> = Promise.resolve()
+  let notifyWriteError = (_error: unknown) => {}
+  const writer = createQueuedSinkWriter(sink, (error) => notifyWriteError(error))
   let spriteChain: Promise<void> = Promise.resolve()
   const abortController = new AbortController()
   let abortHandler: (() => void) | null = null
@@ -170,6 +225,7 @@ async function runWorkerDirectExport(
         settled = true
         reject(err)
       }
+      notifyWriteError = settleReject
 
       abortHandler = () => {
         abortController.abort()
@@ -199,18 +255,12 @@ async function runWorkerDirectExport(
         }
 
         if (msg.type === 'direct-ready') {
-          fileStarted = true
-          writeChain = writeChain.then(() => startVideoExportFile(job.outputPath))
-          writeChain.catch((error) => settleReject(error))
+          writer.start()
           return
         }
 
         if (msg.type === 'chunk') {
-          const bytes = new Uint8Array(msg.data)
-          const position = msg.position ?? 0
-          fileSize = Math.max(fileSize, position + bytes.byteLength)
-          writeChain = writeChain.then(() => writeVideoExportChunk(job.outputPath, position, bytes))
-          writeChain.catch((error) => settleReject(error))
+          writer.write(msg.position ?? 0, new Uint8Array(msg.data))
           return
         }
 
@@ -278,11 +328,15 @@ async function runWorkerDirectExport(
         }
 
         if (msg.type === 'complete') {
-          writeChain
-            .then(() => finishVideoExportFile(job.outputPath, fileSize))
+          writer
+            .finish()
             .then(() => {
-              finished = true
-              settleResolve({ status: 'completed', path: job.outputPath, totalFrames })
+              settleResolve({
+                status: 'completed',
+                path: writer.displayPath,
+                delivery: writer.delivery,
+                totalFrames,
+              })
             })
             .catch((error) => settleReject(error))
           return
@@ -319,10 +373,7 @@ async function runWorkerDirectExport(
     }
     abortController.abort()
     worker.terminate()
-    await writeChain.catch(() => undefined)
-    if (fileStarted && !finished) {
-      await cancelVideoExportFile(job.outputPath).catch(() => undefined)
-    }
+    await writer.cleanup()
   }
 }
 
@@ -333,6 +384,7 @@ async function runWorkerDirectExport(
  */
 async function runMainThreadWebGLDirectExport(
   job: DirectExportJob,
+  sink: DirectExportOutputSink,
   totalFrames: number,
   signal: AbortSignal,
   onProgress: (progress: DirectExportProgress) => void
@@ -368,10 +420,8 @@ async function runMainThreadWebGLDirectExport(
   let videoDurationSec = Math.max(0, job.mediaDuration)
 
   let worker: Worker | null = null
-  let fileStarted = false
-  let finished = false
-  let fileSize = 0
-  let writeChain: Promise<void> = Promise.resolve()
+  let notifyWriteError = (_err: unknown) => {}
+  const writer = createQueuedSinkWriter(sink, (err) => notifyWriteError(err))
   let onAbortMain: (() => void) | null = null
 
   try {
@@ -441,6 +491,7 @@ async function runMainThreadWebGLDirectExport(
       }
       frameWaiters.clear()
     }
+    notifyWriteError = failAllWaiters
 
     onAbortMain = () => {
       worker?.postMessage({ type: 'cancel' })
@@ -456,16 +507,10 @@ async function runMainThreadWebGLDirectExport(
     worker.onmessage = (event: MessageEvent<WorkerIncomingEvent>) => {
       const msg = event.data
       if (msg.type === 'ready') {
-        fileStarted = true
-        writeChain = writeChain.then(() => startVideoExportFile(job.outputPath))
-        writeChain.catch((err) => failAllWaiters(err))
+        writer.start()
         readyResolve()
       } else if (msg.type === 'chunk') {
-        const bytes = new Uint8Array(msg.data)
-        const position = msg.position ?? 0
-        fileSize = Math.max(fileSize, position + bytes.byteLength)
-        writeChain = writeChain.then(() => writeVideoExportChunk(job.outputPath, position, bytes))
-        writeChain.catch((err) => failAllWaiters(err))
+        writer.write(msg.position ?? 0, new Uint8Array(msg.data))
       } else if (msg.type === 'frame-added') {
         const waiter = frameWaiters.get(msg.index)
         if (waiter) {
@@ -597,10 +642,13 @@ async function runMainThreadWebGLDirectExport(
     })
     worker.postMessage({ type: 'finish' })
     await completePromise
-    await writeChain
-    await finishVideoExportFile(job.outputPath, fileSize)
-    finished = true
-    return { status: 'completed', path: job.outputPath, totalFrames }
+    await writer.finish()
+    return {
+      status: 'completed',
+      path: writer.displayPath,
+      delivery: writer.delivery,
+      totalFrames,
+    }
   } finally {
     if (onAbortMain) {
       signal.removeEventListener('abort', onAbortMain)
@@ -619,15 +667,12 @@ async function runMainThreadWebGLDirectExport(
     }
     compositor.dispose()
     if (worker) {
-      if (!finished) {
+      if (!writer.isFinished) {
         worker.postMessage({ type: 'cancel' })
       }
       worker.terminate()
     }
-    await writeChain.catch(() => undefined)
-    if (fileStarted && !finished) {
-      await cancelVideoExportFile(job.outputPath).catch(() => undefined)
-    }
+    await writer.cleanup()
   }
 }
 
@@ -642,6 +687,11 @@ export async function tryRunDirectVideoExport(
 ): Promise<DirectExportAttemptResult> {
   if (typeof Worker === 'undefined' || typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
     return { status: 'fallback', reason: 'webcodecs-or-worker-unavailable' }
+  }
+
+  const sink = job.outputSink ?? (job.outputPath ? createTauriOutputSink(job.outputPath) : null)
+  if (!sink) {
+    throw new Error('缺少视频导出输出目标')
   }
 
   const durationMs = Math.max(1, job.endMs - job.startMs)
@@ -660,13 +710,13 @@ export async function tryRunDirectVideoExport(
     throw makeAbortError()
   }
 
-  const workerResult = await runWorkerDirectExport(job, totalFrames, signal, onProgress)
+  const workerResult = await runWorkerDirectExport(job, sink, totalFrames, signal, onProgress)
   if (workerResult.status === 'completed') {
     return workerResult
   }
 
   if (MAIN_THREAD_WEBGL_ELIGIBLE_FALLBACKS.has(workerResult.reason)) {
-    return runMainThreadWebGLDirectExport(job, totalFrames, signal, onProgress)
+    return runMainThreadWebGLDirectExport(job, sink, totalFrames, signal, onProgress)
   }
 
   return workerResult

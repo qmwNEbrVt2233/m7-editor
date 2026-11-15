@@ -197,18 +197,22 @@ Codex 会负责启动 stdio 服务；不要先在终端单独运行 `npm run --s
 │   │       server.ts                         #stdio MCP服务
 │   │
 │   ├───core
-│   │   |   converter.ts                      #解析xml
-│   │   |   danmaku.ts                        #弹幕数据结构
-│   │   |   danmakuMeasurement.ts             #界面文字测量适配
-│   │   |   editorApi.ts                      #统一编辑事务API
-│   │   |   history.ts                        #快照管理
-│   │   |   player.ts                         #播放器播放状态
-│   │   |   project.ts                        #工程文件结构
-|   |   │
-|   |   └───videoExport
-|   |           exportCoordinator.ts          #视频导出协调器
-|   |           quality.ts                    #视频质量参数
-|   |           videoEncoder.worker.ts        #编码器
+│   │   │   converter.ts                      #解析XML弹幕
+│   │   │   danmaku.ts                        #弹幕数据结构
+│   │   │   danmakuMeasurement.ts             #界面文字测量适配
+│   │   │   editorApi.ts                      #统一编辑事务API
+│   │   │   history.ts                        #快照管理
+│   │   │   player.ts                         #播放器播放状态
+│   │   │
+│   │   └───videoExport
+│   │           danmakuRenderer.ts            #视频导出的弹幕索引与WebGL渲染
+│   │           directExportHost.ts           #直接导出任务与Worker协调
+│   │           directExportSession.ts        #Worker端直接解码、渲染与编码
+│   │           exportCoordinator.ts          #视频导出流程协调与回退
+│   │           outputSink.ts                 #文件写入及浏览器下载输出
+│   │           quality.ts                    #视频质量与编码参数
+│   │           streamTargetWriter.ts         #合并流式输出分块
+│   │           videoEncoder.worker.ts        #视频编码Worker
 │   │
 │   ├───icon                                  #工具栏图标
 │   │       ...
@@ -218,6 +222,7 @@ Codex 会负责启动 stdio 服务；不要先在终端单独运行 `npm run --s
 │   │
 │   ├───store
 │   │       editor.ts                         #编辑器状态管理
+│   │       help.ts                           #帮助文档导航与状态管理
 │   │       notice.ts                         #日志/提醒状态管理
 │   │
 │   └───utils

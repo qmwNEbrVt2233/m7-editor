@@ -773,20 +773,21 @@ const sectionContents: Record<string, string> = {
 
   'video-export': `
     <subtitle>视频导出</subtitle>
-    <p>在顶边栏点击<code>导出视频</code>打开视频导出面板</p>
+    <p>在顶边栏点击<code>导出视频</code>打开视频导出面板（支持桌面应用与兼容 WebCodecs / WebGL2 的现代浏览器网页版）。</p>
     <h3>可用功能：</h3>
     <ul>
-      <li>开始/结束 时间，选择导出范围</li>
-      <li>视频宽高，跟随共工程比例</li>
-      <li>帧数，支持24、30、60、120</li>
-      <li>质量，压缩程度（目标比特率）</li>
+      <li>开始/结束时间，选择导出范围</li>
+      <li>视频宽高，跟随工程画布比例</li>
+      <li>帧数，支持 24、30、60、120</li>
+      <li>画质，压缩程度（目标比特率）</li>
+      <li>使用 WebGL 渲染（默认开启，写入全局配置）：离屏极速渲染并支持后台导出；桌面版取消勾选可切换为独立渲染窗口以实现“所见即所得”的字体排版一致性，但耗时显著增加</li>
     </ul>
     <h3>流程：</h3>
     <ol>
-      <li>设置导出参数和文件输出路径</li>
-      <li>点击导出，此时复制弹幕副本，继续编辑或切换工程不会影响导出（macOS不支持后台渲染，导出时渲染窗口必须处于直接可见范围内）</li>
-      <li>等待完成，可关闭导出面板，进度会继续显示在右下角</li>
-      <li>完成后文件会输出到选中的路径</li>
+      <li>设置导出参数和文件输出位置（桌面版或支持文件选择器的浏览器直接选定保存路径；其他浏览器完成后触发 MP4 下载）</li>
+      <li>点击开始导出，此时复制弹幕快照，继续编辑或切换工程不会影响当前导出（若在桌面版关闭 WebGL 使用独立渲染窗口，macOS 需保持渲染窗口处于直接可见范围内）</li>
+      <li>等待完成，可隐藏导出面板，进度会继续显示在右下角</li>
+      <li>完成后文件会输出到选中的路径或自动触发下载</li>
     </ol>
   `,
 
@@ -799,7 +800,7 @@ const sectionContents: Record<string, string> = {
       <li>使用 <kbd>Ctrl + S</kbd> 保存，使用 <kbd>Ctrl + shift + S</kbd> 保存时同时备份</li>
       <li>完成后选择你需要的预处理选项并导出 XML</li>
       <li>使用 <a href="https://github.com/qmwNEbrVt2233/DMsender_CLI/releases" target="_blank">DMsender_CLI</a> 或 <a href="https://github.com/MikuFan039/DMSenderAPP/releases" target="_blank">弹幕发射场</a> 或其他 XML 发送工具将弹幕上传至 Bilibili</li>
-      <li>打开录屏模式（<kbd>Ctrl + Alt + Space</kbd>）或使用导出视频功能（仅桌面应用）</li>
+      <li>打开录屏模式（<kbd>Ctrl + Alt + Space</kbd>）或使用导出视频功能</li>
     </ol>
   `,
 

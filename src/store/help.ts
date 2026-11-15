@@ -62,8 +62,7 @@ export const docSections: DocSection[] = [
   },
   {
     id: 'video-export',
-    title: '视频导出',
-    tauriOnly: true
+    title: '视频导出'
   },
   {
     id: 'tips',
