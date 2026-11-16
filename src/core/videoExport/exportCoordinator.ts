@@ -54,6 +54,7 @@ export type ExportJob = {
   mediaFilePath: string
   danmakus: DanmakuItem[]
   outputPath?: string
+  defaultOutputFilename?: string
   useWebgl?: boolean
   frameCapture?: { timeMs: number }
 }
@@ -388,6 +389,8 @@ export async function runVideoExport(
   onProgress({ completedFrames: 0, totalFrames: 0, percent: 0, stage: 'preparing' })
   const h264Available = await checkH264EncodeAvailable(job)
 
+  const suggestedFilename = job.defaultOutputFilename || formatDefaultVideoExportFilename()
+
   if (!h264Available) {
     if (job.mediaUrl && !job.mediaFilePath) {
       throw new Error('此 WebView 不支持 H.264 编码，且 FFmpeg 后备导出需要本地源视频路径。')
@@ -395,12 +398,12 @@ export async function runVideoExport(
     if (!await canUseFfmpegVideoEncoder()) {
       throw new Error('此 WebView 不支持 H.264 编码，也没有可用的 FFmpeg 后备程序。')
     }
-    const fallbackPath = job.outputPath ?? await chooseVideoExportPath()
+    const fallbackPath = job.outputPath ?? await chooseVideoExportPath(suggestedFilename)
     if (!fallbackPath) return { canceledByUser: true }
     return runFfmpegFallback(job, stage, signal, onProgress, fallbackPath, totalFrames)
   }
 
-  const path = job.outputPath ?? await chooseVideoExportPath()
+  const path = job.outputPath ?? await chooseVideoExportPath(suggestedFilename)
   if (!path) return { canceledByUser: true }
 
   const snapshotDanmakus = copySnapshot(job.danmakus)
@@ -598,6 +601,8 @@ export async function runVideoExportInRenderWindow(
   validateExportJob(jobSnapshot)
   const useWebgl = jobSnapshot.useWebgl !== false
 
+  const suggestedFilename = jobSnapshot.defaultOutputFilename || formatDefaultVideoExportFilename()
+
   if (!isTauriRuntime()) {
     if (!useWebgl) {
       throw new Error('网页版不支持独立渲染窗口模式，请开启 WebGL 渲染后重试')
@@ -613,7 +618,7 @@ export async function runVideoExportInRenderWindow(
 
     const outputSink = jobSnapshot.outputPath
       ? createBlobDownloadOutputSink(jobSnapshot.outputPath)
-      : await chooseBrowserExportOutputSink(formatDefaultVideoExportFilename())
+      : await chooseBrowserExportOutputSink(suggestedFilename)
     if (!outputSink) return { canceledByUser: true as const }
     if (signal.aborted) throw makeAbortError()
 
@@ -634,7 +639,7 @@ export async function runVideoExportInRenderWindow(
     throw formatBrowserDirectExportUnsupportedError(directResult.reason)
   }
 
-  const outputPath = jobSnapshot.outputPath ?? await chooseVideoExportPath()
+  const outputPath = jobSnapshot.outputPath ?? await chooseVideoExportPath(suggestedFilename)
   if (!outputPath) return { canceledByUser: true as const }
   if (signal.aborted) throw makeAbortError()
 

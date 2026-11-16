@@ -11,7 +11,10 @@ import {
   runVideoExportInRenderWindow,
   type ExportProgress
 } from '@/core/videoExport/exportCoordinator'
-import type { ExportOutputDelivery } from '@/core/videoExport/outputSink'
+import {
+  resolveDefaultVideoExportFilename,
+  type ExportOutputDelivery,
+} from '@/core/videoExport/outputSink'
 import type { ExportQuality } from '@/core/videoExport/quality'
 import { formatDuration } from '@/utils/time'
 import {
@@ -1160,6 +1163,10 @@ export const useEditorStore = defineStore('editor', {
       notice.log('开始导出视频', 'info')
 
       const mediaDuration = this.mediaUrl ? this.getCachedMediaDurationMs() : 0
+      const defaultOutputFilename = resolveDefaultVideoExportFilename(
+        this.projectMode,
+        this.activeFolderProjectConfig?.name
+      )
       let exportPromise: ReturnType<typeof runVideoExportInRenderWindow>
       try {
         exportPromise = runVideoExportInRenderWindow({
@@ -1176,6 +1183,7 @@ export const useEditorStore = defineStore('editor', {
           mediaDuration,
           danmakus: this.danmakus,
           outputPath: spec.outputPath,
+          defaultOutputFilename,
           useWebgl: spec.useWebgl
         }, abortController.signal, (progress) => {
           if (activeVideoExportRuntime?.jobId !== jobId) return

@@ -79,8 +79,8 @@
                 <tr><td>Ctrl + ArrowRight</td><td>向右平移时间轴一半视图</td></tr>
                 <tr><td>Ctrl + Alt + ArrowLeft</td><td>向左平移时间轴 30 秒</td></tr>
                 <tr><td>Ctrl + Alt + ArrowRight</td><td>向右平移时间轴 30 秒</td></tr>
-                <tr><td>Ctrl + -</td><td>缩小时间轴视图</td></tr>
-                <tr><td>Ctrl + =</td><td>放大时间轴视图</td></tr>
+                <tr><td>Ctrl + - / Alt + 滚轮</td><td>缩小时间轴视图</td></tr>
+                <tr><td>Ctrl + = / Alt + 滚轮</td><td>放大时间轴视图</td></tr>
                 <tr><td>I</td><td>切换选中弹幕时是否高亮弹幕块背景</td></tr>
                 <tr><td>O</td><td>切换时间轴轨道透明度</td></tr>
                 <tr><td>P</td><td>按下时隐藏轨道</td></tr>

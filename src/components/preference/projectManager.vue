@@ -223,7 +223,9 @@ const importFromFile = ref(false)
 const importedProjectPath = ref('')
 const importedProjectData = ref<any>(null)
 
-const projects = computed<FolderProjectSummary[]>(() => fileSystemState.value?.projects ?? [])
+const projects = computed<FolderProjectSummary[]>(() =>
+  [...(fileSystemState.value?.projects ?? [])].sort((a, b) => b.config.lastChangeAt - a.config.lastChangeAt)
+)
 const canCreateProject = computed(() => {
   const baseValid = Boolean(projectName.value.trim() && parentDir.value.trim() && !pathCheck.value?.exists)
   if (importFromFile.value) {

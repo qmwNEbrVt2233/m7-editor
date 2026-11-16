@@ -2518,9 +2518,39 @@ unsafe fn stream_to_bytes(
     Ok(bytes)
 }
 
+fn normalize_video_export_default_filename(default_file_name: Option<&str>) -> String {
+    let Some(raw) = default_file_name else {
+        return "m7-export.mp4".to_string();
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "m7-export.mp4".to_string();
+    }
+    let stem = match trimmed.as_bytes() {
+        bytes if bytes.len() >= 4 && bytes[bytes.len() - 4..].eq_ignore_ascii_case(b".mp4") => {
+            &trimmed[..trimmed.len() - 4]
+        }
+        _ => trimmed,
+    };
+    let sanitized: String = stem
+        .chars()
+        .map(|character| match character {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            character if character.is_control() => '_',
+            character => character,
+        })
+        .collect();
+    let clean_stem = sanitized.trim().trim_matches('.');
+    if clean_stem.is_empty() {
+        "m7-export.mp4".to_string()
+    } else {
+        format!("{clean_stem}.mp4")
+    }
+}
+
 #[cfg(windows)]
-fn save_video_file_dialog() -> Result<Option<PathBuf>, String> {
-    use windows::core::w;
+fn save_video_file_dialog(default_file_name: &str) -> Result<Option<PathBuf>, String> {
+    use windows::core::{w, HSTRING};
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER,
         COINIT_APARTMENTTHREADED,
@@ -2544,6 +2574,7 @@ fn save_video_file_dialog() -> Result<Option<PathBuf>, String> {
                 pszName: w!("MP4 视频"),
                 pszSpec: w!("*.mp4"),
             }];
+            let default_name = HSTRING::from(default_file_name);
             dialog
                 .SetTitle(w!("导出视频"))
                 .map_err(|error| format!("设置保存对话框标题失败: {error}"))?;
@@ -2554,7 +2585,7 @@ fn save_video_file_dialog() -> Result<Option<PathBuf>, String> {
                 .SetDefaultExtension(w!("mp4"))
                 .map_err(|error| format!("设置 MP4 扩展名失败: {error}"))?;
             dialog
-                .SetFileName(w!("m7-export.mp4"))
+                .SetFileName(&default_name)
                 .map_err(|error| format!("设置默认文件名失败: {error}"))?;
 
             if let Err(error) = dialog.Show(None) {
@@ -2583,7 +2614,7 @@ fn save_video_file_dialog() -> Result<Option<PathBuf>, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn save_video_file_dialog() -> Result<Option<PathBuf>, String> {
+fn save_video_file_dialog(default_file_name: &str) -> Result<Option<PathBuf>, String> {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSModalResponseOK, NSSavePanel};
     use objc2_foundation::NSString;
@@ -2595,7 +2626,7 @@ fn save_video_file_dialog() -> Result<Option<PathBuf>, String> {
     let panel = NSSavePanel::savePanel(mtm);
     let title = NSString::from_str("导出视频");
     panel.setTitle(Some(&title));
-    let filename = NSString::from_str("m7-export.mp4");
+    let filename = NSString::from_str(default_file_name);
     panel.setNameFieldStringValue(&filename);
 
     if panel.runModal() == NSModalResponseOK {
@@ -2610,14 +2641,15 @@ fn save_video_file_dialog() -> Result<Option<PathBuf>, String> {
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-fn save_video_file_dialog() -> Result<Option<PathBuf>, String> {
+fn save_video_file_dialog(default_file_name: &str) -> Result<Option<PathBuf>, String> {
+    let zenity_filename = format!("--filename={default_file_name}");
     let zenity = Command::new("zenity")
         .args([
             "--file-selection",
             "--save",
             "--confirm-overwrite",
             "--title=导出视频",
-            "--filename=m7-export.mp4",
+            &zenity_filename,
             "--file-filter=MP4 视频 | *.mp4",
         ])
         .output();
@@ -2632,7 +2664,7 @@ fn save_video_file_dialog() -> Result<Option<PathBuf>, String> {
     }
 
     let kdialog = Command::new("kdialog")
-        .args(["--getsavefilename", "m7-export.mp4", "*.mp4|MP4 视频"])
+        .args(["--getsavefilename", default_file_name, "*.mp4|MP4 视频"])
         .output()
         .map_err(|error| format!("未找到 zenity/kdialog 文件对话框: {error}"))?;
 
@@ -2644,12 +2676,18 @@ fn save_video_file_dialog() -> Result<Option<PathBuf>, String> {
 }
 
 #[tauri::command]
-async fn choose_video_export_path(app: AppHandle) -> Result<Option<String>, String> {
+async fn choose_video_export_path(
+    app: AppHandle,
+    default_file_name: Option<String>,
+) -> Result<Option<String>, String> {
+    let resolved_default_name =
+        normalize_video_export_default_filename(default_file_name.as_deref());
+
     #[cfg(target_os = "macos")]
     let selected: Option<PathBuf> = {
         let (sender, receiver) = mpsc::sync_channel(1);
         app.run_on_main_thread(move || {
-            let _ = sender.send(save_video_file_dialog());
+            let _ = sender.send(save_video_file_dialog(&resolved_default_name));
         })
         .map_err(|error| format!("调度 macOS 视频保存对话框失败: {error}"))?;
 
@@ -2666,7 +2704,7 @@ async fn choose_video_export_path(app: AppHandle) -> Result<Option<String>, Stri
     #[cfg(not(target_os = "macos"))]
     let selected: Option<PathBuf> = {
         let _ = app;
-        save_video_file_dialog()?
+        save_video_file_dialog(&resolved_default_name)?
     };
 
     Ok(selected.map(|path| path.to_string_lossy().into_owned()))
@@ -3366,5 +3404,15 @@ mod tests {
         assert!(prepare_video_export_path_inner(&dir_named_mp4.to_string_lossy()).is_err());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn normalize_video_export_default_filename_handles_project_names_and_fallbacks() {
+        assert_eq!(normalize_video_export_default_filename(None), "m7-export.mp4");
+        assert_eq!(normalize_video_export_default_filename(Some("   ")), "m7-export.mp4");
+        assert_eq!(normalize_video_export_default_filename(Some("我的工程")), "我的工程.mp4");
+        assert_eq!(normalize_video_export_default_filename(Some("demo.MP4")), "demo.mp4");
+        assert_eq!(normalize_video_export_default_filename(Some("bad:name/v1")), "bad_name_v1.mp4");
+        assert_eq!(normalize_video_export_default_filename(Some("...mp4")), "m7-export.mp4");
     }
 }

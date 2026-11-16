@@ -798,13 +798,19 @@ function ensurePlayheadVisible() {
 }
 
 // ===== 缩放功能 =====
-function handleZoom(e: KeyboardEvent) {
+function setScaleAt(newScale: number, anchorTime: number, anchorX: number) {
   const minScale = 0.01 // 最小缩放 1ms = 0.01px
   const maxScale = 3 // 最大缩放 1ms = 3px
+  newScale = Math.max(minScale, Math.min(maxScale, newScale))
+
+  scale.value = newScale
+  offset.value = Math.max(0, anchorTime - anchorX / newScale)
+}
+
+function handleZoom(e: KeyboardEvent) {
   const zoomStep = 1.2
-  
   let newScale = scale.value
-  
+
   if ((e.ctrlKey || e.metaKey) && (e.key === '-' || e.key === '_')) {
     e.preventDefault()
     newScale = scale.value / zoomStep
@@ -814,19 +820,28 @@ function handleZoom(e: KeyboardEvent) {
   } else {
     return
   }
-  
-  // 限制缩放范围
-  newScale = Math.max(minScale, Math.min(maxScale, newScale))
-  
+
   // 以播放头位置缩放（保持播放头位置不变）
   const playheadTime = store.currentTime
   const oldPlayheadX = (playheadTime - offset.value) * scale.value
-  
-  scale.value = newScale
-  
-  // 调整offset使播放头保持在同一位置，并限制最小值为0
-  let newOffset = playheadTime - oldPlayheadX / newScale
-  offset.value = Math.max(0, newOffset)
+  setScaleAt(newScale, playheadTime, oldPlayheadX)
+}
+
+function handleWheelZoom(e: WheelEvent) {
+  if (!e.altKey) {
+    return
+  }
+
+  e.preventDefault()
+  if (e.deltaY === 0) {
+    return
+  }
+
+  const playheadTime = store.currentTime
+  const playheadX = (playheadTime - offset.value) * scale.value
+  const zoomStep = e.deltaY < 0 ? 1.2 : 1 / 1.2
+
+  setScaleAt(scale.value * zoomStep, playheadTime, playheadX)
 }
 
 // ===== 平移功能 =====
@@ -1133,6 +1148,7 @@ onMounted(() => {
   window.addEventListener('mouseup', onMouseUp)
   window.addEventListener('keydown', handleKeyboardShortcuts)
   window.addEventListener('keyup', handleKeyboardUp)
+  window.addEventListener('wheel', handleWheelZoom, { passive: false })
   window.addEventListener('resize', handleWindowResize)
   // 初始化时确保第一次垂直范围正确
   if (tracksRef.value) {
@@ -1154,6 +1170,7 @@ onUnmounted(() => {
   window.removeEventListener('mouseup', onMouseUp)
   window.removeEventListener('keydown', handleKeyboardShortcuts)
   window.removeEventListener('keyup', handleKeyboardUp)
+  window.removeEventListener('wheel', handleWheelZoom)
   window.removeEventListener('resize', handleWindowResize)
   destroySpectrogramWaveSurfer()
   resetSpectrogramData()

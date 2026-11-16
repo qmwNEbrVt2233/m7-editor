@@ -113,8 +113,8 @@ export async function captureWebviewSnapshot(): Promise<Uint8Array> {
   throw new Error('Tauri 截图桥接返回了无效数据')
 }
 
-export async function chooseVideoExportPath(): Promise<string | null> {
-  return invokeTauri<string | null>('choose_video_export_path')
+export async function chooseVideoExportPath(defaultFileName?: string): Promise<string | null> {
+  return invokeTauri<string | null>('choose_video_export_path', { defaultFileName })
 }
 
 export async function prepareVideoExportPath(path: string): Promise<string> {

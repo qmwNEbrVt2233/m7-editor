@@ -161,9 +161,32 @@ export function formatDefaultVideoExportFilename(now = new Date()): string {
   return `m7-export-${stamp}.mp4`
 }
 
+function sanitizeVideoExportFilenameStem(name?: string | null): string {
+  if (typeof name !== 'string') return ''
+  const trimmed = name.trim()
+  if (!trimmed) return ''
+  const withoutExtension = trimmed.replace(/\.mp4$/i, '')
+  const sanitized = withoutExtension.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
+  return sanitized.replace(/^[.\s]+|[.\s]+$/g, '')
+}
+
+export function resolveDefaultVideoExportFilename(
+  projectMode: 'single' | 'folder' = 'single',
+  projectName?: string | null,
+  now = new Date()
+): string {
+  if (projectMode === 'folder') {
+    const stem = sanitizeVideoExportFilenameStem(projectName)
+    if (stem) {
+      return `${stem}.mp4`
+    }
+  }
+  return formatDefaultVideoExportFilename(now)
+}
+
 export function createFileSystemAccessOutputSink(
   handle: SaveFilePickerHandle,
-  fallbackName = 'm7-export.mp4'
+  fallbackName = formatDefaultVideoExportFilename()
 ): DirectExportOutputSink {
   let writable: SaveFilePickerWritable | null = null
 
