@@ -100,7 +100,7 @@ MCP 服务控制当前运行的桌面编辑器会话。它通过 stdio 与 MCP �
 2. 安装node.js
 3. 在解压目录运行 `npm install`
 4. 打开桌面应用并在解压目录运行协议检查，如果成功则说明您完成了将服务连接至 agent 应用的前置条件
-5. agent在使用时可能遇到各种问题，建议安装[danmaku-skill](https://github.com/qmwNEbrVt2233/danmaku-skill)中的`m7-editor_MCP`skill以达到流畅使用的效果，此仓库中配套的其他skill也可按需安装
+5. agent在使用时可能遇到各种问题，建议安装[danmaku-skill](https://github.com/qmwNEbrVt2233/danmaku-skill)中的`m7-editor-MCP`skill以达到流畅使用的效果，此仓库中配套的其他skill也可按需安装
 
 ## 本机检查
 
@@ -252,6 +252,14 @@ Codex 会负责启动 stdio 服务；不要先在终端单独运行 `npm run --s
 ```
 
 </details>
+
+# 相关项目
+
+- 一些工具脚本，用于解决一些在m7编辑器中难以处理的小问题：https://github.com/qmwNEbrVt2233/SVxml_.srt_.exo
+- 弹幕制作配套的skill，让AI丝滑使用此工具制作弹幕：https://github.com/qmwNEbrVt2233/danmaku-skill
+- 弹幕发送工具，最终上传时的稳定选择：https://github.com/qmwNEbrVt2233/DMsender_CLI
+- MCP服务源代码：[分支：MCP-server](https://github.com/qmwNEbrVt2233/m7-editor/tree/MCP-server)
+- 网页版部署代码：[分支：gh-pages](https://github.com/qmwNEbrVt2233/m7-editor/tree/gh-pages)
 
 # 联系作者
 

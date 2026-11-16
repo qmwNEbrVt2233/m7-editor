@@ -489,7 +489,7 @@ export const useEditorStore = defineStore('editor', {
     historyManager.recordSnapshot(saved?.danmakus || [], `加载工程(${(saved?.danmakus || []).length}条弹幕)`)
 
     return {
-      version: '1.11.0',
+      version: '1.12.0',
       InitializationPhase: isTauriRuntime(),
       showProjectManager: isTauriRuntime(),
       projectMode: 'single' as 'single' | 'folder',

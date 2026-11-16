@@ -226,7 +226,7 @@ function resolveOptionalPath(value?: string): string | undefined {
 }
 
 function createMcpServer() {
-  const server = new McpServer({ name: 'm7-editor', version: '1.11.0' }, {
+  const server = new McpServer({ name: 'm7-editor', version: '1.12.0' }, {
     capabilities: { tools: {} },
     instructions: '控制当前运行的 m7-editor 编辑会话。当 get_editor_state 返回 ready=false 时，可先调用工具打开或创建工程。字段、工具栏、弹幕创建/删除、播放头和画布设置最终统一通过 applyFieldUpdate 操作；普通编辑默认作用于当前选择。使用 create_generated_danmakus 按规则批量生成；get_frame 返回指定时间的图片内容，供视觉模型检查。export_video 异步/短等待导出 .mp4 视频（必填 outputPath，开始后锁定弹幕快照不阻塞继续编辑），配合 get_video_export_status 与 cancel_video_export 查询和取消。保存/备份仅支持文件夹工程。先用 list_history_snapshots 获取快照 ID，再查询详情。reload_app 会调用 window.location.reload() 清空内存历史快照与未保存状态，仅在需从本地更新工程信息时使用。'
   })
