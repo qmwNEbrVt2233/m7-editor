@@ -34,17 +34,29 @@
           <button
             class="template-create-button"
             type="button"
-            :disabled="store.selectedIds.length === 0"
+            :disabled="store.selectedIds.length === 0 || mutating"
             @click="createFromSelection"
           >
             <span>＋</span> 从选中弹幕创建
           </button>
+          <div v-if="store.danmakuTemplates.length > 0" class="template-search-row">
+            <input
+              v-model="searchQuery"
+              type="text"
+              class="template-search-input"
+              placeholder="搜索模板..."
+              aria-label="搜索模板"
+            />
+          </div>
           <div v-if="store.danmakuTemplates.length === 0" class="template-empty">
             暂无模板
           </div>
+          <div v-else-if="filteredTemplates.length === 0" class="template-empty">
+            未找到匹配的模板
+          </div>
           <div v-else class="template-list  have-scrollbar">
             <button
-              v-for="template in store.danmakuTemplates"
+              v-for="template in filteredTemplates"
               :key="template.name"
               class="template-list-item"
               :class="{ active: template.name === store.selectedDanmakuTemplateName }"
@@ -58,7 +70,10 @@
 
         <main v-if="selectedTemplate" class="template-editor">
           <label class="template-field">
-            <span>模板名称</span>
+            <div class="template-field-heading">
+              <span>模板名称</span>
+              <span v-if="!nameValidation.valid" class="invalid-hint">{{ nameValidation.message }}</span>
+            </div>
             <input v-model="editedName" type="text" maxlength="100" />
           </label>
 
@@ -76,12 +91,13 @@
           <div class="template-footer">
             <span class="template-status" :class="statusTone">{{ statusMessage }}</span>
             <div class="template-actions">
-              <button class="template-danger-button" type="button" @click="deleteSelected">删除</button>
-              <button class="template-secondary-button" type="button" @click="insertSelected">插入</button>
+              <button class="template-danger-button" type="button" :disabled="mutating" @click="deleteSelected">删除</button>
+              <button class="template-secondary-button" type="button" :disabled="!jsonValidation.valid" @click="formatEditedJson">格式化</button>
+              <button class="template-secondary-button" type="button" :disabled="mutating" @click="insertSelected">插入</button>
               <button
                 class="template-primary-button"
                 type="button"
-                :disabled="!jsonValidation.valid"
+                :disabled="mutating || !nameValidation.valid || !jsonValidation.valid"
                 @click="saveSelected"
               >保存</button>
             </div>
@@ -101,40 +117,116 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useEditorStore } from '@/store/editor'
 import { isTauriRuntime } from '@/utils/tauriBackend'
 import { useNoticeStore } from '@/store/notice'
+import { useHelpStore } from '@/store/help'
+import { normalizeColor } from '@/utils/validation'
 
 const store = useEditorStore()
 const notice = useNoticeStore()
+const help = useHelpStore()
 const statusMessage = ref('')
 const statusTone = ref<'success' | 'error'>('success')
 const editedName = ref('')
 const editedDanmakus = ref('[]')
+const searchQuery = ref('')
 const refreshing = ref(false)
+const mutating = ref(false)
+const loadedTemplateName = ref<string | null>(null)
 
 onMounted(() => window.addEventListener('keydown', handleTemplateShortcuts))
 onBeforeUnmount(() => window.removeEventListener('keydown', handleTemplateShortcuts))
 
-const jsonValidation = computed(() => {
-  try {
-    const danmakus: unknown = JSON.parse(editedDanmakus.value)
-    if (!Array.isArray(danmakus)) return { valid: false, message: '内容必须是弹幕数组' }
-    const valid = store.isValidDanmakuTemplateContent(danmakus)
-    return {
-      valid,
-      message: valid ? `${danmakus.length} 条弹幕格式有效` : '弹幕结构无效或内容为空'
-    }
-  } catch {
-    return { valid: false, message: 'JSON 格式错误' }
-  }
+const filteredTemplates = computed(() => {
+  const query = searchQuery.value.trim().toLocaleLowerCase()
+  if (!query) return store.danmakuTemplates
+  return store.danmakuTemplates.filter((template) =>
+    template.name.toLocaleLowerCase().includes(query)
+  )
 })
 
 const selectedTemplate = computed(() => store.danmakuTemplates.find(
   (template) => template.name === store.selectedDanmakuTemplateName
 ))
 
+function normalizeTemplateNameInput(name: string): string {
+  return name
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+    .trim()
+    .replace(/^\.+|\.+$/g, '')
+}
+
+const nameValidation = computed(() => {
+  const current = selectedTemplate.value
+  if (!current) return { valid: false, message: '未选择模板' }
+  const normalized = normalizeTemplateNameInput(editedName.value)
+  if (!normalized) {
+    return { valid: false, message: '模板名称不能为空或仅含非法字符' }
+  }
+  const duplicate = store.danmakuTemplates.some(
+    (item) => item.name === normalized && item.name !== current.name
+  )
+  if (duplicate) {
+    return { valid: false, message: '模板名称已存在' }
+  }
+  return { valid: true, message: '' }
+})
+
+function validateTemplateItems(danmakus: unknown[]): string | null {
+  for (let i = 0; i < danmakus.length; i++) {
+    const item = danmakus[i] as Record<string, any>
+    const idx = i + 1
+    if (!store.allowNegativeValues && item.startTime < 0) {
+      return `第 ${idx} 条弹幕 startTime 不能为负数`
+    }
+    if (item.layer < 0) {
+      return `第 ${idx} 条弹幕 layer 不能为负数`
+    }
+    if (item.content.size < 10 || item.content.size > 127) {
+      return `第 ${idx} 条弹幕字号必须在 10 ~ 127 之间`
+    }
+    if (!normalizeColor(item.content.color)) {
+      return `第 ${idx} 条弹幕颜色格式无效`
+    }
+    if (item.opacity.from < 0 || item.opacity.from > 1 || item.opacity.to < 0 || item.opacity.to > 1) {
+      return `第 ${idx} 条弹幕透明度必须在 0 ~ 1 之间`
+    }
+    if (item.animation.duration !== undefined && item.animation.duration <= 0) {
+      return `第 ${idx} 条弹幕生存时间 (duration) 必须大于 0`
+    }
+    if (item.animation.moveDuration < 0 || item.animation.delay < 0) {
+      return `第 ${idx} 条弹幕运动时间与延迟不能为负数`
+    }
+  }
+  return null
+}
+
+const jsonValidation = computed(() => {
+  try {
+    const danmakus: unknown = JSON.parse(editedDanmakus.value)
+    if (!Array.isArray(danmakus)) return { valid: false, message: '内容必须是弹幕数组' }
+    if (!store.isValidDanmakuTemplateContent(danmakus)) {
+      return { valid: false, message: '弹幕结构无效或内容为空' }
+    }
+    const detailError = validateTemplateItems(danmakus)
+    if (detailError) {
+      return { valid: false, message: detailError }
+    }
+    return {
+      valid: true,
+      message: `${danmakus.length} 条弹幕格式有效`
+    }
+  } catch {
+    return { valid: false, message: 'JSON 格式错误' }
+  }
+})
+
 watch(selectedTemplate, (template) => {
-  editedName.value = template?.name || ''
-  editedDanmakus.value = JSON.stringify(template?.danmakus || [], null, 2)
-  statusMessage.value = ''
+  const nextName = template?.name ?? null
+  if (nextName !== loadedTemplateName.value) {
+    loadedTemplateName.value = nextName
+    editedName.value = template?.name || ''
+    editedDanmakus.value = JSON.stringify(template?.danmakus || [], null, 2)
+  }
 }, { immediate: true })
 
 void store.loadDanmakuTemplates().catch((error) => showStatus(errorMessage(error), 'error'))
@@ -154,12 +246,21 @@ function close() {
 }
 
 function handleTemplateShortcuts(e: KeyboardEvent) {
-  if (!store.showTemplateManager || isTextEditingTarget(e.target)) return
+  if (!store.showTemplateManager || notice.isVisible || help.isVisible) return
+  if (e.isComposing || e.keyCode === 229 || isTextEditingTarget(e.target)) return
 
   const isCtrl = e.ctrlKey || e.metaKey
   const isAlt = e.altKey
   const isShift = e.shiftKey
   if (isCtrl || isAlt || isShift || e.repeat) return
+
+  if (
+    e.key === 'Enter' &&
+    e.target instanceof HTMLElement &&
+    e.target.closest('button:not(.template-list-item), a')
+  ) {
+    return
+  }
 
   const key = e.key.toLowerCase()
   const action = key === 'c' ? createFromSelection
@@ -180,13 +281,33 @@ function isTextEditingTarget(target: EventTarget | null): boolean {
 }
 
 function selectTemplate(name: string) {
+  statusMessage.value = ''
   store.selectDanmakuTemplate(name)
 }
 
+function formatEditedJson() {
+  try {
+    const danmakus: unknown = JSON.parse(editedDanmakus.value)
+    if (!Array.isArray(danmakus)) {
+      showStatus('内容必须是弹幕数组', 'error')
+      return
+    }
+    editedDanmakus.value = JSON.stringify(danmakus, null, 2)
+    showStatus('JSON 已格式化', 'success')
+  } catch {
+    showStatus('JSON 格式错误，无法格式化', 'error')
+  }
+}
+
 async function refreshTemplates() {
+  if (refreshing.value || mutating.value) return
   refreshing.value = true
   try {
     await store.refreshDanmakuTemplates()
+    const current = selectedTemplate.value
+    loadedTemplateName.value = current?.name ?? null
+    editedName.value = current?.name || ''
+    editedDanmakus.value = JSON.stringify(current?.danmakus || [], null, 2)
     showStatus('模板列表已刷新', 'success')
   } catch (error) {
     showStatus(errorMessage(error), 'error')
@@ -196,11 +317,15 @@ async function refreshTemplates() {
 }
 
 async function createFromSelection() {
+  if (mutating.value) return
+  mutating.value = true
   try {
     await store.createDanmakuTemplateFromSelection()
     showStatus('已从选中弹幕创建模板', 'success')
   } catch (error) {
     showStatus(errorMessage(error), 'error')
+  } finally {
+    mutating.value = false
   }
 }
 
@@ -210,16 +335,24 @@ function setReplacement(event: Event) {
 
 async function saveSelected() {
   const template = selectedTemplate.value
-  if (!template || !jsonValidation.value.valid) return
+  if (!template || mutating.value || !nameValidation.value.valid || !jsonValidation.value.valid) return
 
+  mutating.value = true
   try {
     const danmakus: unknown = JSON.parse(editedDanmakus.value)
     if (!Array.isArray(danmakus)) throw new Error('内容必须是弹幕对象数组')
-    await store.saveDanmakuTemplate(template.name, editedName.value, danmakus)
-    editedDanmakus.value = JSON.stringify(selectedTemplate.value?.danmakus || danmakus, null, 2)
-    showStatus(`模板：${template.name}的更改已保存`, 'success')
+    const oldName = template.name
+    await store.saveDanmakuTemplate(oldName, editedName.value, danmakus)
+    const savedTemplate = selectedTemplate.value
+    const savedName = savedTemplate?.name || normalizeTemplateNameInput(editedName.value)
+    loadedTemplateName.value = savedName
+    editedName.value = savedName
+    editedDanmakus.value = JSON.stringify(savedTemplate?.danmakus || danmakus, null, 2)
+    showStatus(`模板：${savedName} 的更改已保存`, 'success')
   } catch (error) {
     showStatus(errorMessage(error), 'error')
+  } finally {
+    mutating.value = false
   }
 }
 
@@ -233,12 +366,19 @@ function insertSelected() {
 
 async function deleteSelected() {
   const template = selectedTemplate.value
-  if (!template) return
+  if (!template || mutating.value) return
+
+  const confirmed = await notice.confirm(`确定要删除模板“${template.name}”吗？此操作不可撤销`)
+  if (!confirmed) return
+
+  mutating.value = true
   try {
     await store.deleteDanmakuTemplateByName(template.name)
     showStatus(`模板：${template.name} 已删除`, 'success')
   } catch (error) {
     showStatus(errorMessage(error), 'error')
+  } finally {
+    mutating.value = false
   }
 }
 </script>
@@ -257,8 +397,8 @@ async function deleteSelected() {
 }
 
 .template-dialog {
-  width: min(960px, 100%);
-  height: min(680px, 100%);
+  width: min(960px, calc(100vw - 24px));
+  height: min(680px, calc(100vh - 24px));
   min-height: 360px;
   display: flex;
   flex-direction: column;
@@ -517,6 +657,7 @@ async function deleteSelected() {
 .template-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .template-actions button {
@@ -575,5 +716,37 @@ async function deleteSelected() {
   .template-actions {
     align-self: flex-end;
   }
+}
+
+.template-search-row {
+  padding: 0 10px 8px;
+}
+
+.template-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid #3b3b40;
+  border-radius: 4px;
+  background: #28282b;
+  color: #e5e5e8;
+  font-size: 12px;
+  outline: none;
+}
+
+.template-search-input:focus {
+  border-color: #4ec9b0;
+}
+
+.template-field-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.invalid-hint {
+  color: #ee9696;
 }
 </style>

@@ -17,6 +17,7 @@ import {
 } from '@/core/videoExport/outputSink'
 import type { ExportQuality } from '@/core/videoExport/quality'
 import { formatDuration } from '@/utils/time'
+import { normalizeColor } from '@/utils/validation'
 import {
   backupFolderProject,
   checkFolderProjectPath,
@@ -106,6 +107,7 @@ type VideoExportSpec = {
 
 type ActiveVideoExportRuntime = {
   jobId: string
+  mediaUrl: string
   abortController: AbortController
   renderTimer: number | undefined
   renderStartedAt: number
@@ -114,6 +116,7 @@ type ActiveVideoExportRuntime = {
 }
 
 const MAX_VIDEO_EXPORT_HISTORY = 20
+const MAX_MCP_LOG_EXTRA_CHARS = 8192
 const VALID_EXPORT_FPS = new Set([24, 30, 60, 120])
 const VALID_EXPORT_QUALITIES = new Set<ExportQuality>(['low', 'high', 'very-high', 'near-lossless'])
 
@@ -122,28 +125,158 @@ let videoExportPreflightBusy = false
 const videoExportJobs = new Map<string, VideoExportJobSnapshot>()
 let latestVideoExportJobId: string | null = null
 let nextVideoExportSequence = 0
+let playbackRafId: number | null = null
+let playbackAnchorTimeMs = 0
+let playbackAnchorPerfMs = 0
+let playheadMoveTimer: ReturnType<typeof setTimeout> | null = null
+const deferredRevokeBlobUrls = new Set<string>()
+
+function revokeBlobUrlSafely(url: string) {
+  if (!url || !url.startsWith('blob:')) return
+  if (activeVideoExportRuntime && activeVideoExportRuntime.mediaUrl === url) {
+    deferredRevokeBlobUrls.add(url)
+    return
+  }
+  try {
+    URL.revokeObjectURL(url)
+  } catch {
+    // 忽略无效或已释放的 Blob URL
+  }
+}
+
+function flushDeferredBlobUrlRevocations(activeUrl: string) {
+  for (const url of Array.from(deferredRevokeBlobUrls)) {
+    if (url !== activeUrl && (!activeVideoExportRuntime || activeVideoExportRuntime.mediaUrl !== url)) {
+      deferredRevokeBlobUrls.delete(url)
+      try {
+        URL.revokeObjectURL(url)
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+function sanitizePositiveFinite(value: unknown, fallback: number, min = 0): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.max(min, value)
+    : fallback
+}
+
+function sanitizeNonNegativeFinite(value: unknown, fallback = 0): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, value)
+    : fallback
+}
+
+function cloneDanmakuShallowDeep(d: DanmakuItem): DanmakuItem {
+  return {
+    id: String(d.id ?? ''),
+    layer: Number.isFinite(d.layer) ? d.layer : 0,
+    startTime: Number.isFinite(d.startTime) ? d.startTime : 0,
+    content: {
+      text: String(d.content?.text ?? ''),
+      font: String(d.content?.font ?? 'Microsoft YaHei'),
+      size: Number.isFinite(d.content?.size) ? d.content.size : 60,
+      color: String(d.content?.color ?? '#ffffff'),
+      stroke: Boolean(d.content?.stroke)
+    },
+    transform: {
+      start: {
+        x: Number.isFinite(d.transform?.start?.x) ? d.transform.start.x : 0,
+        y: Number.isFinite(d.transform?.start?.y) ? d.transform.start.y : 0
+      },
+      end: {
+        x: Number.isFinite(d.transform?.end?.x) ? d.transform.end.x : 0,
+        y: Number.isFinite(d.transform?.end?.y) ? d.transform.end.y : 0
+      },
+      zRotate: Number.isFinite(d.transform?.zRotate) ? d.transform.zRotate : 0,
+      yRotate: Number.isFinite(d.transform?.yRotate) ? d.transform.yRotate : 0
+    },
+    opacity: {
+      from: Number.isFinite(d.opacity?.from) ? d.opacity.from : 1,
+      to: Number.isFinite(d.opacity?.to) ? d.opacity.to : 1
+    },
+    animation: {
+      duration: Number.isFinite(d.animation?.duration) ? d.animation.duration : 1000,
+      moveDuration: Number.isFinite(d.animation?.moveDuration) ? d.animation.moveDuration : 500,
+      delay: Number.isFinite(d.animation?.delay) ? d.animation.delay : 0,
+      easing: d.animation?.easing === 'speeddown' ? 'speeddown' : 'speedup'
+    }
+  }
+}
+
+function serializeBoundedLogExtra(value: unknown): unknown {
+  if (value === undefined) return undefined
+  const seen = new WeakSet<object>()
+  let json: string
+  try {
+    json = JSON.stringify(value, (_key, currentValue) => {
+      if (typeof currentValue === 'bigint') return `${currentValue}n`
+      if (currentValue instanceof Error) {
+        return {
+          name: currentValue.name,
+          message: currentValue.message,
+          stack: currentValue.stack
+        }
+      }
+      if (currentValue && typeof currentValue === 'object') {
+        if (seen.has(currentValue)) return '[Circular]'
+        seen.add(currentValue)
+      }
+      return currentValue
+    })
+  } catch {
+    const text = String(value)
+    return text.length > MAX_MCP_LOG_EXTRA_CHARS
+      ? `${text.slice(0, MAX_MCP_LOG_EXTRA_CHARS)}... [truncated]`
+      : text
+  }
+  if (json === undefined) return undefined
+  if (json.length <= MAX_MCP_LOG_EXTRA_CHARS) {
+    try {
+      return JSON.parse(json) as unknown
+    } catch {
+      return json
+    }
+  }
+  return `${json.slice(0, MAX_MCP_LOG_EXTRA_CHARS)}... [truncated ${json.length - MAX_MCP_LOG_EXTRA_CHARS} chars]`
+}
 
 export function computeVideoExportStats(progress: ExportProgress, elapsedMs: number) {
-  const averageFrameMs = progress.completedFrames > 0
-    ? elapsedMs / progress.completedFrames
+  const safeElapsedMs = typeof elapsedMs === 'number' && Number.isFinite(elapsedMs) ? Math.max(0, elapsedMs) : 0
+  const safeCompleted = typeof progress?.completedFrames === 'number' && Number.isFinite(progress.completedFrames)
+    ? Math.max(0, progress.completedFrames)
+    : 0
+  const safeTotal = typeof progress?.totalFrames === 'number' && Number.isFinite(progress.totalFrames)
+    ? Math.max(0, progress.totalFrames)
+    : 0
+
+  const averageFrameMs = safeCompleted > 0
+    ? safeElapsedMs / safeCompleted
     : null
   let estimatedRemainingMs: number | null = null
   if (
-    progress.stage !== 'preparing' &&
-    progress.stage !== 'finalizing' &&
-    progress.totalFrames > 0 &&
-    progress.completedFrames > 0 &&
-    averageFrameMs !== null
+    progress?.stage !== 'preparing' &&
+    progress?.stage !== 'finalizing' &&
+    safeTotal > 0 &&
+    safeCompleted > 0 &&
+    averageFrameMs !== null &&
+    Number.isFinite(averageFrameMs)
   ) {
-    estimatedRemainingMs = progress.completedFrames >= progress.totalFrames
+    estimatedRemainingMs = safeCompleted >= safeTotal
       ? 0
-      : Math.max(0, averageFrameMs * (progress.totalFrames - progress.completedFrames))
+      : Math.max(0, averageFrameMs * (safeTotal - safeCompleted))
   }
   return { averageFrameMs, estimatedRemainingMs }
 }
 
 export function normalizeEvenVideoDimension(value: number, min = 16): number {
-  return Math.max(min, Math.round(value / 2) * 2)
+  const safeMin = Number.isFinite(min) ? Math.max(2, Math.round(min / 2) * 2) : 16
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return safeMin
+  }
+  return Math.max(safeMin, Math.round(value / 2) * 2)
 }
 
 export function resolveVideoExportDimensions(
@@ -313,15 +446,18 @@ export async function saveBlobWithFallback(
 }
 
 function isDanmakuLike(value: unknown): value is DanmakuItem {
-  if (!value || typeof value !== 'object') return false
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
 
   const candidate = value as Record<string, any>
   return (
-    candidate.startTime !== undefined &&
-    candidate.content &&
-    candidate.transform &&
-    candidate.opacity &&
-    candidate.animation
+    typeof candidate.startTime === 'number' &&
+    Number.isFinite(candidate.startTime) &&
+    candidate.content && typeof candidate.content === 'object' && !Array.isArray(candidate.content) &&
+    candidate.transform && typeof candidate.transform === 'object' && !Array.isArray(candidate.transform) &&
+    candidate.transform.start && typeof candidate.transform.start === 'object' &&
+    candidate.transform.end && typeof candidate.transform.end === 'object' &&
+    candidate.opacity && typeof candidate.opacity === 'object' && !Array.isArray(candidate.opacity) &&
+    candidate.animation && typeof candidate.animation === 'object' && !Array.isArray(candidate.animation)
   )
 }
 
@@ -361,28 +497,43 @@ function readLocalDanmakuTemplates(): DanmakuTemplateRecord[] {
   try {
     const saved = localStorage.getItem(DANMAKU_TEMPLATES_STORAGE_KEY)
     const parsed: unknown = saved ? JSON.parse(saved) : []
-    return Array.isArray(parsed) ? parsed as DanmakuTemplateRecord[] : []
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((item): item is DanmakuTemplateRecord => (
+      Boolean(item) &&
+      typeof item === 'object' &&
+      !Array.isArray(item) &&
+      typeof (item as DanmakuTemplateRecord).name === 'string' &&
+      Array.isArray((item as DanmakuTemplateRecord).danmakus)
+    ))
   } catch {
     return []
   }
 }
 
 function writeLocalDanmakuTemplates(templates: DanmakuTemplateRecord[]) {
-  localStorage.setItem(DANMAKU_TEMPLATES_STORAGE_KEY, JSON.stringify(templates))
+  try {
+    localStorage.setItem(DANMAKU_TEMPLATES_STORAGE_KEY, JSON.stringify(templates))
+  } catch (error) {
+    throw new Error(`保存本地弹幕模板失败: ${error instanceof Error ? error.message : String(error)}`)
+  }
 }
 
 function readLocalGlobalSettings(): Partial<GlobalSettings> {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(GLOBAL_SETTINGS_STORAGE_KEY) || '{}')
-    if (!parsed || typeof parsed !== 'object') return {}
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
     const settings = parsed as Partial<GlobalSettings>
     if (typeof settings.replaceDefaultDanmakuWithTemplate !== 'boolean') {
       settings.replaceDefaultDanmakuWithTemplate = localStorage.getItem(LEGACY_TEMPLATE_REPLACEMENT_KEY) === 'true'
     }
     return settings
   } catch {
-    return {
-      replaceDefaultDanmakuWithTemplate: localStorage.getItem(LEGACY_TEMPLATE_REPLACEMENT_KEY) === 'true'
+    try {
+      return {
+        replaceDefaultDanmakuWithTemplate: localStorage.getItem(LEGACY_TEMPLATE_REPLACEMENT_KEY) === 'true'
+      }
+    } catch {
+      return {}
     }
   }
 }
@@ -439,9 +590,24 @@ function normalizeMcpDanmakuDrafts(input: unknown, defaultDuration: number): Dan
     if (draft.startTime < 0 || draft.layer < 0 || draft.animation.duration <= 0) {
       throw new Error(`第 ${index + 1} 条弹幕的时间、层级和持续时间必须是有效的非负值，持续时间须大于 0`)
     }
+    if (draft.content.size <= 0 || Math.round(draft.content.size) < 1) {
+      throw new Error(`第 ${index + 1} 条弹幕的字体大小必须大于 0`)
+    }
+    const normalizedColor = normalizeColor(draft.content.color)
+    if (!normalizedColor) {
+      throw new Error(`第 ${index + 1} 条弹幕的颜色格式无效，应为 #RRGGBB 或 rgb(...)`)
+    }
+    if (draft.opacity.from < 0 || draft.opacity.from > 1 || draft.opacity.to < 0 || draft.opacity.to > 1) {
+      throw new Error(`第 ${index + 1} 条弹幕的透明度必须在 0 到 1 之间`)
+    }
+    if (draft.animation.moveDuration < 0 || draft.animation.delay < 0) {
+      throw new Error(`第 ${index + 1} 条弹幕的运动时间和延迟不能为负数`)
+    }
     draft.id = ''
     draft.startTime = Math.round(draft.startTime)
     draft.layer = Math.round(draft.layer)
+    draft.content.size = Math.round(draft.content.size)
+    draft.content.color = normalizedColor
     return draft as DanmakuItem
   })
 }
@@ -486,7 +652,82 @@ export const useEditorStore = defineStore('editor', {
     const saved = isTauriRuntime() ? null : loadProject()
     const savedGlobalSettings = isTauriRuntime() ? null : readLocalGlobalSettings()
     const savedMediaPath = getProjectMediaPath(saved?.media)
-    historyManager.recordSnapshot(saved?.danmakus || [], `加载工程(${(saved?.danmakus || []).length}条弹幕)`)
+    const savedMediaUrl = typeof saved?.media?.url === 'string' && !saved.media.url.startsWith('blob:')
+      ? saved.media.url
+      : ''
+    const defaultDanmakus: DanmakuItem[] = [
+      {
+        id: '1',
+        layer: 0,
+        startTime: 0,
+        content: {
+          text: '欢迎使用m7编辑器',
+          font: 'Microsoft YaHei',
+          size: 60,
+          color: '#ffffff',
+          stroke: false
+        },
+        transform: {
+          start: { x: 130, y: 180 },
+          end: { x: 130, y: 180 },
+          zRotate: 0,
+          yRotate: 0
+        },
+        opacity: { from: 1, to: 1 },
+        animation: {
+          duration: 2000,
+          moveDuration: 500,
+          delay: 0,
+          easing: 'speedup'
+        }
+      },
+      {
+        id: '2',
+        layer: 0,
+        startTime: 2000,
+        content: {
+          text: '欢迎使用m7编辑器',
+          font: 'Microsoft YaHei',
+          size: 60,
+          color: '#ffffff',
+          stroke: false
+        },
+        transform: {
+          start: { x: 130, y: 180 },
+          end: { x: 800, y: 180 },
+          zRotate: 0,
+          yRotate: 0
+        },
+        opacity: { from: 1, to: 0 },
+        animation: {
+          duration: 500,
+          moveDuration: 500,
+          delay: 0,
+          easing: 'speedup'
+        }
+      }
+    ]
+    const initialDanmakus = Array.isArray(saved?.danmakus) ? saved.danmakus as DanmakuItem[] : defaultDanmakus
+    const initialScreenWidth = Math.max(10, Math.round(sanitizePositiveFinite(saved?.player?.screenWidth, 800, 10)))
+    const initialScreenHeight = Math.max(10, Math.round(sanitizePositiveFinite(saved?.player?.screenHeight, 450, 10)))
+    const fallbackScreenScale = Math.max(10, Math.round(window.innerHeight / initialScreenHeight * 100 * 0.55))
+    const initialScreenScale = Math.max(10, Math.round(sanitizePositiveFinite(saved?.player?.screenScale, fallbackScreenScale, 10)))
+    const maxUsedLayer = initialDanmakus.reduce((max, item) => (
+      Number.isFinite(item?.layer) ? Math.max(max, item.layer) : max
+    ), -1)
+    const initialMaxLayers = Math.max(
+      1,
+      maxUsedLayer + 1,
+      Math.round(sanitizePositiveFinite(saved?.player?.maxLayers, 100, 1))
+    )
+    const initialTimelineScale = Math.max(0.01, Math.min(3, sanitizePositiveFinite(saved?.timeline?.scale, 0.1, 0.01)))
+
+    historyManager.clear()
+    historyManager.recordSnapshot(
+      initialDanmakus,
+      `加载工程(${initialDanmakus.length}条弹幕)`,
+      true
+    )
 
     return {
       version: '1.12.0',
@@ -497,68 +738,17 @@ export const useEditorStore = defineStore('editor', {
       activeFolderProjectConfig: null as FolderProjectConfig | null,
       pendingFolderMediaPath: '',
       fileSystemState: null as FileSystemState | null,
-      mediaUrl: savedMediaPath ? '' : saved?.media?.url || '',
+      mediaUrl: savedMediaPath ? '' : savedMediaUrl,
       mediaDuration: 0,
       mediaElement: null as HTMLMediaElement | null,
       mediaFilePath: savedMediaPath,
 
-      danmakus: saved?.danmakus || [
-        {
-          id: '1',
-          layer: 0,
-          startTime: 0,
-          content: {
-            text: '欢迎使用m7编辑器',
-            font: 'Microsoft YaHei',
-            size: 60,
-            color: '#ffffff',
-            stroke: false
-          },
-          transform: {
-            start: { x: 130, y: 180 },
-            end: { x: 130, y: 180 },
-            zRotate: 0,
-            yRotate: 0
-          },
-          opacity: { from: 1, to: 1 },
-          animation: {
-            duration: 2000,
-            moveDuration: 500,
-            delay: 0,
-            easing: 'speedup'
-          }
-        },
-        {
-          id: '2',
-          layer: 0,
-          startTime: 2000,
-          content: {
-            text: '欢迎使用m7编辑器',
-            font: 'Microsoft YaHei',
-            size: 60,
-            color: '#ffffff',
-            stroke: false
-          },
-          transform: {
-            start: { x: 130, y: 180 },
-            end: { x: 800, y: 180 },
-            zRotate: 0,
-            yRotate: 0
-          },
-          opacity: { from: 1, to: 0 },
-          animation: {
-            duration: 500,
-            moveDuration: 500,
-            delay: 0,
-            easing: 'speedup'
-          }
-        }
-      ],
+      danmakus: initialDanmakus,
       selectedIds: [] as string[],
-      currentTime: saved?.timeline?.currentTime || 0,
-      timelineScale: saved?.timeline?.scale || 0.1,
-      timelineOffset: saved?.timeline?.offset || 0,
-      timelineScrollTop: saved?.timeline?.scrollTop || 0,
+      currentTime: Math.round(sanitizeNonNegativeFinite(saved?.timeline?.currentTime, 0)),
+      timelineScale: initialTimelineScale,
+      timelineOffset: sanitizeNonNegativeFinite(saved?.timeline?.offset, 0),
+      timelineScrollTop: sanitizeNonNegativeFinite(saved?.timeline?.scrollTop, 0),
       playing: false,
       aggressiveOptimization: false,
       // 屏幕录制模式
@@ -572,14 +762,14 @@ export const useEditorStore = defineStore('editor', {
         value: 1000
       },
       // 播放器与 XML 导出设置
-      screenWidth: saved?.player?.screenWidth || 800,
-      screenHeight: saved?.player?.screenHeight || 450,
-      screenScale: saved?.player?.screenScale || Math.round(window.innerHeight / (saved?.player?.screenHeight || 450) * 100 * 0.55),
-      maxLayers: saved?.player?.maxLayers || 100,
+      screenWidth: initialScreenWidth,
+      screenHeight: initialScreenHeight,
+      screenScale: initialScreenScale,
+      maxLayers: initialMaxLayers,
       exportXmlAsRatio: false,
       importXmlDurationOffsetEnabled: true,
       exportXmlDurationOffsetEnabled: true,
-      allowNegativeValues: saved?.preprocess?.allowNegativeValues || false,
+      allowNegativeValues: Boolean(saved?.preprocess?.allowNegativeValues),
       showCreationTools: false,
       showTemplateManager: false,
       danmakuTemplates: [] as DanmakuTemplateRecord[],
@@ -614,10 +804,14 @@ export const useEditorStore = defineStore('editor', {
         error: ''
       },
       danmakuTemplatesLoaded: false,
-      showSpectrogram: saved?.timeline?.showSpectrogram || false,
-      spectrogramColorScheme: saved?.timeline?.spectrogramColorScheme || 'default',
-      spectrogramCustomColor: saved?.timeline?.spectrogramCustomColor || '#00bbff',
-      danmakuColorForBlock: saved?.timeline?.danmakuColorForBlock || false,
+      showSpectrogram: Boolean(saved?.timeline?.showSpectrogram),
+      spectrogramColorScheme: typeof saved?.timeline?.spectrogramColorScheme === 'string'
+        ? saved.timeline.spectrogramColorScheme
+        : 'default',
+      spectrogramCustomColor: typeof saved?.timeline?.spectrogramCustomColor === 'string'
+        ? saved.timeline.spectrogramCustomColor
+        : '#00bbff',
+      danmakuColorForBlock: Boolean(saved?.timeline?.danmakuColorForBlock),
       // 导入完成时间戳：用于触发缓冲池重构
       importTimestamp: 0,
       // _applyDeepPatch 防抖计时器
@@ -632,7 +826,9 @@ export const useEditorStore = defineStore('editor', {
      * 获取选中的弹幕列表
      */
     getSelectedDanmakus(): DanmakuItem[] {
-      return this.danmakus.filter((d: DanmakuItem) => this.selectedIds.includes(d.id))
+      if (this.selectedIds.length === 0 || this.danmakus.length === 0) return []
+      const selectedSet = new Set(this.selectedIds)
+      return this.danmakus.filter((d: DanmakuItem) => selectedSet.has(d.id))
     },
 
     /**
@@ -646,6 +842,7 @@ export const useEditorStore = defineStore('editor', {
   actions: {
     async applyFieldUpdate(field: string, method: EditorApiMethod): Promise<EditorApiResult> {
       return withEditorOperationLock(async () => {
+      this._flushPendingHistoryTimers()
       const emptyResult = { changedIds: [], createdIds: [], selectedIds: [...this.selectedIds], warnings: [] as string[] }
 
       if (field === '@history.undo' || field === '@history.redo') {
@@ -677,11 +874,19 @@ export const useEditorStore = defineStore('editor', {
           if (relativeToCurrentTime) {
             created = this.insertDanmakus(drafts, 'MCP 创建弹幕', true)
           } else {
+            const usedIds = new Set(this.danmakus.map((item: DanmakuItem) => item.id))
             let nextId = this.danmakus.reduce((max: number, item: DanmakuItem) => {
-              const numericId = Number.parseInt(item.id, 10)
+              const numericId = /^\d+$/.test(item.id) ? Number.parseInt(item.id, 10) : NaN
               return Number.isFinite(numericId) ? Math.max(max, numericId) : max
             }, 0)
-            created = drafts.map((draft) => ({ ...draft, id: String(++nextId) }))
+            created = drafts.map((draft) => {
+              do {
+                ++nextId
+              } while (usedIds.has(String(nextId)))
+              const id = String(nextId)
+              usedIds.add(id)
+              return { ...draft, id }
+            })
             this.danmakus.push(...created)
             this.selectedIds = created.map((item) => item.id)
             historyManager.recordSnapshot(this.danmakus, `MCP 创建弹幕${created.length}条`, true)
@@ -722,7 +927,7 @@ export const useEditorStore = defineStore('editor', {
         if (field === '@editor.currentTime') {
           if (typeof method !== 'number' || !Number.isFinite(method)) throw new Error('currentTime 必须是有限数字')
           const nextTime = Math.max(0, Math.round(method))
-          this.currentTime = nextTime
+          this.setTime(nextTime)
           this.timelineOffset = nextTime
           return { ok: true, ...emptyResult, warnings: nextTime === method ? [] : ['currentTime 已四舍五入并限制为非负值'] }
         }
@@ -794,17 +999,22 @@ export const useEditorStore = defineStore('editor', {
             : outcome.changedField
               ? [outcome.changedField]
               : []
-          if (fieldsToCheck.length) {
-            outcome.changedIds.forEach((id) => {
-              const item = this.danmakus.find((danmaku: DanmakuItem) => danmaku.id === id)
+          if (fieldsToCheck.length && outcome.changedIds.length > 0) {
+            const danmakuMap = new Map<string, DanmakuItem>(
+              (this.danmakus as DanmakuItem[]).map((danmaku) => [danmaku.id, danmaku])
+            )
+            for (let i = outcome.changedIds.length - 1; i >= 0; i -= 1) {
+              const id = outcome.changedIds[i]
+              const item = danmakuMap.get(id)
               if (item) {
                 const patch: Record<string, unknown> = {}
                 for (const changedPath of fieldsToCheck) {
                   patch[changedPath] = changedPath.split('.').reduce((current: any, key) => current?.[key], item as any)
                 }
                 this._checkAndMovePlayhead(patch, id)
+                break
               }
-            })
+            }
           }
         }
         this.selectedIds = outcome.selectedIds
@@ -840,14 +1050,18 @@ export const useEditorStore = defineStore('editor', {
         let minStartTime = Infinity
         let maxEndTime = -Infinity
         for (const item of this.danmakus as DanmakuItem[]) {
-          if (item.startTime < minStartTime) minStartTime = item.startTime
-          const endTime = item.startTime + item.animation.duration
+          const start = Number.isFinite(item?.startTime) ? item.startTime : 0
+          const dur = Number.isFinite(item?.animation?.duration) ? Math.max(0, item.animation.duration) : 0
+          if (start < minStartTime) minStartTime = start
+          const endTime = start + dur
           if (endTime > maxEndTime) maxEndTime = endTime
         }
-        timelineRange = {
-          minStartTime,
-          maxEndTime,
-          spanMs: Math.max(0, maxEndTime - minStartTime)
+        if (Number.isFinite(minStartTime) && Number.isFinite(maxEndTime)) {
+          timelineRange = {
+            minStartTime,
+            maxEndTime,
+            spanMs: Math.max(0, maxEndTime - minStartTime)
+          }
         }
       }
       return {
@@ -904,7 +1118,7 @@ export const useEditorStore = defineStore('editor', {
           content: {
             text: entry.text,
             font,
-            size: Math.round(size),
+            size: Math.max(1, Math.round(size)),
             color: '#FFFFFF',
             stroke
           },
@@ -955,25 +1169,22 @@ export const useEditorStore = defineStore('editor', {
         if (options.selectedOnly !== false) return selected.has(item.id)
         return true
       })
-      const offset = Math.max(0, Math.trunc(options.offset || 0))
-      const limit = Math.max(1, Math.min(500, Math.trunc(options.limit || 100)))
-      return { total: filtered.length, offset, items: JSON.parse(JSON.stringify(filtered.slice(offset, offset + limit))) as DanmakuItem[] }
+      const offset = Number.isFinite(options.offset) ? Math.max(0, Math.trunc(options.offset as number)) : 0
+      const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(500, Math.trunc(options.limit as number))) : 100
+      return {
+        total: filtered.length,
+        offset,
+        items: filtered.slice(offset, offset + limit).map(cloneDanmakuShallowDeep)
+      }
     },
 
     getMcpLogs(options: { type?: string; offset?: number; limit?: number } = {}) {
       const logs = useNoticeStore().logList.filter((entry) => !options.type || entry.type === options.type)
-      const offset = Math.max(0, Math.trunc(options.offset || 0))
-      const limit = Math.max(1, Math.min(500, Math.trunc(options.limit || 100)))
+      const offset = Number.isFinite(options.offset) ? Math.max(0, Math.trunc(options.offset as number)) : 0
+      const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(500, Math.trunc(options.limit as number))) : 100
       const newestFirst = [...logs].reverse()
       const items = newestFirst.slice(offset, offset + limit).map((entry) => {
-        let additionalInfo: unknown = entry.AdditionalInfo
-        if (additionalInfo !== undefined) {
-          try {
-            additionalInfo = JSON.parse(JSON.stringify(additionalInfo)) as unknown
-          } catch {
-            additionalInfo = String(additionalInfo)
-          }
-        }
+        const additionalInfo = serializeBoundedLogExtra(entry.AdditionalInfo)
         return {
           id: entry.id,
           timestamp: entry.timestamp,
@@ -1042,11 +1253,15 @@ export const useEditorStore = defineStore('editor', {
       this: { getCachedMediaDurationMs: () => number; danmakus: DanmakuItem[]; mediaUrl: string },
       mediaDurationMs = this.getCachedMediaDurationMs()
     ): number {
-      return this.danmakus.reduce((latest: number, danmaku: any) => Math.max(
-        latest,
-        danmaku.startTime + danmaku.animation.duration,
-        this.mediaUrl ? mediaDurationMs : 0
-      ), 0)
+      const initial = this.mediaUrl && Number.isFinite(mediaDurationMs)
+        ? Math.max(0, mediaDurationMs)
+        : 0
+      return this.danmakus.reduce((latest: number, danmaku: any) => {
+        const start = Number.isFinite(danmaku?.startTime) ? danmaku.startTime : 0
+        const duration = Number.isFinite(danmaku?.animation?.duration) ? danmaku.animation.duration : 0
+        const end = start + duration
+        return Number.isFinite(end) ? Math.max(latest, end) : latest
+      }, initial)
     },
 
     buildVideoExportSnapshot(): VideoExportJobSnapshot | null {
@@ -1126,6 +1341,7 @@ export const useEditorStore = defineStore('editor', {
 
       const runtime: ActiveVideoExportRuntime = {
         jobId,
+        mediaUrl: this.mediaUrl,
         abortController,
         renderTimer: undefined,
         renderStartedAt: 0,
@@ -1188,9 +1404,12 @@ export const useEditorStore = defineStore('editor', {
         }, abortController.signal, (progress) => {
           if (activeVideoExportRuntime?.jobId !== jobId) return
           this.videoExport.progress = progress
-          if (progress.stage === 'preparing' && runtime.renderStartedAt === 0) {
+          if (runtime.renderStartedAt === 0) {
             runtime.renderStartedAt = Date.now()
             this.videoExport.elapsedMs = 0
+            if (runtime.renderTimer !== undefined) {
+              window.clearInterval(runtime.renderTimer)
+            }
             runtime.renderTimer = window.setInterval(() => {
               if (activeVideoExportRuntime?.jobId !== jobId || runtime.renderStartedAt <= 0) return
               this.videoExport.elapsedMs = Date.now() - runtime.renderStartedAt
@@ -1280,6 +1499,7 @@ export const useEditorStore = defineStore('editor', {
           if (activeVideoExportRuntime?.jobId === jobId) {
             activeVideoExportRuntime = null
           }
+          flushDeferredBlobUrlRevocations(this.mediaUrl)
           resolveCompletion(finalSnapshot)
         }
       })()
@@ -1763,10 +1983,11 @@ export const useEditorStore = defineStore('editor', {
         throw new Error('工程文件格式无效（danmakus 必须是数组）')
       }
       this.pausePlayback()
+      this._clearPendingEditTimers()
       await this.enterSingleFileMode(false)
       await this.applyProject(project)
       historyManager.clear()
-      historyManager.recordSnapshot(this.danmakus, `导入工程(${this.danmakus.length}条弹幕)`)
+      historyManager.recordSnapshot(this.danmakus, `导入工程(${this.danmakus.length}条弹幕)`, true)
       // 标记导入完成，触发缓冲池重构
       this.importTimestamp = Date.now()
       if (options.closeManager) {
@@ -1809,13 +2030,14 @@ export const useEditorStore = defineStore('editor', {
       })
 
       this.pausePlayback()
+      this._clearPendingEditTimers()
       this.danmakus = danmakus
       this.selectedIds = []
       this.currentTime = 0
 
       await this.enterSingleFileMode(false)
       historyManager.clear()
-      historyManager.recordSnapshot(this.danmakus)
+      historyManager.recordSnapshot(this.danmakus, `导入 XML (${danmakus.length}条弹幕)`, true)
 
       errors.forEach((error) => {
         notice.log('[XML 导入] 已跳过异常弹幕:' + error.message + '，导出日志以获取更多信息', 'warn', error.metadata)
@@ -1878,13 +2100,27 @@ export const useEditorStore = defineStore('editor', {
     },
 
     setTime(time: number) {
-      this.currentTime = time
+      if (typeof time !== 'number' || !Number.isFinite(time)) return
+      const nextTime = Math.max(0, time)
+      this.currentTime = nextTime
+      if (this.playing) {
+        playbackAnchorTimeMs = nextTime
+        playbackAnchorPerfMs = performance.now()
+      }
     },
 
     applyGlobalSettings(settings: GlobalSettings) {
-      this.playheadStepMs = settings.playheadStepMs
-      this.danmakuDuration = { ...settings.danmakuDuration }
-      this.aggressiveOptimization = settings.aggressiveOptimization
+      if (typeof settings.playheadStepMs === 'number' && Number.isFinite(settings.playheadStepMs) && settings.playheadStepMs > 0) {
+        this.playheadStepMs = settings.playheadStepMs
+      }
+      if (settings.danmakuDuration && (settings.danmakuDuration.mode === 'ms' || settings.danmakuDuration.mode === 'multiplier')) {
+        const val = settings.danmakuDuration.value
+        this.danmakuDuration = {
+          mode: settings.danmakuDuration.mode,
+          value: typeof val === 'number' && Number.isFinite(val) && val > 0 ? val : 1000
+        }
+      }
+      this.aggressiveOptimization = Boolean(settings.aggressiveOptimization)
       this.selectedDanmakuTemplateName = settings.selectedDanmakuTemplateName || ''
       this.replaceDefaultDanmakuWithTemplate = settings.replaceDefaultDanmakuWithTemplate || false
       this.useWebglVideoExport = typeof settings.useWebglVideoExport === 'boolean'
@@ -1914,31 +2150,72 @@ export const useEditorStore = defineStore('editor', {
           .then(() => updateGlobalSettings(settings))
           .catch((error) => useNoticeStore().log('[配置] 保存全局设置失败', 'error', error))
       } else {
-        localStorage.setItem(GLOBAL_SETTINGS_STORAGE_KEY, JSON.stringify(settings))
+        try {
+          localStorage.setItem(GLOBAL_SETTINGS_STORAGE_KEY, JSON.stringify(settings))
+        } catch (error) {
+          useNoticeStore().log('[配置] 保存本地全局设置失败', 'warn', error)
+        }
       }
     },
 
     setPlayheadStepMs(value: number) {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return
       this.playheadStepMs = value
       this.persistGlobalSettings()
     },
      
     startPlayback() {
+      if (playbackRafId !== null) {
+        cancelAnimationFrame(playbackRafId)
+        playbackRafId = null
+      }
       this.playing = true
-      const startTime = performance.now()
-      const initialTime = this.currentTime
+      const baseTime = Number.isFinite(this.currentTime) ? Math.max(0, this.currentTime) : 0
+      this.currentTime = baseTime
+      playbackAnchorTimeMs = baseTime
+      playbackAnchorPerfMs = performance.now()
 
       const loop = () => {
-        if (!this.playing) return
-        // 计算当前播放头：暂停时的 currentTime + 本次播放经过的时间
-        this.currentTime = initialTime + (performance.now() - startTime)
-        requestAnimationFrame(loop)
+        if (!this.playing) {
+          playbackRafId = null
+          return
+        }
+        const now = performance.now()
+        const media = this.mediaElement
+        const mediaPlaying = Boolean(
+          media &&
+          this.mediaUrl &&
+          !media.paused &&
+          !media.seeking &&
+          !media.ended &&
+          media.readyState >= 2 &&
+          Number.isFinite(media.currentTime)
+        )
+        const rate = mediaPlaying && media && Number.isFinite(media.playbackRate) && media.playbackRate > 0
+          ? media.playbackRate
+          : 1
+        let nextTime = playbackAnchorTimeMs + (now - playbackAnchorPerfMs) * rate
+        if (mediaPlaying && media) {
+          const mediaTimeMs = media.currentTime * 1000
+          const drift = mediaTimeMs - nextTime
+          if (Math.abs(drift) > 40 && Math.abs(drift) < 500) {
+            playbackAnchorTimeMs = mediaTimeMs
+            playbackAnchorPerfMs = now
+            nextTime = mediaTimeMs
+          }
+        }
+        this.currentTime = Math.max(0, nextTime)
+        playbackRafId = requestAnimationFrame(loop)
       }
-      loop()
+      playbackRafId = requestAnimationFrame(loop)
     },
 
     pausePlayback() {
       this.playing = false
+      if (playbackRafId !== null) {
+        cancelAnimationFrame(playbackRafId)
+        playbackRafId = null
+      }
     },
 
     saveToLocal() {
@@ -1949,8 +2226,11 @@ export const useEditorStore = defineStore('editor', {
       }
 
       const project = this.exportProject()
-      saveProject(project)
-      console.log('已保存到本地')
+      if (saveProject(project)) {
+        console.log('已保存到本地')
+      } else {
+        notice.alert('保存到本地缓存失败（可能超出浏览器存储空间限制），请使用导出 JSON 文件保存工程', 'error', '保存失败')
+      }
     },
 
     async loadFromLocal() {
@@ -1967,8 +2247,10 @@ export const useEditorStore = defineStore('editor', {
         return
       }
 
+      this.pausePlayback()
+      this._clearPendingEditTimers()
       await this.applyProject(project)
-      historyManager.recordSnapshot(this.danmakus, `加载工程(${this.danmakus.length}条弹幕)`)
+      historyManager.recordSnapshot(this.danmakus, `加载工程(${this.danmakus.length}条弹幕)`, true)
 
       console.log('加载完成')
     },
@@ -2030,13 +2312,17 @@ export const useEditorStore = defineStore('editor', {
 
       reader.onload = async () => {
         try {
-          const project = JSON.parse(reader.result as string)
+          const project = JSON.parse(String(reader.result ?? ''))
           await withEditorOperationLock(() => this.applyImportedProject(project))
           console.log('文件加载成功')
         } catch (e) {
           console.error('文件解析失败', e)
           notice.alert((e instanceof Error ? e.message : String(e)), 'error', '文件解析失败: ', e)
         }
+      }
+
+      reader.onerror = () => {
+        notice.alert('读取工程文件失败', 'error', '文件读取错误', reader.error)
       }
 
       reader.readAsText(file)
@@ -2053,6 +2339,10 @@ export const useEditorStore = defineStore('editor', {
         } catch (error) {
           notice.alert(error instanceof Error ? error.message : String(error), 'error', 'XML解析失败', error)
         }
+      }
+
+      reader.onerror = () => {
+        notice.alert('读取 XML 文件失败', 'error', '文件读取错误', reader.error)
       }
 
       reader.readAsText(file)
@@ -2074,13 +2364,53 @@ export const useEditorStore = defineStore('editor', {
       this.selectedIds = []
     },
     
-    _applyDeepPatch(id: string, obj: any, patch: any) {
+    _clearPendingEditTimers() {
+      if (this._applyDeepPatchDebounceTimer) {
+        clearTimeout(this._applyDeepPatchDebounceTimer)
+        this._applyDeepPatchDebounceTimer = null
+      }
+      if (this._moveSelectedLayersDebounceTimer) {
+        clearTimeout(this._moveSelectedLayersDebounceTimer)
+        this._moveSelectedLayersDebounceTimer = null
+      }
+      if (playheadMoveTimer) {
+        clearTimeout(playheadMoveTimer)
+        playheadMoveTimer = null
+      }
+    },
+
+    _flushPendingHistoryTimers() {
+      if (playheadMoveTimer) {
+        clearTimeout(playheadMoveTimer)
+        playheadMoveTimer = null
+      }
+      let needsFlush = false
+      if (this._applyDeepPatchDebounceTimer) {
+        clearTimeout(this._applyDeepPatchDebounceTimer)
+        this._applyDeepPatchDebounceTimer = null
+        needsFlush = true
+      }
+      if (this._moveSelectedLayersDebounceTimer) {
+        clearTimeout(this._moveSelectedLayersDebounceTimer)
+        this._moveSelectedLayersDebounceTimer = null
+        needsFlush = true
+      }
+      if (needsFlush) {
+        historyManager.recordSnapshot(this.danmakus, '属性编辑', true)
+      }
+    },
+
+    _mergePatchObject(obj: any, patch: any) {
+      if (!obj || typeof obj !== 'object' || !patch || typeof patch !== 'object') return
+      const blockedKeys = new Set(['__proto__', 'constructor', 'prototype'])
+
       for (const [key, value] of Object.entries(patch)) {
-        // console.log('写入:', key, value, typeof value)
+        if (blockedKeys.has(key)) continue
 
         // 情况1：路径写法（优先级最高）
         if (key.includes('.')) {
           const keys = key.split('.')
+          if (keys.some((segment) => blockedKeys.has(segment))) continue
           let current = obj
 
           for (let i = 0; i < keys.length - 1; i++) {
@@ -2105,46 +2435,60 @@ export const useEditorStore = defineStore('editor', {
             obj[key] = {}
           }
 
-          this._applyDeepPatch(id, obj[key], value)
+          this._mergePatchObject(obj[key], value)
           continue
         }
 
         // 情况3：普通值
         obj[key] = value
       }
+    },
 
-      // 防抖处理：清除之前的计时器，设置新的100ms延迟
+    _schedulePatchCommit(id: string, patch: any) {
       if (this._applyDeepPatchDebounceTimer) {
         clearTimeout(this._applyDeepPatchDebounceTimer)
       }
 
       this._applyDeepPatchDebounceTimer = setTimeout(() => {
-        historyManager.recordSnapshot(this.danmakus)
-        this._checkAndMovePlayhead(patch, id)
         this._applyDeepPatchDebounceTimer = null
+        historyManager.recordSnapshot(this.danmakus, undefined, true)
+        this._checkAndMovePlayhead(patch, id)
       }, 100)
     },
 
+    _applyDeepPatch(id: string, obj: any, patch: any) {
+      this._mergePatchObject(obj, patch)
+      this._schedulePatchCommit(id, patch)
+    },
+
     updateDanmaku(id: string, patch: any) {
-      // console.log('正在更新弹幕:', id, '补丁内容:', patch);
       const d = this.danmakus.find((d: any) => d.id === id)
       if (!d) return
 
-      this._applyDeepPatch(id, d, patch)
+      this._mergePatchObject(d, patch)
+      this._schedulePatchCommit(id, patch)
     },
 
     updateSelectedDanmakus(patch: any) {
+      if (this.selectedIds.length === 0) return
+      const selectedSet = new Set(this.selectedIds)
+      let lastUpdatedId: string | null = null
       this.danmakus.forEach((d: any) => {
-        if (this.selectedIds.includes(d.id)) {
-          this._applyDeepPatch(d.id, d, patch)
+        if (selectedSet.has(d.id)) {
+          this._mergePatchObject(d, patch)
+          lastUpdatedId = d.id
         }
       })
+      if (lastUpdatedId !== null) {
+        this._schedulePatchCommit(lastUpdatedId, patch)
+      }
     },
     
     /**
      * 检查是否需要移动播放头
      */
     _checkAndMovePlayhead(patch: any, danmakuId: string): void {
+      if (!patch || typeof patch !== 'object') return
       const hasDuration = patch['animation.duration'] !== undefined || 
                       (patch.animation?.duration !== undefined)
       const hasStartTime = patch['startTime'] !== undefined || 
@@ -2156,50 +2500,42 @@ export const useEditorStore = defineStore('editor', {
                       patch['opacity.to'] !== undefined || 
                       (patch.opacity?.to !== undefined)
       const hasChangedGrop2 = !(hasChangedGrop1 || hasDuration || hasStartTime)
+      const danmaku = this.danmakus.find((d: any) => d.id === danmakuId)
+      if (!danmaku) return
+
       if (hasChangedGrop1) {
-        const danmaku = this.danmakus.find((d: any) => d.id === danmakuId)
-        if (danmaku) {
-          const endTime = danmaku.startTime + danmaku.animation.duration
-          this.setTime(endTime)
-          // console.log('移动播放头到弹幕结束位置:', endTime)
-        }
+        const endTime = danmaku.startTime + danmaku.animation.duration
+        this.setTime(endTime)
       }
       if (hasChangedGrop2) {
-        const danmaku = this.danmakus.find((d: any) => d.id === danmakuId)
-        if (danmaku) {
-          const startTime = danmaku.startTime
-          this.setTime(startTime)
-          // console.log('移动播放头到弹幕开始位置:', startTime)
+        this.setTime(danmaku.startTime)
+      }
+      if (hasDuration || hasStartTime) {
+        if (playheadMoveTimer) {
+          clearTimeout(playheadMoveTimer)
         }
-      }
-      if (hasDuration) {
-        const danmaku = this.danmakus.find((d: any) => d.id === danmakuId)
-        setTimeout(() => {
-          if (danmaku) {
-            const endTime = danmaku.startTime + danmaku.animation.duration
-            this.setTime(endTime)
-            // console.log('移动播放头到弹幕结束位置:', endTime)
-          }
-        }, 10)
-      }
-      if (hasStartTime) {
-        const danmaku = this.danmakus.find((d: any) => d.id === danmakuId)
-        setTimeout(() => {
-          if (danmaku) {
-            const startTime = danmaku.startTime
-            this.setTime(startTime)
-            // console.log('移动播放头到弹幕开始位置:', startTime)
-          }
+        playheadMoveTimer = setTimeout(() => {
+          playheadMoveTimer = null
+          const target = this.danmakus.find((d: any) => d.id === danmakuId)
+          if (!target) return
+          const targetTime = hasDuration
+            ? target.startTime + target.animation.duration
+            : target.startTime
+          this.setTime(targetTime)
         }, 10)
       }
     },
 
     setMediaSource(url: string, path = '') {
-      if (!url || this.mediaUrl !== url) {
+      const prevUrl = this.mediaUrl
+      if (!url || prevUrl !== url) {
         this.mediaDuration = 0
       }
       this.mediaUrl = url
       this.mediaFilePath = path
+      if (prevUrl && prevUrl !== url) {
+        revokeBlobUrlSafely(prevUrl)
+      }
     },
 
     setImportedMediaSource(url: string, path = '') {
@@ -2246,6 +2582,7 @@ export const useEditorStore = defineStore('editor', {
     },
 
     async enterSingleFileMode(loadCached = true): Promise<void> {
+      this._clearPendingEditTimers()
       this.InitializationPhase = false
       this.projectMode = 'single'
       this.activeFolderProjectPath = ''
@@ -2256,11 +2593,16 @@ export const useEditorStore = defineStore('editor', {
         const project = loadProject()
         if (project) {
           await this.applyProject(project)
+          historyManager.clear()
+          historyManager.recordSnapshot(this.danmakus, `加载工程(${this.danmakus.length}条弹幕)`, true)
         }
       }
     },
 
     async applyFolderProjectPayload(payload: FolderProjectPayload, isEditing = false) {
+      if (!isEditing) {
+        this._clearPendingEditTimers()
+      }
       this.InitializationPhase = false
       this.projectMode = 'folder'
       this.activeFolderProjectPath = payload.path
@@ -2274,7 +2616,7 @@ export const useEditorStore = defineStore('editor', {
       }
 
       historyManager.clear()
-      historyManager.recordSnapshot(this.danmakus, `加载文件夹工程(${this.danmakus.length}条弹幕)`)
+      historyManager.recordSnapshot(this.danmakus, `加载文件夹工程(${this.danmakus.length}条弹幕)`, true)
       this.importTimestamp = Date.now()
     },
 
@@ -2337,62 +2679,66 @@ export const useEditorStore = defineStore('editor', {
 
     // 工程参数加载
     async applyProject(project: any, isEditing = false) {
-      this.danmakus = project.danmakus || []
+      this.danmakus = Array.isArray(project?.danmakus) ? project.danmakus : []
       if (!isEditing) {
         this.selectedIds = []
       }
 
-      const mediaPath = getProjectMediaPath(project.media)
+      const mediaPath = getProjectMediaPath(project?.media)
 
       if (mediaPath) {
         await this.resolveMediaPath(mediaPath)
-      } else if (project.media?.url) {
+      } else if (typeof project?.media?.url === 'string' && project.media.url && !project.media.url.startsWith('blob:')) {
         this.setMediaSource(project.media.url, '')
       } else {
         this.setMediaSource('', '')
       }
 
-      if (typeof project.player?.screenWidth === 'number') {
-        this.screenWidth = project.player.screenWidth
+      if (typeof project?.player?.screenWidth === 'number' && Number.isFinite(project.player.screenWidth) && project.player.screenWidth > 0) {
+        this.screenWidth = Math.max(10, Math.round(project.player.screenWidth))
       }
-      if (typeof project.player?.screenHeight === 'number') {
-        this.screenHeight = project.player.screenHeight
+      if (typeof project?.player?.screenHeight === 'number' && Number.isFinite(project.player.screenHeight) && project.player.screenHeight > 0) {
+        this.screenHeight = Math.max(10, Math.round(project.player.screenHeight))
       }
-      if (typeof project.player?.screenScale === 'number') {
-        this.screenScale = project.player.screenScale
+      if (typeof project?.player?.screenScale === 'number' && Number.isFinite(project.player.screenScale) && project.player.screenScale > 0) {
+        this.setScreenScale(project.player.screenScale)
       }
-      if (typeof project.player?.maxLayers === 'number') {
+      if (typeof project?.player?.maxLayers === 'number' && Number.isFinite(project.player.maxLayers)) {
         this.setMaxLayers(project.player.maxLayers)
       }
-      if (typeof project.preprocess?.allowNegativeValues === 'boolean') {
+      if (typeof project?.preprocess?.allowNegativeValues === 'boolean') {
         this.allowNegativeValues = project.preprocess.allowNegativeValues
       }
-      if (typeof project.timeline?.showSpectrogram === 'boolean') {
+      if (typeof project?.timeline?.showSpectrogram === 'boolean') {
         this.showSpectrogram = project.timeline.showSpectrogram
       }
-      if (typeof project.timeline?.spectrogramColorScheme === 'string') {
+      if (typeof project?.timeline?.spectrogramColorScheme === 'string') {
         this.spectrogramColorScheme = project.timeline.spectrogramColorScheme
       }
-      if (typeof project.timeline?.spectrogramCustomColor === 'string') {
+      if (typeof project?.timeline?.spectrogramCustomColor === 'string') {
         this.spectrogramCustomColor = project.timeline.spectrogramCustomColor
       }
-      if (typeof project.timeline?.danmakuColorForBlock === 'boolean') {
+      if (typeof project?.timeline?.danmakuColorForBlock === 'boolean') {
         this.danmakuColorForBlock = project.timeline.danmakuColorForBlock
       }
 
-      this.currentTime = typeof project.timeline?.currentTime === 'number'
-        ? Math.max(0, Math.round(project.timeline.currentTime))
-        : 0
+      this.setTime(
+        typeof project?.timeline?.currentTime === 'number' && Number.isFinite(project.timeline.currentTime)
+          ? Math.max(0, Math.round(project.timeline.currentTime))
+          : 0
+      )
 
       this.setTimelineView(
-        typeof project.timeline?.scale === 'number' ? project.timeline.scale : 0.1,
-        typeof project.timeline?.offset === 'number' ? project.timeline.offset : 0,
-        typeof project.timeline?.scrollTop === 'number' ? project.timeline.scrollTop : 0,
+        typeof project?.timeline?.scale === 'number' ? project.timeline.scale : 0.1,
+        typeof project?.timeline?.offset === 'number' ? project.timeline.offset : 0,
+        typeof project?.timeline?.scrollTop === 'number' ? project.timeline.scrollTop : 0,
       )
     },
 
     // 导出时包含视频信息
     exportProject() {
+      const persistedMediaUrl = this.mediaFilePath
+        || (this.mediaUrl && !this.mediaUrl.startsWith('blob:') ? this.mediaUrl : '')
       return {
         meta: {
           version: this.version,
@@ -2410,7 +2756,7 @@ export const useEditorStore = defineStore('editor', {
         },
         media: {
           path: this.mediaFilePath,
-          url: this.mediaFilePath || this.mediaUrl,
+          url: persistedMediaUrl,
         },
         player: {
           screenWidth: this.screenWidth,
@@ -2429,11 +2775,16 @@ export const useEditorStore = defineStore('editor', {
      * 设置播放器 screen 尺寸
      */
     setScreenSize(width: number, height: number) {
-      this.screenWidth = Math.max(10, Math.round(width))
-      this.screenHeight = Math.max(10, Math.round(height))
+      if (typeof width === 'number' && Number.isFinite(width)) {
+        this.screenWidth = Math.max(10, Math.round(width))
+      }
+      if (typeof height === 'number' && Number.isFinite(height)) {
+        this.screenHeight = Math.max(10, Math.round(height))
+      }
     },
 
     setScreenScale(scale: number) {
+      if (typeof scale !== 'number' || !Number.isFinite(scale)) return
       this.screenScale = Math.max(10, Math.round(scale))
     },
 
@@ -2457,9 +2808,11 @@ export const useEditorStore = defineStore('editor', {
     },
 
     setMaxLayers(value: number) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return
       const normalized = Math.max(1, Math.round(value))
       const maxUsedLayer = this.danmakus.reduce((max: number, danmaku: any) => {
-        return Math.max(max, danmaku.layer)
+        const layer = typeof danmaku?.layer === 'number' && Number.isFinite(danmaku.layer) ? danmaku.layer : -1
+        return Math.max(max, layer)
       }, -1)
       const minimumAllowed = Math.max(1, maxUsedLayer + 1)
 
@@ -2497,14 +2850,23 @@ export const useEditorStore = defineStore('editor', {
      * 确保ID在所有弹幕中是唯一的
      */
     generateNewId(): string {
+      const usedIds = new Set<string>()
       let maxId = 0
-      this.danmakus.forEach((d: DanmakuItem) => {
-        const id = parseInt(d.id)
-        if (!isNaN(id) && id > maxId) {
-          maxId = id
+      for (const d of this.danmakus as DanmakuItem[]) {
+        if (!d?.id) continue
+        usedIds.add(d.id)
+        if (/^\d+$/.test(d.id)) {
+          const id = Number.parseInt(d.id, 10)
+          if (Number.isSafeInteger(id) && id > maxId) {
+            maxId = id
+          }
         }
-      })
-      return String(maxId + 1)
+      }
+      let next = maxId + 1
+      while (usedIds.has(String(next))) {
+        next++
+      }
+      return String(next)
     },
 
     /**
@@ -2512,9 +2874,12 @@ export const useEditorStore = defineStore('editor', {
      * 冲突判断：startTime1 < startTime2 + duration2 && startTime2 < startTime1 + duration1
      */
     isTimeConflict(startTime: number, duration: number, layer: number, excludeIds: string[] = []): boolean {
+      const excludeSet = excludeIds.length > 0 ? new Set(excludeIds) : null
       return this.danmakus.some((d: DanmakuItem) => {
-        if (d.layer !== layer || excludeIds.includes(d.id)) return false
-        return startTime < d.startTime + d.animation.duration && d.startTime < startTime + duration
+        if (d.layer !== layer) return false
+        if (excludeSet && excludeSet.has(d.id)) return false
+        const dDuration = Number.isFinite(d.animation?.duration) ? d.animation.duration : 0
+        return startTime < d.startTime + dDuration && d.startTime < startTime + duration
       })
     },
 
@@ -2523,20 +2888,46 @@ export const useEditorStore = defineStore('editor', {
      * @param danmakusToAdd 要添加的弹幕数组
      */
     assignLayersForDanmakus(danmakusToAdd: DanmakuItem[]): void {
-      danmakusToAdd.forEach((newDanmaku) => {
-        let layer = newDanmaku.layer
-        const maxLayers = this.maxLayers
+      if (danmakusToAdd.length === 0) return
+      const maxLayers = Math.max(1, Math.round(Number.isFinite(this.maxLayers) ? this.maxLayers : 100))
+      const excludedIds = new Set(danmakusToAdd.map((d) => d.id).filter(Boolean))
+      const intervalsByLayer = new Map<number, Array<{ start: number; end: number }>>()
 
-        // 如果当前layer有冲突，则尝试更高的layer
-        while (
-          layer < maxLayers &&
-          this.isTimeConflict(newDanmaku.startTime, newDanmaku.animation.duration, layer, [newDanmaku.id])
-        ) {
+      for (const existing of this.danmakus as DanmakuItem[]) {
+        if (excludedIds.has(existing.id)) continue
+        const existingLayer = Number.isFinite(existing.layer) ? existing.layer : 0
+        const existingStart = Number.isFinite(existing.startTime) ? existing.startTime : 0
+        const existingDuration = Number.isFinite(existing.animation?.duration) ? existing.animation.duration : 0
+        let bucket = intervalsByLayer.get(existingLayer)
+        if (!bucket) {
+          bucket = []
+          intervalsByLayer.set(existingLayer, bucket)
+        }
+        bucket.push({ start: existingStart, end: existingStart + existingDuration })
+      }
+
+      for (const newDanmaku of danmakusToAdd) {
+        let layer = Math.max(0, Math.round(Number.isFinite(newDanmaku.layer) ? newDanmaku.layer : 0))
+        const start = Number.isFinite(newDanmaku.startTime) ? newDanmaku.startTime : 0
+        const duration = Number.isFinite(newDanmaku.animation?.duration) ? Math.max(1, newDanmaku.animation.duration) : 1
+        const end = start + duration
+
+        while (layer < maxLayers) {
+          const bucket = intervalsByLayer.get(layer)
+          const hasConflict = bucket ? bucket.some((iv) => start < iv.end && iv.start < end) : false
+          if (!hasConflict) break
           layer++
         }
 
-        newDanmaku.layer = Math.min(layer, maxLayers - 1)
-      })
+        const assignedLayer = Math.min(layer, maxLayers - 1)
+        newDanmaku.layer = assignedLayer
+        let bucket = intervalsByLayer.get(assignedLayer)
+        if (!bucket) {
+          bucket = []
+          intervalsByLayer.set(assignedLayer, bucket)
+        }
+        bucket.push({ start, end })
+      }
     },
 
     /**
@@ -2547,28 +2938,37 @@ export const useEditorStore = defineStore('editor', {
     adjustStartTimesForDanmakus(danmakusToAdd: DanmakuItem[]): void {
       if (danmakusToAdd.length === 0) return
 
-      // 找最小的startTime
-      const minStartTime = Math.min(...danmakusToAdd.map((d) => d.startTime))
+      // 找最小的startTime（避免大数组 spread 触发调用栈溢出）
+      let minStartTime = Infinity
+      for (const d of danmakusToAdd) {
+        const start = Number.isFinite(d?.startTime) ? d.startTime : 0
+        if (start < minStartTime) minStartTime = start
+      }
+      if (!Number.isFinite(minStartTime)) minStartTime = 0
 
       // 计算偏移量（播放头位置 - 最小startTime）
-      const offset = this.currentTime - minStartTime
+      const safeCurrentTime = Number.isFinite(this.currentTime) ? Math.max(0, this.currentTime) : 0
+      const offset = safeCurrentTime - minStartTime
 
       // 应用偏移到所有弹幕
-      danmakusToAdd.forEach((d) => {
-        d.startTime = Math.round(Math.max(0, d.startTime + offset))
-      })
+      for (const d of danmakusToAdd) {
+        const start = Number.isFinite(d.startTime) ? d.startTime : 0
+        d.startTime = Math.round(Math.max(0, start + offset))
+      }
     },
 
     /**
      * 创建单条弹幕
      */
     createSingleDanmaku(): void {
+      this._flushPendingHistoryTimers()
       const duration = this.getDefaultDanmakuDuration()
+      const safeCurrentTime = Number.isFinite(this.currentTime) ? Math.max(0, Math.round(this.currentTime)) : 0
 
       const newDanmaku: DanmakuItem = {
         id: this.generateNewId(),
         layer: 0,
-        startTime: Math.round(this.currentTime),
+        startTime: safeCurrentTime,
         content: {
           text: '',
           font: 'SimHei',
@@ -2601,17 +3001,22 @@ export const useEditorStore = defineStore('editor', {
       this.selectedIds = [newDanmaku.id]
 
       // 记录历史
-      historyManager.recordSnapshot(this.danmakus, '创建弹幕')
+      historyManager.recordSnapshot(this.danmakus, '创建弹幕', true)
 
       console.log('创建单条弹幕:', newDanmaku.id)
     },
 
     getDefaultDanmakuDuration(): number {
+      const value = Number.isFinite(this.danmakuDuration.value) && this.danmakuDuration.value > 0
+        ? this.danmakuDuration.value
+        : 1000
       if (this.danmakuDuration.mode === 'multiplier') {
-        const playheadStepMs = this.playheadStepMs || 16.666667
-        return Math.round(Math.max(100, playheadStepMs * this.danmakuDuration.value))
+        const playheadStepMs = Number.isFinite(this.playheadStepMs) && this.playheadStepMs > 0
+          ? this.playheadStepMs
+          : 16.666667
+        return Math.round(Math.max(100, playheadStepMs * value))
       }
-      return Math.max(100, this.danmakuDuration.value)
+      return Math.round(Math.max(100, value))
     },
 
     async loadDanmakuTemplates(): Promise<void> {
@@ -2705,13 +3110,15 @@ export const useEditorStore = defineStore('editor', {
       if (this.danmakuTemplates.some((item) => item.name === normalizedName && item.name !== name)) {
         throw new Error('模板名称已存在')
       }
-      if (isTauriRuntime()) {
-        await renameDanmakuTemplate(name, normalizedName)
-      }
-      this.danmakuTemplates = this.danmakuTemplates.map((item) => item.name === name
+      const nextTemplates = this.danmakuTemplates.map((item) => item.name === name
         ? { ...item, name: normalizedName }
         : item)
-      if (!isTauriRuntime()) writeLocalDanmakuTemplates(this.danmakuTemplates)
+      if (isTauriRuntime()) {
+        await renameDanmakuTemplate(name, normalizedName)
+      } else {
+        writeLocalDanmakuTemplates(nextTemplates)
+      }
+      this.danmakuTemplates = nextTemplates
       if (this.selectedDanmakuTemplateName === name) {
         this.selectedDanmakuTemplateName = normalizedName
         this.persistGlobalSettings()
@@ -2754,11 +3161,13 @@ export const useEditorStore = defineStore('editor', {
     },
 
     async deleteDanmakuTemplateByName(name: string): Promise<void> {
+      const nextTemplates = this.danmakuTemplates.filter((item) => item.name !== name)
       if (isTauriRuntime()) {
         await deleteDanmakuTemplate(name)
+      } else {
+        writeLocalDanmakuTemplates(nextTemplates)
       }
-      this.danmakuTemplates = this.danmakuTemplates.filter((item) => item.name !== name)
-      if (!isTauriRuntime()) writeLocalDanmakuTemplates(this.danmakuTemplates)
+      this.danmakuTemplates = nextTemplates
       if (this.selectedDanmakuTemplateName === name) {
         this.selectedDanmakuTemplateName = this.danmakuTemplates[0]?.name || ''
         this.persistGlobalSettings()
@@ -2770,35 +3179,51 @@ export const useEditorStore = defineStore('editor', {
       this.persistGlobalSettings()
     },
 
-    insertDanmakus(drafts: DanmakuItem[], historyLabel = '插入弹幕', immediate = false): DanmakuItem[] {
-      const danmakusToAdd = JSON.parse(JSON.stringify(drafts)) as DanmakuItem[]
+    insertDanmakus(drafts: DanmakuItem[], historyLabel = '插入弹幕', _immediate = false): DanmakuItem[] {
+      if (!Array.isArray(drafts) || drafts.length === 0) return []
+      this._flushPendingHistoryTimers()
       const duration = this.getDefaultDanmakuDuration()
-      danmakusToAdd.forEach((danmaku) => {
-        if (!Number.isFinite(danmaku.animation?.duration)) {
-          danmaku.animation.duration = duration
+      const danmakusToAdd = drafts.map((draft) => {
+        const cloned = cloneDanmakuShallowDeep(draft)
+        if (!Number.isFinite(draft?.animation?.duration) || draft.animation.duration <= 0) {
+          cloned.animation.duration = duration
         }
+        return cloned
       })
 
-      let currentMaxId = this.danmakus.reduce((max: number, danmaku: DanmakuItem) => {
-        const id = Number.parseInt(danmaku.id, 10)
-        return Number.isFinite(id) ? Math.max(max, id) : max
-      }, 0)
+      const usedIds = new Set<string>()
+      let currentMaxId = 0
+      for (const danmaku of this.danmakus as DanmakuItem[]) {
+        if (!danmaku?.id) continue
+        usedIds.add(danmaku.id)
+        if (/^\d+$/.test(danmaku.id)) {
+          const id = Number.parseInt(danmaku.id, 10)
+          if (Number.isSafeInteger(id) && id > currentMaxId) {
+            currentMaxId = id
+          }
+        }
+      }
       danmakusToAdd.forEach((danmaku) => {
-        danmaku.id = String(++currentMaxId)
+        do {
+          ++currentMaxId
+        } while (usedIds.has(String(currentMaxId)))
+        const nextId = String(currentMaxId)
+        usedIds.add(nextId)
+        danmaku.id = nextId
       })
 
       this.adjustStartTimesForDanmakus(danmakusToAdd)
       this.assignLayersForDanmakusSequentially(danmakusToAdd)
       this.danmakus.push(...danmakusToAdd)
       this.selectedIds = danmakusToAdd.map((danmaku) => danmaku.id)
-      historyManager.recordSnapshot(this.danmakus, `${historyLabel}${danmakusToAdd.length}条`, immediate)
+      historyManager.recordSnapshot(this.danmakus, `${historyLabel}${danmakusToAdd.length}条`, true)
       return danmakusToAdd
     },
 
     insertSelectedDanmakuTemplate(): boolean {
       const template = this.danmakuTemplates.find((item) => item.name === this.selectedDanmakuTemplateName)
       if (!template) return false
-      this.insertDanmakus(template.danmakus, '插入模板')
+      this.insertDanmakus(template.danmakus, '插入模板', true)
       return true
     },
 
@@ -2806,14 +3231,20 @@ export const useEditorStore = defineStore('editor', {
      * 删除选中的弹幕
      */
     deleteSelectedDanmakus(): void {
-      const idsToDelete = [...this.selectedIds]
-      this.danmakus = this.danmakus.filter((d: DanmakuItem) => !idsToDelete.includes(d.id))
+      if (this.selectedIds.length === 0) return
+      this._flushPendingHistoryTimers()
+      const deleteSet = new Set(this.selectedIds)
+      const nextDanmakus = this.danmakus.filter((d: DanmakuItem) => !deleteSet.has(d.id))
+      const deletedCount = this.danmakus.length - nextDanmakus.length
+      this.danmakus = nextDanmakus
       this.selectedIds = []
 
-      // 记录历史
-      historyManager.recordSnapshot(this.danmakus, `删除${idsToDelete.length}条弹幕`)
+      if (deletedCount === 0) return
 
-      console.log('删除弹幕:', idsToDelete)
+      // 记录历史
+      historyManager.recordSnapshot(this.danmakus, `删除${deletedCount}条弹幕`, true)
+
+      console.log('删除弹幕:', [...deleteSet])
     },
 
     /**
@@ -2876,8 +3307,9 @@ export const useEditorStore = defineStore('editor', {
 
       // 如果有选中的弹幕，进一步过滤
       if (this.selectedIds.length > 0) {
+        const selectedSet = new Set(this.selectedIds)
         visibleDanmakus = visibleDanmakus.filter((d: DanmakuItem) =>
-          this.selectedIds.includes(d.id)
+          selectedSet.has(d.id)
         )
       }
 
@@ -2885,6 +3317,9 @@ export const useEditorStore = defineStore('editor', {
         notice.log('当前帧没有可复制的弹幕', 'warn')
         return
       }
+
+      // 计算 duration（使用用户设置）
+      const duration = this.getDefaultDanmakuDuration()
 
       // 计算渲染状态并创建新的弹幕对象
       const copiedDanmakus: DanmakuItem[] = visibleDanmakus.map((d: DanmakuItem) => {
@@ -2918,32 +3353,20 @@ export const useEditorStore = defineStore('editor', {
           Math.round(d.transform.start.y +
           (d.transform.end.y - d.transform.start.y) * progress)
 
-        // 计算当前透明度
-        const lifeProgress = Math.max(
-          0,
-          Math.min(1, (time - d.startTime) / d.animation.duration)
-        )
+        // 计算当前透明度（防止 duration <= 0 导致 0/0 = NaN）
+        const lifeProgress = d.animation.duration > 0
+          ? Math.max(0, Math.min(1, (time - d.startTime) / d.animation.duration))
+          : 1
         const opacity =
           (d.opacity.from + (d.opacity.to - d.opacity.from) * lifeProgress).toFixed(2)
-        const opacityValue = parseFloat(opacity)
-
-        // 计算 duration（使用用户设置）
-        let duration = 1000
-        if (this.danmakuDuration.mode === 'ms') {
-          duration = Math.round(Math.max(100, this.danmakuDuration.value))
-        } else if (this.danmakuDuration.mode === 'multiplier') {
-          const playheadStepMs = this.playheadStepMs || 16.666667
-          duration = Math.round(
-            Math.max(100, playheadStepMs * this.danmakuDuration.value)
-          )
-        }
+        const opacityValue = Number.isFinite(parseFloat(opacity)) ? parseFloat(opacity) : 1
 
         // 创建新的弹幕对象（没有变换，起始与结束相同）
         return {
           id: d.id,
           layer: d.layer,
           startTime: 0,
-          content: d.content,
+          content: { ...d.content },
           transform: {
             start: { x, y },
             end: { x, y },
@@ -3018,59 +3441,62 @@ export const useEditorStore = defineStore('editor', {
      * 这样可以确保粘贴的多条弹幕之间也能正确避让
      */
     assignLayersForDanmakusSequentially(danmakusToAdd: DanmakuItem[]): void {
-      // 按layer排序
-      const sorted = [...danmakusToAdd].sort((a, b) => a.layer - b.layer)
-      
-      sorted.forEach((danmakuToProcess) => {
-        let layer = danmakuToProcess.layer
-        const maxLayers = this.maxLayers
-        
-        // 对于每条弹幕，检查它与所有其他弹幕的冲突
+      if (danmakusToAdd.length === 0) return
+      const maxLayers = Math.max(1, Math.round(Number.isFinite(this.maxLayers) ? this.maxLayers : 100))
+      const intervalsByLayer = new Map<number, Array<{ start: number; end: number }>>()
+
+      for (const existing of this.danmakus as DanmakuItem[]) {
+        const existingLayer = Number.isFinite(existing.layer) ? existing.layer : 0
+        const existingStart = Number.isFinite(existing.startTime) ? existing.startTime : 0
+        const existingDuration = Number.isFinite(existing.animation?.duration) ? existing.animation.duration : 0
+        let bucket = intervalsByLayer.get(existingLayer)
+        if (!bucket) {
+          bucket = []
+          intervalsByLayer.set(existingLayer, bucket)
+        }
+        bucket.push({ start: existingStart, end: existingStart + existingDuration })
+      }
+
+      // 按 layer 排序，同时避免 NaN 破坏排序稳定性
+      const sorted = [...danmakusToAdd].sort((a, b) => {
+        const layerA = Number.isFinite(a?.layer) ? a.layer : 0
+        const layerB = Number.isFinite(b?.layer) ? b.layer : 0
+        return layerA - layerB
+      })
+
+      for (const danmakuToProcess of sorted) {
+        let layer = Math.max(0, Math.round(Number.isFinite(danmakuToProcess.layer) ? danmakuToProcess.layer : 0))
+        const start = Number.isFinite(danmakuToProcess.startTime) ? danmakuToProcess.startTime : 0
+        const duration = Number.isFinite(danmakuToProcess.animation?.duration)
+          ? Math.max(1, danmakuToProcess.animation.duration)
+          : 1
+        const end = start + duration
+
         while (layer < maxLayers) {
-          let hasConflict = false
-          
-          // 检查与既有弹幕的冲突
-          for (const existing of this.danmakus) {
-            if (existing.layer === layer) {
-              const conflict = danmakuToProcess.startTime < existing.startTime + existing.animation.duration &&
-                              existing.startTime < danmakuToProcess.startTime + danmakuToProcess.animation.duration
-              if (conflict) {
-                hasConflict = true
-                break
-              }
-            }
-          }
-          
-          // 检查与已处理弹幕的冲突
+          const bucket = intervalsByLayer.get(layer)
+          const hasConflict = bucket ? bucket.some((iv) => start < iv.end && iv.start < end) : false
           if (!hasConflict) {
-            for (const processed of sorted) {
-              if (processed === danmakuToProcess) break // 只检查已处理的
-              
-              if (processed.layer === layer) {
-                const conflict = danmakuToProcess.startTime < processed.startTime + processed.animation.duration &&
-                                processed.startTime < danmakuToProcess.startTime + danmakuToProcess.animation.duration
-                if (conflict) {
-                  hasConflict = true
-                  break
-                }
-              }
-            }
-          }
-          
-          if (!hasConflict) {
-            break // 找到合适的layer
+            break
           }
           layer++
         }
-        
-        danmakuToProcess.layer = Math.min(layer, maxLayers - 1)
-      })
+
+        const assignedLayer = Math.min(layer, maxLayers - 1)
+        danmakuToProcess.layer = assignedLayer
+        let bucket = intervalsByLayer.get(assignedLayer)
+        if (!bucket) {
+          bucket = []
+          intervalsByLayer.set(assignedLayer, bucket)
+        }
+        bucket.push({ start, end })
+      }
     },
 
     /**
      * 撤销操作
      */
     undo(): void {
+      this._flushPendingHistoryTimers()
       const result = historyManager.undo()
       if (result) {
         this.danmakus = result.danmakus
@@ -3082,6 +3508,7 @@ export const useEditorStore = defineStore('editor', {
      * 重做操作
      */
     redo(): void {
+      this._flushPendingHistoryTimers()
       const result = historyManager.redo()
       if (result) {
         this.danmakus = result.danmakus
@@ -3093,6 +3520,9 @@ export const useEditorStore = defineStore('editor', {
      * 更新弹幕生存时间配置
      */
     setDanmakuDuration(mode: 'ms' | 'multiplier', value: number): void {
+      if ((mode !== 'ms' && mode !== 'multiplier') || typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+        return
+      }
       this.danmakuDuration.mode = mode
       this.danmakuDuration.value = value
       this.persistGlobalSettings()
@@ -3120,27 +3550,35 @@ export const useEditorStore = defineStore('editor', {
         return
       }
 
-      const selectedDanmakus = this.danmakus.filter((d: DanmakuItem) => this.selectedIds.includes(d.id))
+      const selectedSet = new Set(this.selectedIds)
+      const selectedDanmakus = this.danmakus.filter((d: DanmakuItem) => selectedSet.has(d.id))
       if (selectedDanmakus.length === 0) {
         return
       }
 
-      const minLayer = Math.min(...selectedDanmakus.map((d: any) => d.layer))
-      const maxLayer = Math.max(...selectedDanmakus.map((d: any) => d.layer))
+      let minLayer = Infinity
+      let maxLayer = -Infinity
+      for (const d of selectedDanmakus as DanmakuItem[]) {
+        const layer = Number.isFinite(d.layer) ? d.layer : 0
+        if (layer < minLayer) minLayer = layer
+        if (layer > maxLayer) maxLayer = layer
+      }
 
+      const maxLayers = Math.max(1, Math.round(Number.isFinite(this.maxLayers) ? this.maxLayers : 100))
       let appliedDelta = Math.trunc(delta)
       if (appliedDelta < 0) {
         appliedDelta = Math.max(appliedDelta, -minLayer)
       } else {
-        appliedDelta = Math.min(appliedDelta, (this.maxLayers - 1) - maxLayer)
+        appliedDelta = Math.min(appliedDelta, (maxLayers - 1) - maxLayer)
       }
 
       if (appliedDelta === 0) {
         return
       }
 
-      selectedDanmakus.forEach((danmaku: any) => {
-        danmaku.layer += appliedDelta
+      selectedDanmakus.forEach((danmaku: DanmakuItem) => {
+        const currentLayer = Number.isFinite(danmaku.layer) ? danmaku.layer : 0
+        danmaku.layer = Math.max(0, Math.min(maxLayers - 1, currentLayer + appliedDelta))
       })
 
       // 防抖处理：清除之前的计时器，设置新的500ms延迟
@@ -3149,8 +3587,8 @@ export const useEditorStore = defineStore('editor', {
       }
 
       this._moveSelectedLayersDebounceTimer = setTimeout(() => {
-        historyManager.recordSnapshot(this.danmakus, '移动选中弹幕层级')
         this._moveSelectedLayersDebounceTimer = null
+        historyManager.recordSnapshot(this.danmakus, '移动选中弹幕层级', true)
       }, 500)
     }
   }

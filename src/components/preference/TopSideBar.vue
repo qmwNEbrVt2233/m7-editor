@@ -1,7 +1,14 @@
 <template>
   <div v-if="!store.screenRecordingMode" class="controls no-select">
     <div class="logo-container" @mouseenter="showShortcutsNow" @mouseleave="hideShortcutsWithDelay">
-      <a @click="help.show('about')" target="_blank"><img src="/favicon.svg" width="35" height="35" alt="logo"></a>
+      <a
+        role="button"
+        tabindex="0"
+        title="关于与使用文档"
+        @click="help.show('about')"
+        @keydown.enter.prevent="help.show('about')"
+        @keydown.space.prevent="help.show('about')"
+      ><img src="/favicon.svg" width="35" height="35" alt="logo"></a>
     </div>
     <div v-show="showShortcuts" class="shortcuts-tooltip have-scrollbar" @mouseenter="showShortcutsNow" @mouseleave="hideShortcutsWithDelay">
       <div class="shortcuts-content">
@@ -202,6 +209,7 @@
           v-model="maxLayersInput"
           @change="onMaxLayersChange"
           min="1"
+          max="10000"
           class="dark-input"
         />
       </div>
@@ -214,7 +222,8 @@
           type="number"
           v-model="screenWidthInput"
           @change="onScreenSizeChange"
-          min="1"
+          min="10"
+          max="16384"
           class="dark-input"
         />
       </div>
@@ -225,7 +234,8 @@
           type="number"
           v-model="screenHeightInput"
           @change="onScreenSizeChange"
-          min="1"
+          min="10"
+          max="16384"
           class="dark-input"
         />
       </div>
@@ -236,7 +246,8 @@
           type="number"
           v-model.lazy="screenScaleInput"
           @change="onScreenScaleChange"
-          min="1"
+          min="10"
+          max="1000"
           class="dark-input"
         />
       </div>
@@ -324,7 +335,8 @@
       <div v-if="spectrogramColorScheme === 'customize'" class="config-group">
         <input
           type="color"
-          v-model="spectrogramCustomColor"
+          :value="spectrogramColorPickerValue"
+          @input="onSpectrogramColorPickerInput"
           @change="onSpectrogramColorChange"
           class="color-picker"
           style="padding: 8px 10px"
@@ -367,7 +379,8 @@
 import { useEditorStore } from '@/store/editor'
 import { useNoticeStore } from '@/store/notice'
 import { useHelpStore } from '@/store/help'
-import { ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { normalizeColor } from '@/utils/validation'
 import {
   getFileInputPath,
   isTauriRuntime,
@@ -387,18 +400,21 @@ const xmlInput = ref<HTMLInputElement | null>(null)
 const activeMenu = ref<'file' | 'config' | 'player' | 'preprocess'| 'assistant' >('file')
 const showShortcuts = ref(false)
 let shortcutsHideTimer: ReturnType<typeof setTimeout> | null = null
+let lastMediaBlobUrl: string | null = null
 
 const playheadStepInput = ref(`${store.playheadStepMs.toFixed(6)}`)
 
-const danmakuDurationInput = ref(
-  store.danmakuDuration.mode === 'multiplier'
+function formatDanmakuDurationInput(): string {
+  return store.danmakuDuration.mode === 'multiplier'
     ? `*${store.danmakuDuration.value}`
     : `${store.danmakuDuration.value}`
-)
+}
+
+const danmakuDurationInput = ref(formatDanmakuDurationInput())
 
 const screenWidthInput = ref(String(store.screenWidth))
 const screenHeightInput = ref(String(store.screenHeight))
-const screenScaleInput = ref(store.screenScale)
+const screenScaleInput = ref(String(store.screenScale))
 const maxLayersInput = ref(String(store.maxLayers))
 const allowNegativeValues = ref(store.allowNegativeValues)
 const exportXmlAsRatio = ref(store.exportXmlAsRatio)
@@ -410,72 +426,135 @@ const spectrogramColorScheme = ref<'default' | 'customize'>(store.spectrogramCol
 const spectrogramCustomColor = ref(store.spectrogramCustomColor)
 const danmakuColorForBlock = ref(store.danmakuColorForBlock)
 
+const spectrogramColorPickerValue = computed(() => {
+  const normalized = normalizeColor(spectrogramCustomColor.value)
+  return (normalized || '#00BBFF').toLowerCase()
+})
+
+function revokePreviousMediaBlobUrl() {
+  if (lastMediaBlobUrl) {
+    URL.revokeObjectURL(lastMediaBlobUrl)
+    lastMediaBlobUrl = null
+  }
+}
+
 // ── 事件处理函数 ──
 
 function onPlayheadStepChange(e: Event) {
   const input = (e.target as HTMLInputElement).value.trim()
-  
-  if (!input) return
-  
-  let stepMs = 16.666667
-  
+  if (!input) {
+    playheadStepInput.value = `${store.playheadStepMs.toFixed(6)}`
+    return
+  }
+
+  let stepMs = NaN
   if (input.startsWith('/')) {
-    const fpsStr = input.substring(1)
-    const fps = parseInt(fpsStr)
-    if (fps > 0) {
-      stepMs = 1000 / fps
+    const fpsStr = input.slice(1).trim()
+    if (/^\d+(?:\.\d+)?$/.test(fpsStr)) {
+      const fps = Number(fpsStr)
+      if (Number.isFinite(fps) && fps > 0) {
+        stepMs = 1000 / fps
+      }
     }
-  } else {
-    const ms = parseFloat(input)
-    if (ms > 0) {
+  } else if (/^\d+(?:\.\d+)?$/.test(input)) {
+    const ms = Number(input)
+    if (Number.isFinite(ms) && ms > 0) {
       stepMs = ms
     }
   }
-  
-  if (stepMs > 0 && stepMs <= 10000) {
-    store.setPlayheadStepMs(stepMs)
-    playheadStepInput.value = `${stepMs.toFixed(6)}`
+
+  if (!Number.isFinite(stepMs) || stepMs <= 0 || stepMs > 10000) {
+    notice.alert('播放头步长必须是 (0, 10000] ms 之间的正数，或使用 /帧率（如 /60）', 'warn')
+    playheadStepInput.value = `${store.playheadStepMs.toFixed(6)}`
+    return
   }
+
+  store.setPlayheadStepMs(stepMs)
+  playheadStepInput.value = `${store.playheadStepMs.toFixed(6)}`
 }
 
 function onDanmakuDurationChange(e: Event) {
   const input = (e.target as HTMLInputElement).value.trim()
-  
-  if (!input) return
-  
-  if (input.startsWith('*')) {
-    const multiplierStr = input.substring(1)
-    const multiplier = parseFloat(multiplierStr)
-    if (multiplier > 0) {
-      store.setDanmakuDuration('multiplier', multiplier)
-      danmakuDurationInput.value = input
-    }
-  } else {
-    const ms = parseFloat(input)
-    if (ms > 0) {
-      store.setDanmakuDuration('ms', ms)
-      danmakuDurationInput.value = input
-    }
+  if (!input) {
+    danmakuDurationInput.value = formatDanmakuDurationInput()
+    return
   }
+
+  if (input.startsWith('*')) {
+    const multiplierStr = input.slice(1).trim()
+    if (!/^\d+(?:\.\d+)?$/.test(multiplierStr)) {
+      notice.alert('倍率格式无效，请输入如 *2 的正数', 'warn')
+      danmakuDurationInput.value = formatDanmakuDurationInput()
+      return
+    }
+    const multiplier = Number(multiplierStr)
+    if (!Number.isFinite(multiplier) || multiplier <= 0 || multiplier > 10000) {
+      notice.alert('生存时间倍率必须在 (0, 10000] 之间', 'warn')
+      danmakuDurationInput.value = formatDanmakuDurationInput()
+      return
+    }
+    store.setDanmakuDuration('multiplier', multiplier)
+    danmakuDurationInput.value = `*${multiplier}`
+    return
+  }
+
+  if (!/^\d+(?:\.\d+)?$/.test(input)) {
+    notice.alert('生存时间格式无效，请输入正数（ms）或倍率（如 *2）', 'warn')
+    danmakuDurationInput.value = formatDanmakuDurationInput()
+    return
+  }
+  const ms = Number(input)
+  if (!Number.isFinite(ms) || ms <= 0 || ms > 600000) {
+    notice.alert('新建弹幕生存时间必须在 (0, 600000] ms 之间', 'warn')
+    danmakuDurationInput.value = formatDanmakuDurationInput()
+    return
+  }
+  const clampedMs = Math.max(100, Math.round(ms))
+  if (clampedMs !== Math.round(ms)) {
+    notice.log('[配置] 新建弹幕生存时间最小为 100ms，已自动修正为 100ms', 'warn')
+  }
+  store.setDanmakuDuration('ms', clampedMs)
+  danmakuDurationInput.value = `${clampedMs}`
 }
 
 function onScreenSizeChange() {
-  const width = parseInt(screenWidthInput.value, 10)
-  const height = parseInt(screenHeightInput.value, 10)
-
-  if (width > 0 && height > 0) {
-    store.setScreenSize(width, height)
+  const widthStr = String(screenWidthInput.value).trim()
+  const heightStr = String(screenHeightInput.value).trim()
+  if (!/^\d+(?:\.\d+)?$/.test(widthStr) || !/^\d+(?:\.\d+)?$/.test(heightStr)) {
+    notice.alert('播放器宽高必须是 10 到 16384 之间的有效数字', 'warn')
     screenWidthInput.value = String(store.screenWidth)
     screenHeightInput.value = String(store.screenHeight)
+    return
   }
+  const width = Math.round(Number(widthStr))
+  const height = Math.round(Number(heightStr))
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 10 || width > 16384 || height < 10 || height > 16384) {
+    notice.alert('播放器宽高必须在 10 到 16384 之间', 'warn')
+    screenWidthInput.value = String(store.screenWidth)
+    screenHeightInput.value = String(store.screenHeight)
+    return
+  }
+
+  store.setScreenSize(width, height)
+  screenWidthInput.value = String(store.screenWidth)
+  screenHeightInput.value = String(store.screenHeight)
 }
 
 function onScreenScaleChange() {
-  const scale = parseInt(screenScaleInput.value, 10)
-  if (scale > 0) {
-    store.setScreenScale(scale)
+  const scaleStr = String(screenScaleInput.value).trim()
+  if (!/^\d+(?:\.\d+)?$/.test(scaleStr)) {
+    notice.alert('播放器缩放比例必须是 10 到 1000 之间的数字', 'warn')
     screenScaleInput.value = String(store.screenScale)
+    return
   }
+  const scale = Math.round(Number(scaleStr))
+  if (!Number.isFinite(scale) || scale < 10 || scale > 1000) {
+    notice.alert('播放器缩放比例必须在 10% 到 1000% 之间', 'warn')
+    screenScaleInput.value = String(store.screenScale)
+    return
+  }
+  store.setScreenScale(scale)
+  screenScaleInput.value = String(store.screenScale)
 }
 
 function onExportRatioChange() {
@@ -495,9 +574,21 @@ function onExportDurationOffsetChange() {
 }
 
 function onMaxLayersChange() {
-  const maxLayers = parseInt(maxLayersInput.value, 10)
-  if (maxLayers > 0) {
-    store.setMaxLayers(maxLayers)
+  const rawStr = String(maxLayersInput.value).trim()
+  if (!/^\d+$/.test(rawStr)) {
+    notice.alert('Layer 最大层数必须是 1 到 10000 之间的正整数', 'warn')
+    maxLayersInput.value = String(store.maxLayers)
+    return
+  }
+  const maxLayers = Number(rawStr)
+  if (!Number.isFinite(maxLayers) || maxLayers < 1 || maxLayers > 10000) {
+    notice.alert('Layer 最大层数必须在 1 到 10000 之间', 'warn')
+    maxLayersInput.value = String(store.maxLayers)
+    return
+  }
+  store.setMaxLayers(maxLayers)
+  if (store.maxLayers > maxLayers) {
+    notice.alert(`当前已有弹幕使用到第 ${store.maxLayers} 层，最大层数未能调低到 ${maxLayers}`, 'warn')
   }
   maxLayersInput.value = String(store.maxLayers)
 }
@@ -514,8 +605,19 @@ function onSpectrogramColorSchemeChange() {
   store.setSpectrogramColorScheme(spectrogramColorScheme.value)
 }
 
+function onSpectrogramColorPickerInput(event: Event) {
+  spectrogramCustomColor.value = (event.target as HTMLInputElement).value.toUpperCase()
+}
+
 function onSpectrogramColorChange() {
-  store.setSpectrogramCustomColor(spectrogramCustomColor.value)
+  const normalized = normalizeColor(spectrogramCustomColor.value)
+  if (!normalized) {
+    notice.alert('频谱图颜色格式无效，请输入 #RRGGBB 或 rgb(...)', 'warn')
+    spectrogramCustomColor.value = store.spectrogramCustomColor
+    return
+  }
+  spectrogramCustomColor.value = normalized
+  store.setSpectrogramCustomColor(normalized)
 }
 
 function onDanmakuColorForBlockChange() {
@@ -526,11 +628,15 @@ function hideShortcutsWithDelay() {
   if (shortcutsHideTimer) clearTimeout(shortcutsHideTimer)
   shortcutsHideTimer = setTimeout(() => {
     showShortcuts.value = false
+    shortcutsHideTimer = null
   }, 100)
 }
 
 function showShortcutsNow() {
-  if (shortcutsHideTimer) clearTimeout(shortcutsHideTimer)
+  if (shortcutsHideTimer) {
+    clearTimeout(shortcutsHideTimer)
+    shortcutsHideTimer = null
+  }
   showShortcuts.value = true
 }
 
@@ -552,6 +658,7 @@ async function importMedia() {
       const media = await openMediaFileWithTauri()
 
       if (media) {
+        revokePreviousMediaBlobUrl()
         store.setImportedMediaSource(media.url, media.path)
         notice.log('媒体文件路径已设置:' + media.path, 'success')
       }
@@ -595,6 +702,7 @@ async function onMediaFileChange(e: Event) {
     if (nativePath && isTauriRuntime()) {
       try {
         const media = await registerMediaPath(nativePath)
+        revokePreviousMediaBlobUrl()
         store.setImportedMediaSource(media.url, media.path)
         notice.log('媒体文件路径已设置:' + media.path, 'success')
         input.value = ''
@@ -604,7 +712,9 @@ async function onMediaFileChange(e: Event) {
       }
     }
 
+    revokePreviousMediaBlobUrl()
     const url = URL.createObjectURL(file)
+    lastMediaBlobUrl = url
     store.setImportedMediaSource(url, '')
     notice.log('媒体文件成功载入:' + file.name, 'success')
   }
@@ -628,15 +738,21 @@ function saveCache() {
   store.saveToLocal()
 }
 
-function loadCache() {
-  store.loadFromLocal()
+async function loadCache() {
+  if (!store.InitializationPhase && store.danmakus.length > 0) {
+    const confirmed = await notice.confirm('确定要从本地缓存加载工程吗？这将丢失当前未保存的进度')
+    if (!confirmed) return
+  }
+  await store.loadFromLocal()
 }
 
 function onFileChange(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0]
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
   if (file) {
     store.loadFromFile(file)
   }
+  input.value = ''
 }
 
 function onXmlFileChange(e: Event) {
@@ -644,15 +760,30 @@ function onXmlFileChange(e: Event) {
   const file = input.files?.[0]
   if (file) {
     store.loadXmlFromFile(file)
-    input.value = ''
   }
+  input.value = ''
 }
 
 function clearCache() {
-  store.clearCache()
+  void store.clearCache()
 }
 
 // ── 双向同步 store ↔ 本地 ref ──
+
+watch(
+  () => store.playheadStepMs,
+  (stepMs) => {
+    playheadStepInput.value = `${stepMs.toFixed(6)}`
+  }
+)
+
+watch(
+  () => store.danmakuDuration,
+  () => {
+    danmakuDurationInput.value = formatDanmakuDurationInput()
+  },
+  { deep: true }
+)
 
 watch(
   () => store.screenWidth,
@@ -737,6 +868,13 @@ watch(
     danmakuColorForBlock.value = enabled
   }
 )
+
+onBeforeUnmount(() => {
+  if (shortcutsHideTimer) {
+    clearTimeout(shortcutsHideTimer)
+    shortcutsHideTimer = null
+  }
+})
 </script>
 
 <style scoped lang="css">
@@ -804,6 +942,7 @@ watch(
   border: 1px solid #404040;
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  max-width: calc(100vw - 32px);
   max-height: 80vh;
   overflow-y: auto;
   font-size: 12px;

@@ -71,8 +71,10 @@
                     v-model="quantityInput"
                     type="number"
                     min="1"
+                    max="10000"
                     step="1"
                     class="small-input"
+                    @change="onQuantityChange"
                   />
                 </label>
 
@@ -290,11 +292,12 @@
                     </div>
 
                     <label class="stack-field" v-if="colorRule.mode === 'relative'">
-                      <span>Alpha混合每次偏移值（加法）</span>
+                      <span>Alpha混合每次偏移值（加法，0-1）</span>
                       <input
                         v-model="colorRule.alpha"
                         type="text"
                         :placeholder="'例如 0.1'"
+                        @change="normalizeColorAlphaInput"
                       />
                     </label>
                   </div>
@@ -326,6 +329,7 @@
                           type="button"
                           class="font-trigger"
                           :class="{ 'font-trigger-open': isFontDropdownOpen }"
+                          :aria-expanded="isFontDropdownOpen"
                           @click="toggleFontDropdown"
                         >
                           <span class="font-trigger-label">{{ selectedFontLabel }}</span>
@@ -340,10 +344,19 @@
                         </button>
 
                         <div v-show="isFontDropdownOpen" class="font-dropdown">
-                          <div class="font-section">
+                          <input
+                            v-model="fontSearchQuery"
+                            type="text"
+                            class="font-search-input"
+                            placeholder="搜索字体..."
+                            aria-label="搜索字体"
+                            @click.stop
+                          />
+
+                          <div v-if="filteredBuiltInFontOptions.length > 0" class="font-section">
                             <div class="font-section-title">常用字体</div>
                             <button
-                              v-for="option in builtInFontOptions"
+                              v-for="option in filteredBuiltInFontOptions"
                               :key="option.value"
                               type="button"
                               class="font-option"
@@ -359,9 +372,12 @@
                             <div v-if="isLoadingLocalFonts" class="font-status">正在读取本地字体...</div>
                             <div v-else-if="!localFontsSupported" class="font-status">当前环境不支持本地字体访问</div>
                             <div v-else-if="localFontsPermissionDenied" class="font-status">未授予本地字体访问权限</div>
-                            <div v-else-if="localFontOptions.length === 0" class="font-status">未发现可用的本地字体</div>
+                            <div v-else-if="filteredLocalFontOptions.length === 0" class="font-status">
+                              {{ fontSearchQuery.trim() ? '未找到匹配的本地字体' : '未发现可用的本地字体' }}
+                            </div>
                             <div
                               v-else
+                              ref="localFontListRef"
                               class="font-virtual-list have-scrollbar"
                               @scroll="onLocalFontListScroll"
                             >
@@ -451,14 +467,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { computed, nextTick, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useEditorStore, parsePastedDanmakusText } from '@/store/editor'
+import { useHelpStore } from '@/store/help'
 import type {
   ColorFieldPath,
+  ColorRuleState,
   DanmakuDraft,
   DirectRuleMode,
   DirectFieldPath,
   NumericFieldPath,
+  NumericRuleState,
   RuleMode,
   ToolWriteRequest,
   WriteMode
@@ -501,6 +520,7 @@ type QueryLocalFontsFn = () => Promise<LocalFontData[]>
 const LOCAL_FONT_ITEM_HEIGHT = 32
 const LOCAL_FONT_LIST_HEIGHT = 224
 const LOCAL_FONT_OVERSCAN = 6
+const MAX_CREATION_QUANTITY = 10000
 
 type NumericFieldConfig = {
   path: NumericFieldPath
@@ -542,8 +562,126 @@ const emit = defineEmits<{
 
 const store = useEditorStore()
 const notice = useNoticeStore()
+const help = useHelpStore()
+
+function toFullHexColor(value: string): string {
+  const normalized = normalizeColor(value)
+  if (!normalized) return '#FFFFFF'
+  const shortMatch = normalized.match(/^#([0-9A-F]{3})$/)
+  if (shortMatch) {
+    const [r, g, b] = shortMatch[1]
+    return `#${r}${r}${g}${g}${b}${b}`
+  }
+  return normalized
+}
+
+function isRuleMode(value: unknown): value is RuleMode {
+  return value === 'cycle' || value === 'range' || value === 'relative'
+}
+
+function isDirectRuleMode(value: unknown): value is DirectRuleMode {
+  return value === 'assign' || value === 'cycle'
+}
+
+function sanitizePanelState(raw: unknown): CreationToolPanelState {
+  const defaultNumeric = createDefaultNumericRules(store.currentTime)
+  const defaultColor = createDefaultColorRule()
+  const defaultDirect = createDefaultDirectRules()
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw as Record<string, any>)
+    : {}
+
+  const rawNumeric = source.numericRules && typeof source.numericRules === 'object' ? source.numericRules : {}
+  const nextNumeric = {} as Record<NumericFieldPath, NumericRuleState>
+  for (const path of Object.keys(defaultNumeric) as NumericFieldPath[]) {
+    const fallback = defaultNumeric[path]
+    const candidate = rawNumeric[path] && typeof rawNumeric[path] === 'object' ? rawNumeric[path] : {}
+    nextNumeric[path] = {
+      mode: isRuleMode(candidate.mode) ? candidate.mode : fallback.mode,
+      cycleList: typeof candidate.cycleList === 'string' ? candidate.cycleList : fallback.cycleList,
+      start: typeof candidate.start === 'string' ? candidate.start : fallback.start,
+      end: typeof candidate.end === 'string' ? candidate.end : fallback.end,
+      step: typeof candidate.step === 'string' ? candidate.step : fallback.step,
+      expression: typeof candidate.expression === 'string' ? candidate.expression : fallback.expression,
+      expressionPreset: typeof candidate.expressionPreset === 'string' ? candidate.expressionPreset : fallback.expressionPreset
+    }
+  }
+
+  const rawColor = source.colorRule && typeof source.colorRule === 'object' ? source.colorRule : {}
+  const safeStart = normalizeColor(String(rawColor.start ?? rawColor.startText ?? ''))
+    ? toFullHexColor(String(rawColor.start ?? rawColor.startText ?? ''))
+    : defaultColor.start
+  const safeTarget = normalizeColor(String(rawColor.target ?? rawColor.targetText ?? ''))
+    ? toFullHexColor(String(rawColor.target ?? rawColor.targetText ?? ''))
+    : defaultColor.target
+  const nextColor: ColorRuleState = {
+    mode: isRuleMode(rawColor.mode) ? rawColor.mode : defaultColor.mode,
+    cycleList: typeof rawColor.cycleList === 'string' ? rawColor.cycleList : defaultColor.cycleList,
+    start: safeStart,
+    startText: typeof rawColor.startText === 'string' && normalizeColor(rawColor.startText)
+      ? toFullHexColor(rawColor.startText)
+      : safeStart,
+    target: safeTarget,
+    targetText: typeof rawColor.targetText === 'string' && normalizeColor(rawColor.targetText)
+      ? toFullHexColor(rawColor.targetText)
+      : safeTarget,
+    alpha: typeof rawColor.alpha === 'string' ? rawColor.alpha : defaultColor.alpha
+  }
+
+  const rawDirect = source.directRules && typeof source.directRules === 'object' ? source.directRules : {}
+  const rawText = rawDirect.text && typeof rawDirect.text === 'object' ? rawDirect.text : {}
+  const rawFont = rawDirect.font && typeof rawDirect.font === 'object' ? rawDirect.font : {}
+  const rawStroke = rawDirect.stroke && typeof rawDirect.stroke === 'object' ? rawDirect.stroke : {}
+  const rawEasing = rawDirect.easing && typeof rawDirect.easing === 'object' ? rawDirect.easing : {}
+
+  const nextDirect: ToolWriteRequest['directRules'] = {
+    text: {
+      mode: isDirectRuleMode(rawText.mode) ? rawText.mode : defaultDirect.text.mode,
+      value: typeof rawText.value === 'string' ? rawText.value : defaultDirect.text.value,
+      cycleList: typeof rawText.cycleList === 'string' ? rawText.cycleList : defaultDirect.text.cycleList
+    },
+    font: {
+      mode: isDirectRuleMode(rawFont.mode) ? rawFont.mode : defaultDirect.font.mode,
+      value: typeof rawFont.value === 'string' ? rawFont.value : defaultDirect.font.value,
+      cycleList: typeof rawFont.cycleList === 'string' ? rawFont.cycleList : defaultDirect.font.cycleList
+    },
+    stroke: {
+      mode: isDirectRuleMode(rawStroke.mode) ? rawStroke.mode : defaultDirect.stroke.mode,
+      value: typeof rawStroke.value === 'boolean' ? rawStroke.value : defaultDirect.stroke.value,
+      cycleList: typeof rawStroke.cycleList === 'string' ? rawStroke.cycleList : defaultDirect.stroke.cycleList
+    },
+    easing: {
+      mode: isDirectRuleMode(rawEasing.mode) ? rawEasing.mode : defaultDirect.easing.mode,
+      value: rawEasing.value === 'speeddown' || rawEasing.value === 'speedup' ? rawEasing.value : defaultDirect.easing.value,
+      cycleList: typeof rawEasing.cycleList === 'string' ? rawEasing.cycleList : defaultDirect.easing.cycleList
+    }
+  }
+
+  const parsedQty = Number(source.quantityInput)
+  const safeQuantity = Number.isFinite(parsedQty) && parsedQty >= 1
+    ? String(Math.min(MAX_CREATION_QUANTITY, Math.round(parsedQty)))
+    : '10'
+
+  return {
+    quantityInput: safeQuantity,
+    expressionEnabled: typeof source.expressionEnabled === 'boolean' ? source.expressionEnabled : false,
+    writeMode: source.writeMode === 'append' || source.writeMode === 'replace' ? source.writeMode : 'replace',
+    numericRules: nextNumeric,
+    colorRule: nextColor,
+    directRules: nextDirect
+  }
+}
+
+function sanitizePreset(preset: CreationToolPreset): CreationToolPreset {
+  return {
+    ...preset,
+    state: sanitizePanelState(preset.state)
+  }
+}
 
 const previewText = ref('')
+const debouncedPreviewText = ref('')
+let previewSummaryTimer: ReturnType<typeof setTimeout> | null = null
 const previewStatus = ref('预览框中的 JSON 可直接编辑并创建')
 const previewStatusTone = ref<'info' | 'success' | 'error'>('info')
 const toolStatus = ref('')
@@ -552,7 +690,7 @@ const expressionEnabled = ref(false)
 const writeMode = ref<WriteMode>('replace')
 const autoOperationMode = ref<'default' | 'auto'>('default')
 const rangeExpressionPresets = RANGE_EXPRESSION_PRESETS_VALUE
-const presets = ref<CreationToolPreset[]>(loadCreationToolPresets())
+const presets = ref<CreationToolPreset[]>(loadCreationToolPresets().map(sanitizePreset))
 const managedPresetId = ref<string | null>(null)
 
 const numericRules = ref(createDefaultNumericRules(store.currentTime))
@@ -565,7 +703,8 @@ const builtInFontOptions: FontOption[] = [
   { value: 'NSimSun', label: '新宋体' },
   { value: 'FangSong', label: '仿宋' }
 ]
-const fontPickerRef = ref<HTMLElement | null>(null)
+const fontPickerRef = ref<HTMLElement[]>([])
+const localFontListRef = ref<HTMLElement | null>(null)
 const localFontOptions = ref<FontOption[]>([])
 const localFontKeySet = ref<Set<string>>(new Set())
 const localFontsLoaded = ref(false)
@@ -574,6 +713,7 @@ const localFontsPermissionDenied = ref(false)
 const isLoadingLocalFonts = ref(false)
 const isFontDropdownOpen = ref(false)
 const localFontListScrollTop = ref(0)
+const fontSearchQuery = ref('')
 
 const toolSections: ToolSection[] = [
   {
@@ -627,9 +767,46 @@ const toolSections: ToolSection[] = [
   }
 ]
 
+function syncPreviewSummaryNow(nextText = previewText.value) {
+  if (previewSummaryTimer) {
+    clearTimeout(previewSummaryTimer)
+    previewSummaryTimer = null
+  }
+  debouncedPreviewText.value = nextText
+}
+
+watch(previewText, (nextText) => {
+  if (nextText === debouncedPreviewText.value) {
+    return
+  }
+  if (previewSummaryTimer) {
+    clearTimeout(previewSummaryTimer)
+  }
+  previewSummaryTimer = setTimeout(() => {
+    debouncedPreviewText.value = nextText
+    previewSummaryTimer = null
+  }, 150)
+})
+
 const previewSummary = computed(() => {
   try {
-    const drafts = parsePreviewDanmakus(previewText.value)
+    const drafts = parsePreviewDanmakus(debouncedPreviewText.value)
+    if (drafts.length === 0) {
+      return {
+        hasError: true,
+        message: '预览框中没有可创建的弹幕数据'
+      }
+    }
+    const invalidDurationCount = drafts.filter((draft) => {
+      const duration = Number(draft.animation?.duration)
+      return !Number.isFinite(duration) || duration <= 0
+    }).length
+    if (invalidDurationCount > 0) {
+      return {
+        hasError: true,
+        message: `已解析 ${drafts.length} 条，其中 ${invalidDurationCount} 条生存时间无效（须 > 0）`
+      }
+    }
     return {
       hasError: false,
       message: `当前可解析 ${drafts.length} 条弹幕`
@@ -645,8 +822,14 @@ const previewSummary = computed(() => {
 watch(
   () => props.visible,
   (visible) => {
-    if (visible && !previewText.value.trim()) {
-      resetPreviewToTemplate()
+    if (visible) {
+      if (!previewText.value.trim()) {
+        void resetPreviewToTemplate()
+      } else {
+        syncPreviewSummaryNow()
+      }
+    } else {
+      closeFontDropdown()
     }
   },
   { immediate: true }
@@ -655,21 +838,28 @@ watch(
 watch(
   presets,
   (nextPresets) => {
-    saveCreationToolPresets(nextPresets)
-  },
-  { deep: true }
+    try {
+      saveCreationToolPresets(nextPresets)
+    } catch (error) {
+      notice.alert('保存预设到本地存储失败（存储空间可能已满）', 'error', '保存预设失败', error)
+    }
+  }
 )
 
 onMounted(() => {
   document.addEventListener('keydown', handleCreationToolsShortcut)
   document.addEventListener('pointerdown', onFontDropdownPointerDown)
-  document.addEventListener('keydown', onFontDropdownKeydown)
+  document.addEventListener('keydown', onFontDropdownKeydown, { capture: true })
 })
 
 onBeforeUnmount(() => {
+  if (previewSummaryTimer) {
+    clearTimeout(previewSummaryTimer)
+    previewSummaryTimer = null
+  }
   document.removeEventListener('keydown', handleCreationToolsShortcut)
   document.removeEventListener('pointerdown', onFontDropdownPointerDown)
-  document.removeEventListener('keydown', onFontDropdownKeydown)
+  document.removeEventListener('keydown', onFontDropdownKeydown, { capture: true })
 })
 
 function isTextEditingTarget(target: EventTarget | null): boolean {
@@ -698,6 +888,7 @@ async function handlePasteOverwrite(overwriteType: 'start' | 'end') {
 
     if (danmakus.length !== 1) {
       notice.alert('仅支持一组弹幕数据，请确保剪贴板中只包含一条弹幕对象', 'warn', '警告')
+      return
     }
 
     const item = danmakus[0]
@@ -723,6 +914,7 @@ async function handlePasteOverwrite(overwriteType: 'start' | 'end') {
     if (!normalizedColor) {
       throw new Error('剪贴板弹幕数据缺少或无效的 content.color 字段')
     }
+    const fullHexColor = toFullHexColor(normalizedColor)
 
     for (const path of Object.keys(numericRules.value) as NumericFieldPath[]) {
       const value = mapping[path]
@@ -738,11 +930,11 @@ async function handlePasteOverwrite(overwriteType: 'start' | 'end') {
     }
 
     if (overwriteType === 'start') {
-      colorRule.value.start = normalizedColor
-      colorRule.value.startText = normalizedColor
+      colorRule.value.start = fullHexColor
+      colorRule.value.startText = fullHexColor
     } else {
-      colorRule.value.target = normalizedColor
-      colorRule.value.targetText = normalizedColor
+      colorRule.value.target = fullHexColor
+      colorRule.value.targetText = fullHexColor
     }
 
     toolStatus.value = `已根据剪贴板弹幕覆盖${label}`
@@ -777,11 +969,17 @@ function toggleAutoOperationMode() {
 }
 
 async function handleClearPresets() {
+  if (presets.value.length === 0) {
+    toolStatus.value = '当前没有可清空的预设'
+    return
+  }
+
   const confirmed = await notice.confirm('确定要清空创建工具预设吗？这将丢失所有未导出的预设')
   if (!confirmed) {
     return
   }
 
+  presets.value = []
   managedPresetId.value = null
   localStorage.removeItem('m7-editor.creation-tool-presets')
   toolStatus.value = '已清空高级创建工具预设'
@@ -799,7 +997,11 @@ function toggleExpressionEnabled() {
 }
 
 async function handleCreationToolsShortcut(event: KeyboardEvent) {
-  if (!props.visible || notice.isVisible) {
+  if (!props.visible || notice.isVisible || help.isVisible) {
+    return
+  }
+
+  if (event.repeat || event.isComposing || event.keyCode === 229) {
     return
   }
 
@@ -856,6 +1058,21 @@ async function handleCreationToolsShortcut(event: KeyboardEvent) {
 }
 
 const builtInFontKeys = new Set(builtInFontOptions.map(option => normalizeFontKey(option.value)))
+const normalizedFontSearch = computed(() => normalizeFontKey(fontSearchQuery.value))
+
+const filteredBuiltInFontOptions = computed(() => {
+  const query = normalizedFontSearch.value
+  if (!query) return builtInFontOptions
+  return builtInFontOptions.filter(
+    option => normalizeFontKey(option.label).includes(query) || normalizeFontKey(option.value).includes(query)
+  )
+})
+
+const filteredLocalFontOptions = computed(() => {
+  const query = normalizedFontSearch.value
+  if (!query) return localFontOptions.value
+  return localFontOptions.value.filter(option => normalizeFontKey(option.label).includes(query))
+})
 
 const currentFontOption = computed<FontOption | null>(() => {
   const currentFontValue = directRules.value.font.value.trim()
@@ -891,13 +1108,13 @@ const localFontListStartIndex = computed(() => {
 
 const localFontListEndIndex = computed(() => {
   const visibleCount = Math.ceil(LOCAL_FONT_LIST_HEIGHT / LOCAL_FONT_ITEM_HEIGHT) + LOCAL_FONT_OVERSCAN * 2
-  return Math.min(localFontOptions.value.length, localFontListStartIndex.value + visibleCount)
+  return Math.min(filteredLocalFontOptions.value.length, localFontListStartIndex.value + visibleCount)
 })
 
 const localFontListOffset = computed(() => localFontListStartIndex.value * LOCAL_FONT_ITEM_HEIGHT)
-const localFontListTotalHeight = computed(() => localFontOptions.value.length * LOCAL_FONT_ITEM_HEIGHT)
+const localFontListTotalHeight = computed(() => filteredLocalFontOptions.value.length * LOCAL_FONT_ITEM_HEIGHT)
 const visibleLocalFontOptions = computed(() => {
-  return localFontOptions.value.slice(localFontListStartIndex.value, localFontListEndIndex.value)
+  return filteredLocalFontOptions.value.slice(localFontListStartIndex.value, localFontListEndIndex.value)
 })
 
 function normalizeFontKey(value: string): string {
@@ -990,10 +1207,15 @@ async function openFontDropdown() {
   isFontDropdownOpen.value = true
   localFontListScrollTop.value = 0
   await loadLocalFonts()
+  await nextTick()
+  if (isFontDropdownOpen.value) {
+    scrollSelectedFontIntoView()
+  }
 }
 
 function closeFontDropdown() {
   isFontDropdownOpen.value = false
+  fontSearchQuery.value = ''
 }
 
 function toggleFontDropdown() {
@@ -1014,13 +1236,43 @@ function onLocalFontListScroll(event: Event) {
   localFontListScrollTop.value = (event.target as HTMLElement).scrollTop
 }
 
+function scrollSelectedFontIntoView() {
+  const currentFontKey = normalizeFontKey(directRules.value.font.value)
+  const targetIndex = filteredLocalFontOptions.value.findIndex(option => normalizeFontKey(option.value) === currentFontKey)
+  const listElement = localFontListRef.value
+
+  if (targetIndex < 0 || !listElement) {
+    return
+  }
+
+  const targetTop = targetIndex * LOCAL_FONT_ITEM_HEIGHT
+  const targetBottom = targetTop + LOCAL_FONT_ITEM_HEIGHT
+  const viewportTop = listElement.scrollTop
+  const viewportBottom = viewportTop + LOCAL_FONT_LIST_HEIGHT
+
+  if (targetTop < viewportTop) {
+    listElement.scrollTop = targetTop
+  } else if (targetBottom > viewportBottom) {
+    listElement.scrollTop = targetBottom - LOCAL_FONT_LIST_HEIGHT
+  }
+
+  localFontListScrollTop.value = listElement.scrollTop
+}
+
+watch(fontSearchQuery, () => {
+  localFontListScrollTop.value = 0
+  if (localFontListRef.value) {
+    localFontListRef.value.scrollTop = 0
+  }
+})
+
 function onFontDropdownPointerDown(event: PointerEvent) {
   if (!isFontDropdownOpen.value) {
     return
   }
 
   const targetNode = event.target as Node | null
-  if (targetNode && fontPickerRef.value?.contains(targetNode)) {
+  if (targetNode && fontPickerRef.value.some(picker => picker.contains(targetNode))) {
     return
   }
 
@@ -1029,6 +1281,8 @@ function onFontDropdownPointerDown(event: PointerEvent) {
 
 function onFontDropdownKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape' && isFontDropdownOpen.value) {
+    event.preventDefault()
+    event.stopPropagation()
     closeFontDropdown()
   }
 }
@@ -1091,11 +1345,13 @@ async function resetPreviewToTemplate(resetByUser?: boolean) {
     const confirmed = await notice.confirm('确定要重置模板吗？这将丢失现有进度')
     if (confirmed) {
       previewText.value = JSON.stringify(buildTemplateDraft(), null, 2)
+      syncPreviewSummaryNow()
       previewStatus.value = '已重置为单条弹幕模板'
       previewStatusTone.value = 'info'
     }
   } else {
     previewText.value = JSON.stringify(buildTemplateDraft(), null, 2)
+    syncPreviewSummaryNow()
     previewStatusTone.value = 'info'
   }
 }
@@ -1104,6 +1360,7 @@ function formatPreview() {
   try {
     const drafts = parsePreviewDanmakus(previewText.value)
     previewText.value = JSON.stringify(drafts, null, 2)
+    syncPreviewSummaryNow()
     previewStatus.value = 'JSON 已格式化'
     previewStatusTone.value = 'success'
   } catch (error) {
@@ -1170,18 +1427,54 @@ function normalizeColorInput(target: ColorInputTarget) {
   const rawValue = target === 'start' ? colorRule.value.startText : colorRule.value.targetText
   const normalized = normalizeColor(rawValue)
   if (!normalized) {
+    if (target === 'start') {
+      colorRule.value.startText = colorRule.value.start.toUpperCase()
+    } else {
+      colorRule.value.targetText = colorRule.value.target.toUpperCase()
+    }
     toolStatus.value = `颜色字段 ${target === 'start' ? '起始' : '目标'} 输入无效，已保留原值`
     return
   }
 
+  const fullHex = toFullHexColor(normalized)
   if (target === 'start') {
-    colorRule.value.start = normalized
-    colorRule.value.startText = normalized
+    colorRule.value.start = fullHex
+    colorRule.value.startText = fullHex
     return
   }
 
-  colorRule.value.target = normalized
-  colorRule.value.targetText = normalized
+  colorRule.value.target = fullHex
+  colorRule.value.targetText = fullHex
+}
+
+function normalizeColorAlphaInput() {
+  const trimmed = colorRule.value.alpha.trim()
+  if (!trimmed) {
+    colorRule.value.alpha = '0'
+    return
+  }
+  const parsed = Number(trimmed)
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    toolStatus.value = 'Alpha 偏移值必须在 0 到 1 之间，已重置为 0.1'
+    colorRule.value.alpha = '0.1'
+    return
+  }
+  colorRule.value.alpha = String(parsed)
+}
+
+function onQuantityChange() {
+  const parsed = Number(quantityInput.value)
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    quantityInput.value = '1'
+    toolStatus.value = '生成数量最小为 1，已自动修正'
+    return
+  }
+  if (parsed > MAX_CREATION_QUANTITY) {
+    quantityInput.value = String(MAX_CREATION_QUANTITY)
+    toolStatus.value = `生成数量上限为 ${MAX_CREATION_QUANTITY}，已自动修正`
+    return
+  }
+  quantityInput.value = String(Math.round(parsed))
 }
 
 function buildToolWriteRequest(): ToolWriteRequest {
@@ -1208,20 +1501,37 @@ function buildPanelState(): CreationToolPanelState {
 }
 
 function applyPanelState(state: CreationToolPanelState) {
-  quantityInput.value = state.quantityInput
-  expressionEnabled.value = state.expressionEnabled
-  writeMode.value = state.writeMode
-  numericRules.value = cloneValue(state.numericRules)
-  colorRule.value = cloneValue(state.colorRule)
-  directRules.value = cloneValue(state.directRules)
+  const sanitized = sanitizePanelState(state)
+  quantityInput.value = sanitized.quantityInput
+  expressionEnabled.value = sanitized.expressionEnabled
+  writeMode.value = sanitized.writeMode
+  numericRules.value = cloneValue(sanitized.numericRules)
+  colorRule.value = cloneValue(sanitized.colorRule)
+  directRules.value = cloneValue(sanitized.directRules)
+}
+
+function validateStrictQuantity(): number {
+  const trimmed = String(quantityInput.value).trim()
+  if (!trimmed) {
+    throw new Error('生成数量不能为空')
+  }
+  const parsed = Number(trimmed)
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > MAX_CREATION_QUANTITY) {
+    throw new Error(`生成数量必须是 1 到 ${MAX_CREATION_QUANTITY} 之间的数字`)
+  }
+  const normalized = Math.round(parsed)
+  quantityInput.value = String(normalized)
+  return normalized
 }
 
 function handleToolWrite() {
   try {
+    validateStrictQuantity()
     const request = buildToolWriteRequest()
     const result = writeGeneratedDanmakusToPreview(request)
 
     previewText.value = result.previewText
+    syncPreviewSummaryNow()
     toolStatus.value = `已生成 ${result.generatedDanmakus.length} 条弹幕，并${request.writeMode === 'append' ? '追加到' : '写入'}预览框`
     previewStatus.value = `预览框已更新，共 ${result.nextDanmakus.length} 条弹幕`
     previewStatusTone.value = 'success'
@@ -1293,15 +1603,16 @@ function handleDeletePreset(presetId: string) {
 }
 
 function handleImportPresets(importedPresets: CreationToolPreset[]) {
+  const sanitizedImported = importedPresets.map(sanitizePreset)
   const previousLength = presets.value.length
-  presets.value = mergeImportedPresets(presets.value, importedPresets)
+  presets.value = mergeImportedPresets(presets.value, sanitizedImported)
 
   const firstImportedPreset = presets.value[previousLength]
   if (firstImportedPreset) {
     managedPresetId.value = firstImportedPreset.id
   }
 
-  toolStatus.value = `已导入 ${importedPresets.length} 个预设，可在预设列表中点击应用`
+  toolStatus.value = `已导入 ${sanitizedImported.length} 个预设，可在预设列表中点击应用`
 }
 
 function setExpressionPreset(path: NumericFieldPath, presetKey: string) {
@@ -1350,7 +1661,16 @@ async function handleCreate() {
       throw new Error('预览框中没有可创建的弹幕数据')
     }
 
-    const normalizedDrafts = drafts.map((draft) => normalizeGeneratedDraft(draft, store.allowNegativeValues))
+    const normalizedDrafts = drafts.map((draft, index) => {
+      const normalized = normalizeGeneratedDraft(draft, store.allowNegativeValues)
+      if (normalized.animation.duration <= 0) {
+        throw new Error(`第 ${index + 1} 条弹幕的生存时间 (animation.duration) 必须大于 0`)
+      }
+      if (normalized.startTime < 0 || normalized.layer < 0) {
+        throw new Error(`第 ${index + 1} 条弹幕的开始时间和层级不能为负数`)
+      }
+      return normalized
+    })
     const response = await store.applyFieldUpdate('@danmaku.create', {
       danmakus: normalizedDrafts,
       relativeToCurrentTime: false
@@ -1374,7 +1694,9 @@ async function handleCreate() {
 
 function normalizeQuantity(): number {
   const parsed = Number(quantityInput.value)
-  const normalized = Number.isFinite(parsed) ? Math.max(1, Math.round(parsed)) : 10
+  const normalized = Number.isFinite(parsed)
+    ? Math.min(MAX_CREATION_QUANTITY, Math.max(1, Math.round(parsed)))
+    : 10
   quantityInput.value = String(normalized)
   return normalized
 }
@@ -1449,6 +1771,7 @@ defineExpose({
 .modal-content {
   flex: 1;
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 0;
   min-height: 0;
 }
@@ -1698,6 +2021,24 @@ defineExpose({
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
 }
 
+.font-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  background: #3c3c3c;
+  color: #e0e0e0;
+  font-size: 13px;
+}
+
+.font-search-input:focus {
+  outline: none;
+  border-color: #4ec9b0;
+  background: #303033;
+}
+
 .font-section + .font-section {
   margin-top: 8px;
   padding-top: 8px;
@@ -1934,11 +2275,14 @@ defineExpose({
   .creation-tools-shell {
     flex-direction: column;
     max-width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
   }
 
   .creation-tools-modal {
-    height: calc(100vh - 24px);
-    max-height: calc(100vh - 24px);
+    height: auto;
+    min-height: 480px;
+    max-height: none;
     max-width: calc(100vw - 24px);
     width: 100%;
   }

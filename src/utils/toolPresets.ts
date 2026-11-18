@@ -43,32 +43,57 @@ export function loadCreationToolPresets(): CreationToolPreset[] {
       return []
     }
 
-    return parsePresetImport(raw)
+    const parsed: unknown = JSON.parse(raw)
+    if (Array.isArray(parsed) && parsed.length === 0) {
+      return []
+    }
+    if (isRecord(parsed) && Array.isArray(parsed.presets) && parsed.presets.length === 0) {
+      return []
+    }
+
+    return parsePresetList(parsed)
   } catch (error) {
-    const notice = useNoticeStore()
-    notice.alert('读取本地预设失败', 'error', '错误', error)
+    try {
+      const notice = useNoticeStore()
+      notice.alert('读取本地预设失败', 'error', '错误', error)
+    } catch {
+      console.warn('读取本地预设失败', error)
+    }
     return []
   }
 }
 
 export function saveCreationToolPresets(presets: CreationToolPreset[]) {
-  localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(presets))
+  try {
+    localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(presets))
+  } catch (error) {
+    try {
+      const notice = useNoticeStore()
+      notice.alert('保存本地预设失败（可能超出浏览器存储空间限制）', 'error', '错误', error)
+    } catch {
+      console.warn('保存本地预设失败', error)
+    }
+  }
 }
 
 export function serializePresetExport(presets: CreationToolPreset[]): CreationToolPresetExport {
-  const store = useEditorStore()
+  let version = '1.12.0'
+  try {
+    version = useEditorStore().version
+  } catch {
+    // fallback version outside active Pinia
+  }
   return {
     meta: {
       type: PRESET_EXPORT_TYPE,
-      version: store.version,
+      version,
       exportedAt: Date.now()
     },
     presets: deepClone(presets)
   }
 }
 
-export function parsePresetImport(text: string): CreationToolPreset[] {
-  const parsed = JSON.parse(text)
+function parsePresetList(parsed: unknown): CreationToolPreset[] {
   const sourceList = extractPresetList(parsed)
 
   if (sourceList.length === 0) {
@@ -76,6 +101,14 @@ export function parsePresetImport(text: string): CreationToolPreset[] {
   }
 
   return sourceList.map((item, index) => normalizePreset(item, index))
+}
+
+export function parsePresetImport(text: string): CreationToolPreset[] {
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error('预设文件内容为空')
+  }
+  const parsed: unknown = JSON.parse(text)
+  return parsePresetList(parsed)
 }
 
 export function createPresetFromState(
@@ -167,6 +200,84 @@ function extractPresetList(input: unknown): unknown[] {
   return []
 }
 
+const REQUIRED_NUMERIC_RULE_KEYS: NumericFieldPath[] = [
+  'layer',
+  'startTime',
+  'content.size',
+  'transform.start.x',
+  'transform.start.y',
+  'transform.end.x',
+  'transform.end.y',
+  'transform.zRotate',
+  'transform.yRotate',
+  'opacity.from',
+  'opacity.to',
+  'animation.duration',
+  'animation.moveDuration',
+  'animation.delay'
+]
+
+function isRuleMode(value: unknown): value is 'cycle' | 'range' | 'relative' {
+  return value === 'cycle' || value === 'range' || value === 'relative'
+}
+
+function isDirectRuleMode(value: unknown): value is 'assign' | 'cycle' {
+  return value === 'assign' || value === 'cycle'
+}
+
+function isNumericRuleLike(value: unknown): value is NumericRuleState {
+  if (!isRecord(value)) return false
+  return (
+    isRuleMode(value.mode) &&
+    typeof value.cycleList === 'string' &&
+    typeof value.start === 'string' &&
+    typeof value.end === 'string' &&
+    typeof value.step === 'string' &&
+    (value.expression === undefined || typeof value.expression === 'string') &&
+    (value.expressionPreset === undefined || typeof value.expressionPreset === 'string')
+  )
+}
+
+function isColorRuleLike(value: unknown): value is ColorRuleState {
+  if (!isRecord(value)) return false
+  return (
+    isRuleMode(value.mode) &&
+    typeof value.cycleList === 'string' &&
+    typeof value.start === 'string' &&
+    typeof value.target === 'string' &&
+    typeof value.alpha === 'string' &&
+    (value.startText === undefined || typeof value.startText === 'string') &&
+    (value.targetText === undefined || typeof value.targetText === 'string')
+  )
+}
+
+function isDirectRuleStringLike(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isDirectRuleMode(value.mode) &&
+    typeof value.value === 'string' &&
+    typeof value.cycleList === 'string'
+  )
+}
+
+function isDirectRuleBooleanLike(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isDirectRuleMode(value.mode) &&
+    typeof value.value === 'boolean' &&
+    typeof value.cycleList === 'string'
+  )
+}
+
+function isDirectRuleEasingLike(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isDirectRuleMode(value.mode) &&
+    (value.value === 'speedup' || value.value === 'speeddown') &&
+    typeof value.cycleList === 'string'
+  )
+}
+
 function normalizePreset(input: unknown, index: number): CreationToolPreset {
   if (!isRecord(input)) {
     throw new Error(`第 ${index + 1} 个预设格式无效`)
@@ -174,16 +285,28 @@ function normalizePreset(input: unknown, index: number): CreationToolPreset {
 
   const stateCandidate = isRecord(input.state) ? input.state : input
   if (!isPanelStateLike(stateCandidate)) {
-    throw new Error(`第 ${index + 1} 个预设缺少工具面板状态`)
+    throw new Error(`第 ${index + 1} 个预设缺少或包含无效的工具面板状态`)
   }
 
   const now = Date.now()
+  const clonedState = deepClone(stateCandidate as CreationToolPanelState)
+  for (const key of REQUIRED_NUMERIC_RULE_KEYS) {
+    const rule = clonedState.numericRules[key]
+    if (typeof rule.expression !== 'string') rule.expression = 'S + (E - S) * t'
+    if (typeof rule.expressionPreset !== 'string') rule.expressionPreset = 'linear'
+  }
+  if (typeof clonedState.colorRule.startText !== 'string') {
+    clonedState.colorRule.startText = clonedState.colorRule.start
+  }
+  if (typeof clonedState.colorRule.targetText !== 'string') {
+    clonedState.colorRule.targetText = clonedState.colorRule.target
+  }
 
   return {
     id: typeof input.id === 'string' && input.id.trim() ? input.id : createPresetId(),
     name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : `新建预设${index + 1}`,
-    createdAt: typeof input.createdAt === 'number' ? input.createdAt : now,
-    state: deepClone(stateCandidate as CreationToolPanelState)
+    createdAt: typeof input.createdAt === 'number' && Number.isFinite(input.createdAt) ? input.createdAt : now,
+    state: clonedState
   }
 }
 
@@ -192,18 +315,33 @@ function isPanelStateLike(value: unknown): value is CreationToolPanelState {
     return false
   }
 
+  if (
+    typeof value.quantityInput !== 'string' ||
+    typeof value.expressionEnabled !== 'boolean' ||
+    (value.writeMode !== 'append' && value.writeMode !== 'replace') ||
+    !isRecord(value.numericRules) ||
+    !isColorRuleLike(value.colorRule) ||
+    !isRecord(value.directRules)
+  ) {
+    return false
+  }
+
+  for (const key of REQUIRED_NUMERIC_RULE_KEYS) {
+    if (!isNumericRuleLike(value.numericRules[key])) {
+      return false
+    }
+  }
+
   return (
-    typeof value.quantityInput === 'string' &&
-    typeof value.expressionEnabled === 'boolean' &&
-    (value.writeMode === 'append' || value.writeMode === 'replace') &&
-    isRecord(value.numericRules) &&
-    isRecord(value.colorRule) &&
-    isRecord(value.directRules)
+    isDirectRuleStringLike(value.directRules.text) &&
+    isDirectRuleStringLike(value.directRules.font) &&
+    isDirectRuleBooleanLike(value.directRules.stroke) &&
+    isDirectRuleEasingLike(value.directRules.easing)
   )
 }
 
 function isRecord(value: unknown): value is Record<string, any> {
-  return Boolean(value) && typeof value === 'object'
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function createPresetId(): string {

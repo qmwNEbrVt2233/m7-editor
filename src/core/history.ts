@@ -44,8 +44,8 @@ export class HistoryManager {
   }
 
   private maxSnapshots = 100
+  private maxNavigationHistory = 500
   private lastSnapshotTime = 0
-  private debounceTime = 100 // 防抖延迟，避免频繁快速操作创建过多记录点
 
   // 内部维护的基准 Map，用于自动对比计算 Diff
   private lastStateMap: Map<string, string> = new Map() // ID -> JSON字符串(用于快速比对)
@@ -53,6 +53,7 @@ export class HistoryManager {
 
   ensureBaseline(danmakus: DanmakuItem[], description = '编辑器初始状态') {
     if (this.state.snapshots.length > 0) return
+    const list = Array.isArray(danmakus) ? danmakus : []
     const now = Date.now()
     const snapshot: HistorySnapshot = {
       id: this.generateSnapshotId(),
@@ -67,8 +68,8 @@ export class HistoryManager {
     }
     this.state.snapshots = [snapshot]
     this.state.currentIndex = 0
-    this.state.navigationHistory.push(snapshot.id)
-    this.updateInternalBase(danmakus)
+    this.pushNavigationHistory(snapshot.id)
+    this.updateInternalBase(list)
     this.lastSnapshotTime = now
     this.logOperation('记录历史基线: ' + description + ' [ID: ' + snapshot.id + ']')
   }
@@ -76,17 +77,23 @@ export class HistoryManager {
   /**
    * 记录一个新的增量快照
    */
-  recordSnapshot(danmakus: DanmakuItem[], description?: string, immediate = false) {
-    const now = Date.now()
+  recordSnapshot(danmakus: DanmakuItem[], description?: string, _immediate = false) {
+    const list = Array.isArray(danmakus) ? danmakus : []
 
-    // 防抖：如果上次记录时间太近，则跳过
-    if (!immediate && now - this.lastSnapshotTime < this.debounceTime) {
+    if (this.state.snapshots.length === 0) {
+      this.ensureBaseline(list, description || '编辑器初始状态')
       return
     }
 
+    const now = Date.now()
+
     // 1. 构建下一次状态的 Map 以便对比
     const nextMap = new Map<string, DanmakuItem>()
-    danmakus.forEach(d => nextMap.set(d.id, d))
+    for (const d of list) {
+      if (d && typeof d.id === 'string' && d.id) {
+        nextMap.set(d.id, d)
+      }
+    }
 
     // 2. 计算 Delta (找出 增加、删除、修改)
     const delta: SnapshotDelta = {
@@ -95,20 +102,23 @@ export class HistoryManager {
       undoUpserted: [],
       undoDeletedIds: []
     }
+    const nextJsonMap = new Map<string, string>()
 
     // 检查修改和新增
     nextMap.forEach((item, id) => {
       const oldItem = this.currentFullData.get(id)
       const newItemJson = JSON.stringify(item)
-      
+
       if (!oldItem) {
         // 新增逻辑
-        delta.upserted.push(this.clone(item))
+        delta.upserted.push(this.cloneDanmaku(item))
         delta.undoDeletedIds.push(id)
+        nextJsonMap.set(id, newItemJson)
       } else if (this.lastStateMap.get(id) !== newItemJson) {
         // 修改逻辑
-        delta.upserted.push(this.clone(item))
-        delta.undoUpserted.push(this.clone(oldItem))
+        delta.upserted.push(this.cloneDanmaku(item))
+        delta.undoUpserted.push(this.cloneDanmaku(oldItem))
+        nextJsonMap.set(id, newItemJson)
       }
     })
 
@@ -116,7 +126,7 @@ export class HistoryManager {
     this.currentFullData.forEach((item, id) => {
       if (!nextMap.has(id)) {
         delta.deletedIds.push(id)
-        delta.undoUpserted.push(this.clone(item))
+        delta.undoUpserted.push(this.cloneDanmaku(item))
       }
     })
 
@@ -148,11 +158,21 @@ export class HistoryManager {
       this.state.currentIndex = Math.max(0, this.state.currentIndex - 1)
     }
 
-    // 将到达的最新 ID 压入事件记录链条（不断增加，记录流转日志）
-    this.state.navigationHistory.push(snapshot.id)
+    // 将到达的最新 ID 压入事件记录链条
+    this.pushNavigationHistory(snapshot.id)
 
-    // 更新内部对比基准线
-    this.updateInternalBase(danmakus)
+    // 仅按增量更新内部基准缓存，避免对未变更弹幕执行全量克隆与序列化
+    for (const deletedId of delta.deletedIds) {
+      this.currentFullData.delete(deletedId)
+      this.lastStateMap.delete(deletedId)
+    }
+    for (const item of delta.upserted) {
+      this.currentFullData.set(item.id, this.cloneDanmaku(item))
+      const json = nextJsonMap.get(item.id)
+      if (json !== undefined) {
+        this.lastStateMap.set(item.id, json)
+      }
+    }
     this.lastSnapshotTime = now
 
     // 日志
@@ -172,15 +192,21 @@ export class HistoryManager {
     const { delta } = currentSnapshot
     
     // 应用逆向操作（把删掉的加回来，把改了的改回去，把新增的删掉）
-    delta.undoUpserted.forEach(item => this.currentFullData.set(item.id, this.clone(item)))
-    delta.undoDeletedIds.forEach(id => this.currentFullData.delete(id))
+    delta.undoUpserted.forEach(item => {
+      const cloned = this.cloneDanmaku(item)
+      this.currentFullData.set(item.id, cloned)
+      this.lastStateMap.set(item.id, JSON.stringify(cloned))
+    })
+    delta.undoDeletedIds.forEach(id => {
+      this.currentFullData.delete(id)
+      this.lastStateMap.delete(id)
+    })
     
     this.state.currentIndex--
-    this.syncBaseMap() // 同步内部对比字符串
 
     // 记录跃迁
     const prevSnapshot = this.state.snapshots[this.state.currentIndex]
-    this.state.navigationHistory.push(prevSnapshot.id)
+    this.pushNavigationHistory(prevSnapshot.id)
 
     this.logOperation(`撤销操作（跃迁至快照 ID: ${prevSnapshot.id} 存储槽位: ${this.state.currentIndex + 1}/${this.state.snapshots.length}/${this.maxSnapshots}）`)
 
@@ -205,13 +231,18 @@ export class HistoryManager {
     const { delta } = snapshot
 
     // 应用正向操作
-    delta.upserted.forEach(item => this.currentFullData.set(item.id, this.clone(item)))
-    delta.deletedIds.forEach(id => this.currentFullData.delete(id))
+    delta.upserted.forEach(item => {
+      const cloned = this.cloneDanmaku(item)
+      this.currentFullData.set(item.id, cloned)
+      this.lastStateMap.set(item.id, JSON.stringify(cloned))
+    })
+    delta.deletedIds.forEach(id => {
+      this.currentFullData.delete(id)
+      this.lastStateMap.delete(id)
+    })
 
     // 记录跃迁
-    this.state.navigationHistory.push(snapshot.id)
-    
-    this.syncBaseMap()
+    this.pushNavigationHistory(snapshot.id)
 
     this.logOperation(`重做操作（跃迁至快照 ID: ${snapshot.id}）`)
 
@@ -256,27 +287,26 @@ export class HistoryManager {
     const targetIndex = this.state.snapshots.findIndex((snapshot) => snapshot.id === snapshotId)
     if (targetIndex < 0) throw new Error(`找不到历史快照：${snapshotId}`)
 
-    const danmakus = new Map<string, DanmakuItem>()
-    this.currentFullData.forEach((item, id) => danmakus.set(id, this.clone(item)))
+    const danmakus = new Map<string, DanmakuItem>(this.currentFullData)
 
     if (targetIndex < this.state.currentIndex) {
       for (let index = this.state.currentIndex; index > targetIndex; index--) {
         const delta = this.state.snapshots[index].delta
-        delta.undoUpserted.forEach((item) => danmakus.set(item.id, this.clone(item)))
+        delta.undoUpserted.forEach((item) => danmakus.set(item.id, item))
         delta.undoDeletedIds.forEach((id) => danmakus.delete(id))
       }
     } else if (targetIndex > this.state.currentIndex) {
       for (let index = this.state.currentIndex + 1; index <= targetIndex; index++) {
         const delta = this.state.snapshots[index].delta
-        delta.upserted.forEach((item) => danmakus.set(item.id, this.clone(item)))
+        delta.upserted.forEach((item) => danmakus.set(item.id, item))
         delta.deletedIds.forEach((id) => danmakus.delete(id))
       }
     }
 
     const snapshot = this.state.snapshots[targetIndex]
     const allItems = Array.from(danmakus.values())
-    const safeOffset = Math.max(0, Math.trunc(offset))
-    const safeLimit = Math.max(1, Math.min(500, Math.trunc(limit)))
+    const safeOffset = Number.isFinite(offset) ? Math.max(0, Math.trunc(offset)) : 0
+    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.trunc(limit))) : 100
     return {
       snapshotId: snapshot.id,
       index: targetIndex,
@@ -284,7 +314,7 @@ export class HistoryManager {
       description: snapshot.description || '',
       total: allItems.length,
       offset: safeOffset,
-      items: allItems.slice(safeOffset, safeOffset + safeLimit)
+      items: allItems.slice(safeOffset, safeOffset + safeLimit).map((item) => this.cloneDanmaku(item))
     }
   }
 
@@ -295,9 +325,57 @@ export class HistoryManager {
     this.state.snapshots = []
     this.state.currentIndex = -1
     this.state.navigationHistory = []
+    this.lastSnapshotTime = 0
     this.currentFullData.clear()
     this.lastStateMap.clear()
     this.logOperation('清除所有历史记录')
+  }
+
+  private pushNavigationHistory(snapshotId: string) {
+    this.state.navigationHistory.push(snapshotId)
+    if (this.state.navigationHistory.length > this.maxNavigationHistory) {
+      this.state.navigationHistory.splice(0, this.state.navigationHistory.length - this.maxNavigationHistory)
+    }
+  }
+
+  private cloneDanmaku(item: DanmakuItem): DanmakuItem {
+    if (!item || typeof item !== 'object') {
+      return this.clone(item)
+    }
+    return {
+      id: item.id,
+      layer: item.layer,
+      startTime: item.startTime,
+      content: {
+        text: item.content?.text ?? '',
+        font: item.content?.font ?? 'Microsoft YaHei',
+        size: item.content?.size ?? 60,
+        color: item.content?.color ?? '#ffffff',
+        stroke: Boolean(item.content?.stroke)
+      },
+      transform: {
+        start: {
+          x: item.transform?.start?.x ?? 0,
+          y: item.transform?.start?.y ?? 0
+        },
+        end: {
+          x: item.transform?.end?.x ?? 0,
+          y: item.transform?.end?.y ?? 0
+        },
+        zRotate: item.transform?.zRotate ?? 0,
+        yRotate: item.transform?.yRotate ?? 0
+      },
+      opacity: {
+        from: item.opacity?.from ?? 1,
+        to: item.opacity?.to ?? 1
+      },
+      animation: {
+        duration: item.animation?.duration ?? 1000,
+        moveDuration: item.animation?.moveDuration ?? 500,
+        delay: item.animation?.delay ?? 0,
+        easing: item.animation?.easing === 'speeddown' ? 'speeddown' : 'speedup'
+      }
+    }
   }
 
   /**
@@ -314,18 +392,10 @@ export class HistoryManager {
     this.currentFullData.clear()
     this.lastStateMap.clear()
     danmakus.forEach(d => {
-      this.currentFullData.set(d.id, this.clone(d))
-      this.lastStateMap.set(d.id, JSON.stringify(d))
-    })
-  }
-
-  /**
-   * 同步 Map 基准（仅在撤销/重做应用 Delta 后调用）
-   */
-  private syncBaseMap() {
-    this.lastStateMap.clear()
-    this.currentFullData.forEach((item, id) => {
-      this.lastStateMap.set(id, JSON.stringify(item))
+      if (!d || typeof d.id !== 'string' || !d.id) return
+      const cloned = this.cloneDanmaku(d)
+      this.currentFullData.set(d.id, cloned)
+      this.lastStateMap.set(d.id, JSON.stringify(cloned))
     })
   }
 
@@ -334,7 +404,7 @@ export class HistoryManager {
    * 避免调用方直接修改历史管理器内部缓存，污染后续增量计算基准
    */
   private exportCurrentData(): DanmakuItem[] {
-    return Array.from(this.currentFullData.values()).map(item => this.clone(item))
+    return Array.from(this.currentFullData.values()).map(item => this.cloneDanmaku(item))
   }
 
   /**
@@ -355,8 +425,12 @@ export class HistoryManager {
    * 日志输出
    */
   private logOperation(message: string) {
-    const notice = useNoticeStore()
-    notice.log(message)
+    try {
+      const notice = useNoticeStore()
+      notice.log(message)
+    } catch {
+      // 允许在未挂载 Pinia 的单测或独立环境中使用 HistoryManager
+    }
   }
 }
 

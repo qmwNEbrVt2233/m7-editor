@@ -16,8 +16,11 @@
       class="log-list have-scrollbar"
       @click.stop
     >
+      <div v-if="omittedLogCount > 0" class="log-truncated-hint">
+        已省略较早的 {{ omittedLogCount }} 条日志（导出可查看全部）
+      </div>
       <div
-        v-for="item in notice.logList"
+        v-for="item in displayedLogs"
         :key="item.id"
         class="log-item"
         :class="`log-type-${item.type ?? 'log'}`"
@@ -43,11 +46,18 @@
   
   <Transition name="fade">
     <div v-if="notice.isVisible" class="custom-modal-mask">
-      <div class="custom-modal-container" :class="notice.type">
+      <div
+        ref="modalContainerRef"
+        class="custom-modal-container"
+        :class="notice.type"
+        role="dialog"
+        aria-modal="true"
+        tabindex="-1"
+      >
         <div class="modal-header">
           <h3>{{ notice.title }}</h3>
         </div>
-        <div class="modal-body">
+        <div class="modal-body have-scrollbar">
           <p>{{ notice.popMessage }}</p>
         </div>
         <div class="modal-footer">
@@ -66,19 +76,45 @@ import { useNoticeStore } from '@/store/notice'
 const store = useEditorStore()
 const notice = useNoticeStore()
 
+const MAX_RENDERED_LOGS = 500
+const LOG_FADE_DELAY_MS = 1000
+
 const hovering = ref(false)
 const logExpanded = ref(false)
 const logRef = ref<HTMLElement>()
 const logListRef = ref<HTMLElement>()
-const now = ref(Date.now())
-let timer: ReturnType<typeof setInterval> | null = null
+const modalContainerRef = ref<HTMLElement>()
+const isIdle = ref(Date.now() - notice.lastLogTime > LOG_FADE_DELAY_MS)
+let fadeTimer: ReturnType<typeof setTimeout> | null = null
+let modalKeyListenerAttached = false
 
-const shouldFade = computed(() => {
-  const idle =
-    now.value - notice.lastLogTime > 1000
-
-  return idle && !hovering.value && !logExpanded.value
+const displayedLogs = computed(() => {
+  if (notice.logList.length <= MAX_RENDERED_LOGS) {
+    return notice.logList
+  }
+  return notice.logList.slice(-MAX_RENDERED_LOGS)
 })
+
+const omittedLogCount = computed(() => Math.max(0, notice.logList.length - MAX_RENDERED_LOGS))
+
+const shouldFade = computed(() => isIdle.value && !hovering.value && !logExpanded.value)
+
+function scheduleFadeTimer() {
+  if (fadeTimer) {
+    clearTimeout(fadeTimer)
+    fadeTimer = null
+  }
+  const elapsed = Date.now() - notice.lastLogTime
+  if (elapsed > LOG_FADE_DELAY_MS) {
+    isIdle.value = true
+    return
+  }
+  isIdle.value = false
+  fadeTimer = setTimeout(() => {
+    isIdle.value = true
+    fadeTimer = null
+  }, Math.max(0, LOG_FADE_DELAY_MS - elapsed) + 20)
+}
 
 const toggleLog = () => {
   logExpanded.value = !logExpanded.value
@@ -94,20 +130,65 @@ const handleClickOutside = (e: MouseEvent) => {
   }
 }
 
+const handleModalKeyDown = (e: KeyboardEvent) => {
+  if (!notice.isVisible || e.isComposing || e.keyCode === 229 || e.repeat) {
+    return
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    e.stopPropagation()
+    notice.handleAction(false)
+  }
+}
+
+function attachModalKeyListener() {
+  if (!modalKeyListenerAttached) {
+    window.addEventListener('keydown', handleModalKeyDown, true)
+    modalKeyListenerAttached = true
+  }
+}
+
+function detachModalKeyListener() {
+  if (modalKeyListenerAttached) {
+    window.removeEventListener('keydown', handleModalKeyDown, true)
+    modalKeyListenerAttached = false
+  }
+}
+
+watch(
+  () => notice.lastLogTime,
+  () => {
+    scheduleFadeTimer()
+  },
+  { immediate: true }
+)
+
+watch(
+  () => notice.isVisible,
+  async (visible) => {
+    if (!visible) {
+      detachModalKeyListener()
+      return
+    }
+    await nextTick()
+    if (!notice.isVisible) return
+    modalContainerRef.value?.focus()
+    attachModalKeyListener()
+  }
+)
+
 onMounted(() => {
   document.addEventListener('click', handleClickOutside)
-
-  timer = setInterval(() => {
-    now.value = Date.now()
-  }, 1000)
+  scheduleFadeTimer()
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
+  detachModalKeyListener()
 
-  if (timer) {
-    clearInterval(timer)
-    timer = null
+  if (fadeTimer) {
+    clearTimeout(fadeTimer)
+    fadeTimer = null
   }
 })
 
@@ -202,6 +283,13 @@ watch(
   word-break: break-all;
 }
 
+.log-truncated-hint {
+  padding: 4px 6px;
+  color: #aaa;
+  font-size: 11px;
+  border-bottom: 1px dashed #555;
+}
+
 .log-item.log-type-log {
   background-color: transparent;
 }
@@ -238,9 +326,14 @@ watch(
   padding: 20px;
   border-radius: 10px;
   border: 1px solid #333;
-  width: 35%;
+  width: min(460px, 90vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
   box-shadow: 0 4px 12px rgba(0,0,0,0.15);
   border-left: 5px solid #2196f3;
+  outline: none;
+  box-sizing: border-box;
 }
 
 /* 根据不同类型显示不同边框颜色 */
@@ -248,9 +341,19 @@ watch(
 .custom-modal-container.warn { border-left-color: #ff9800; }
 .custom-modal-container.error { border-left-color: #f44336; }
 
+.modal-header { flex-shrink: 0; }
 .modal-header h3 { margin: 0; font-size: 18px; color: #ececec; }
-.modal-body { margin: 15px 0; color: #a5a5a5; font-size: 14px; }
-.modal-footer { display: flex; justify-content: flex-end; gap: 13px; }
+.modal-body {
+  margin: 15px 0;
+  color: #a5a5a5;
+  font-size: 14px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  min-height: 0;
+}
+.modal-body p { margin: 0; }
+.modal-footer { display: flex; justify-content: flex-end; gap: 13px; flex-shrink: 0; }
 
 button {
   padding: 6px 16px;
@@ -259,7 +362,6 @@ button {
   color: #e0e0e0;
   border: 1px solid #444;
   border-radius: 4px;
-  cursor: pointer;
   font-size: 15px;
   transition: all 0.2s ease;
 }

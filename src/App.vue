@@ -76,12 +76,37 @@ type McpCommandPayload = {
   params?: Record<string, unknown>
 }
 let stopMcpListener: (() => void) | null = null
+let isUnmounted = false
+let stopTimelineResize: (() => void) | null = null
+let skippingProjectManager = false
 const showVideoExport = ref(false)
 const editorReady = ref(!nativeRuntime)
-const timelineHeight = ref(Math.max(100, window.innerHeight - store.screenHeight * store.screenScale / 100 - 80))
+
+function getMaxTimelineHeight() {
+  return Math.max(100, window.innerHeight - 120)
+}
+
+function clampTimelineHeight(height: number) {
+  if (!Number.isFinite(height)) return 100
+  return Math.max(100, Math.min(getMaxTimelineHeight(), height))
+}
+
+function computeDefaultTimelineHeight() {
+  const scaledScreenHeight = (store.screenHeight * store.screenScale) / 100
+  return clampTimelineHeight(window.innerHeight - scaledScreenHeight - 80)
+}
+
+function computeRecordingScreenScale() {
+  const height = Math.max(1, store.screenHeight)
+  const width = Math.max(1, store.screenWidth)
+  return Math.max(10, Math.floor(Math.min(window.innerHeight / height, window.innerWidth / width) * 100))
+}
+
+const timelineHeight = ref(computeDefaultTimelineHeight())
 const screenScaleBeforeRecording = ref(store.screenScale)
 const currentTimeBeforeRecording = ref(store.currentTime)
-const timeLineOffsetBeforeRecording =ref(store.timelineOffset) 
+const timeLineOffsetBeforeRecording = ref(store.timelineOffset)
+const aggressiveOptimizationBeforeRecording = ref(store.aggressiveOptimization)
 const H_LONG_PRESS_MS = 150
 const DANMAKU_VISIBILITY_EVENT = 'danmaku-selection-visibility'
 
@@ -304,7 +329,8 @@ function isTextEditingTarget(target: EventTarget | null): boolean {
     target instanceof HTMLInputElement ||
     target instanceof HTMLTextAreaElement ||
     target instanceof HTMLSelectElement ||
-    target.isContentEditable
+    target.isContentEditable ||
+    Boolean(target.closest('[contenteditable="true"], [contenteditable=""]'))
   )
 }
 
@@ -423,9 +449,14 @@ function handleWindowBlur() {
 
 // 全局快捷键
 async function handleKeyDown(e: KeyboardEvent) {
+  if (e.isComposing || e.keyCode === 229) {
+    return
+  }
+
   const isCtrl = e.ctrlKey || e.metaKey
   const isAlt = e.altKey
   const isShift = e.shiftKey
+  const lowerKey = e.key.toLowerCase()
 
   if (isTextEditingTarget(e.target)) {
     return
@@ -466,6 +497,18 @@ async function handleKeyDown(e: KeyboardEvent) {
   }
 
   if (!editorReady.value) {
+    if (e.key === 'Escape' && store.showProjectManager && store.InitializationPhase && !skippingProjectManager) {
+      e.preventDefault()
+      skippingProjectManager = true
+      try {
+        await store.skipProjectManager()
+        editorReady.value = true
+      } catch (error) {
+        notice.alert(error instanceof Error ? error.message : String(error), 'error', '跳过工程失败', error)
+      } finally {
+        skippingProjectManager = false
+      }
+    }
     return
   }
 
@@ -485,7 +528,20 @@ async function handleKeyDown(e: KeyboardEvent) {
 
   if (e.key === 'Escape' && store.showProjectManager) {
     e.preventDefault()
-    store.showProjectManager = false
+    if (store.InitializationPhase) {
+      if (skippingProjectManager) return
+      skippingProjectManager = true
+      try {
+        await store.skipProjectManager()
+        editorReady.value = true
+      } catch (error) {
+        notice.alert(error instanceof Error ? error.message : String(error), 'error', '跳过工程失败', error)
+      } finally {
+        skippingProjectManager = false
+      }
+    } else {
+      store.showProjectManager = false
+    }
     return
   }
 
@@ -513,6 +569,25 @@ async function handleKeyDown(e: KeyboardEvent) {
     return
   }
 
+  if (e.key === 'Escape' && store.screenRecordingMode) {
+    e.preventDefault()
+    const confirmed = await notice.confirm('确定要退出屏幕录制模式吗？')
+    if (confirmed) {
+      store.screenRecordingMode = false
+      store.aggressiveOptimization = aggressiveOptimizationBeforeRecording.value
+      store.screenScale = screenScaleBeforeRecording.value
+      store.setTime(currentTimeBeforeRecording.value)
+      store.timelineOffset = timeLineOffsetBeforeRecording.value
+      store.pausePlayback()
+      notice.log('已退出录屏模式', 'success')
+    }
+    return
+  }
+
+  if (store.showProjectManager || store.showTemplateManager || help.isVisible) {
+    return
+  }
+
   const target = e.target instanceof HTMLElement ? e.target : null
 
   if (store.showCreationTools && target?.closest('.creation-tools-overlay')) {
@@ -535,20 +610,20 @@ async function handleKeyDown(e: KeyboardEvent) {
   }
   
   // Ctrl+S 导出JSON
-  if (e.key === 's' && isCtrl && !isAlt && !isShift) {
+  if (lowerKey === 's' && isCtrl && !isAlt && !isShift) {
     e.preventDefault()
     void store.downloadProject()
     return
   }
 
-  if (e.key === 's' && isCtrl && isAlt && !isShift) {
+  if (lowerKey === 's' && isCtrl && isAlt && !isShift) {
     e.preventDefault()
     void store.backupActiveFolderProject()
     return
   }
 
   // `ctrl+d` 保存工程
-  if (e.key === 'd' && isCtrl && !isAlt && !isShift) {
+  if (lowerKey === 'd' && isCtrl && !isAlt && !isShift) {
     e.preventDefault()
     store.saveToLocal()
     notice.log('[快捷键] 保存工程')
@@ -579,39 +654,34 @@ async function handleKeyDown(e: KeyboardEvent) {
       screenScaleBeforeRecording.value = store.screenScale
       currentTimeBeforeRecording.value = store.currentTime
       timeLineOffsetBeforeRecording.value = store.timelineOffset
+      aggressiveOptimizationBeforeRecording.value = store.aggressiveOptimization
       store.showCreationTools = false
       help.hide()
       store.screenRecordingMode = true
       store.aggressiveOptimization = true
-      store.currentTime = 0
-      store.screenScale = Math.min(Math.round(window.innerHeight / store.screenHeight * 1 * 100), Math.round(window.innerWidth / store.screenWidth * 1 * 100))
-      store.startPlayback()
-    } else {
-      store.currentTime = 0
-      store.screenScale = Math.min(Math.round(window.innerHeight / store.screenHeight * 1 * 100), Math.round(window.innerWidth / store.screenWidth * 1 * 100))
-      store.startPlayback()
     }
+    store.setTime(0)
+    store.screenScale = computeRecordingScreenScale()
+    store.startPlayback()
   }
+}
 
-  if (e.key === 'Escape' && store.screenRecordingMode) {
-    e.preventDefault()
-    const confirmed = await notice.confirm('确定要退出屏幕录制模式吗？')
-    if (confirmed) {
-      store.screenRecordingMode = false
-      store.aggressiveOptimization = false
-      store.screenScale = screenScaleBeforeRecording.value
-      store.currentTime = currentTimeBeforeRecording.value
-      store.timelineOffset = timeLineOffsetBeforeRecording.value
-      store.playing = false
-      notice.log('已退出录屏模式', 'success')
-    }
+function handleWindowResize() {
+  timelineHeight.value = clampTimelineHeight(timelineHeight.value)
+  if (store.screenRecordingMode) {
+    store.screenScale = computeRecordingScreenScale()
   }
 }
 
 onMounted(() => {
+  isUnmounted = false
   if (nativeRuntime) {
     void listen<McpCommandPayload>('mcp-command', (event) => { void handleMcpCommand(event.payload) })
       .then(async (stop) => {
+        if (isUnmounted) {
+          stop()
+          return
+        }
         stopMcpListener = stop
         await invoke('set_mcp_frontend_ready', { ready: true })
       })
@@ -621,19 +691,35 @@ onMounted(() => {
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('keyup', handleKeyUp)
   window.addEventListener('blur', handleWindowBlur)
+  window.addEventListener('resize', handleWindowResize)
 })
 
 onUnmounted(() => {
+  isUnmounted = true
   stopMcpListener?.()
   stopMcpListener = null
+  stopTimelineResize?.()
+  stopTimelineResize = null
   if (nativeRuntime) void invoke('set_mcp_frontend_ready', { ready: false }).catch(() => {})
   if (hPressTimer) {
     clearTimeout(hPressTimer)
+    hPressTimer = null
   }
   window.removeEventListener('keydown', handleKeyDown)
   window.removeEventListener('keyup', handleKeyUp)
   window.removeEventListener('blur', handleWindowBlur)
+  window.removeEventListener('resize', handleWindowResize)
 })
+
+watch(
+  () => !store.InitializationPhase,
+  (ready) => {
+    if (ready) {
+      editorReady.value = true
+    }
+  },
+  { immediate: true }
+)
 
 watch(
   () =>
@@ -642,6 +728,7 @@ watch(
     !store.screenRecordingMode &&
     !store.showCreationTools &&
     !store.showProjectManager &&
+    !store.showTemplateManager &&
     !help.isVisible &&
     !notice.isVisible,
   (available) => {
@@ -656,21 +743,37 @@ watch(
 
 // 时间轴高度拖动
 function onResizeStart(e: MouseEvent) {
+  if (e.button !== 0) {
+    return
+  }
+  e.preventDefault()
+  stopTimelineResize?.()
+
   const startY = e.clientY
   const startHeight = timelineHeight.value
 
-  function onMouseMove(moveEvent: MouseEvent) {
-    const delta = moveEvent.clientY - startY
-    timelineHeight.value = Math.max(100, startHeight - delta) // 最小100px
-  }
-
-  function onMouseUp() {
+  function cleanup() {
     document.removeEventListener('mousemove', onMouseMove)
-    document.removeEventListener('mouseup', onMouseUp)
+    document.removeEventListener('mouseup', cleanup)
+    window.removeEventListener('blur', cleanup)
+    if (stopTimelineResize === cleanup) {
+      stopTimelineResize = null
+    }
   }
 
+  function onMouseMove(moveEvent: MouseEvent) {
+    if ((moveEvent.buttons & 1) === 0) {
+      cleanup()
+      return
+    }
+    const delta = moveEvent.clientY - startY
+    timelineHeight.value = clampTimelineHeight(startHeight - delta)
+  }
+
+  stopTimelineResize = cleanup
   document.addEventListener('mousemove', onMouseMove)
-  document.addEventListener('mouseup', onMouseUp)
+  document.addEventListener('mouseup', cleanup)
+  window.addEventListener('blur', cleanup)
 }
 
 function onTimelineDragStart(e: MouseEvent) {
@@ -680,9 +783,9 @@ function onTimelineDragStart(e: MouseEvent) {
 }
 
 watch(
-  () => store.screenHeight | store.screenScale,
+  () => [store.screenHeight, store.screenScale] as const,
   () => {
-    timelineHeight.value = Math.max(100, window.innerHeight - store.screenHeight * store.screenScale / 100 - 80)
+    timelineHeight.value = computeDefaultTimelineHeight()
   }
 )
 </script>
@@ -699,6 +802,7 @@ watch(
 
 .main-content {
   flex: 1;
+  min-height: 0;
   overflow: hidden;
   background: #222;
   display: flex;
@@ -707,6 +811,9 @@ watch(
 
 .player-section {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
   overflow: hidden;
   background: #222;
 }
@@ -734,6 +841,7 @@ watch(
 
 .timeline-container {
   position: relative;
+  flex-shrink: 0;
   border-top: 1px solid #444;
   background: #1a1a1a;
   overflow: hidden;

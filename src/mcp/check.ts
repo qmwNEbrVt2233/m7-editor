@@ -83,15 +83,19 @@ async function main() {
     const tools = listed.result?.tools
     if (!Array.isArray(tools) || tools.length === 0) throw new Error('MCP 服务没有注册工具')
     const requiredTools = [
-      'create_danmakus', 'delete_danmakus', 'update_current_time', 'update_editor_settings',
+      'get_editor_state', 'measure_text', 'get_frame', 'list_danmakus',
+      'apply_field_update', 'apply_field_updates', 'create_generated_danmakus',
+      'create_danmakus', 'delete_danmakus', 'select_by_command',
+      'update_current_time', 'update_editor_settings',
       'save_folder_project', 'backup_folder_project', 'get_file_system_state',
       'check_folder_project_path', 'create_folder_project', 'load_folder_project',
       'import_folder_project', 'edit_folder_project', 'delete_folder_project',
       'import_single_project', 'import_xml_danmakus', 'skip_folder_project',
-      'reload_app', 'get_editor_logs',
-      'export_video', 'get_video_export_status', 'cancel_video_export',
-      'list_history_snapshots', 'get_history_snapshot', 'create_generated_danmakus', 'get_frame',
-      'apply_field_updates', 'measure_text'
+      'reload_app', 'get_editor_logs', 'list_history_snapshots', 'get_history_snapshot',
+      'apply_stroke', 'center_danmakus', 'copy_coordinates', 'swap_coordinates',
+      'mirror_danmakus', 'calculate_rotation', 'set_movement_length',
+      'lock_movement_angle', 'split_danmakus', 'undo_edit', 'redo_edit',
+      'export_video', 'get_video_export_status', 'cancel_video_export'
     ]
     const missingTools = requiredTools.filter((name) => !tools.some((tool: { name?: string }) => tool.name === name))
     if (missingTools.length) throw new Error(`MCP 服务缺少工具：${missingTools.join(', ')}`)
@@ -100,99 +104,106 @@ async function main() {
     }
     console.log(`MCP 握手成功，已发现 ${tools.length} 个工具。`)
 
-    const invalidInput = await request('tools/call', {
-      name: 'mirror_danmakus',
-      arguments: { axis: 'diagonal' }
-    })
-    if (!invalidInput.error && invalidInput.result?.isError !== true) {
-      throw new Error('Zod 没有拒绝无效的工具参数')
+    const assertRejected = async (label: string, name: string, args: Record<string, unknown>) => {
+      const response = await request('tools/call', { name, arguments: args })
+      if (!response.error && response.result?.isError !== true) {
+        throw new Error(`${name} 没有拒绝${label}`)
+      }
+      return response
     }
+
+    await assertRejected('无效镜像方向', 'mirror_danmakus', { axis: 'diagonal' })
     console.log('Zod 参数校验正常，无效镜像方向已在调用编辑器前拒绝。')
 
-    const invalidCreate = await request('tools/call', {
-      name: 'create_danmakus',
-      arguments: { relativeToCurrentTime: false }
-    })
+    const invalidCreate = await assertRejected('缺失弹幕输入', 'create_danmakus', { relativeToCurrentTime: false })
     const createErrorText = invalidCreate.result?.content?.find((item: { type?: string }) => item.type === 'text')?.text
-    if (!invalidCreate.error && invalidCreate.result?.isError !== true) {
-      throw new Error('创建工具没有拒绝缺失的弹幕输入')
-    }
     if (!String(createErrorText || invalidCreate.error?.message || '').includes('danmaku')) {
       throw new Error('创建工具没有返回可理解的输入错误')
     }
-    console.log('创建参数检查正常，缺少对象和 JSON 路径时已拒绝请求。')
-
-    const invalidFrame = await request('tools/call', {
-      name: 'get_frame',
-      arguments: { timeMs: -1 }
+    await assertRejected('同时传入 danmaku 与 jsonPath', 'create_danmakus', {
+      danmaku: {},
+      jsonPath: 'demo.json',
+      relativeToCurrentTime: false
     })
-    if (!invalidFrame.error && invalidFrame.result?.isError !== true) {
-      throw new Error('帧截图工具没有拒绝负时间')
-    }
+    await assertRejected('无效弹幕颜色', 'create_danmakus', {
+      danmaku: {
+        layer: 0,
+        startTime: 0,
+        content: { text: 'a', font: 'Microsoft YaHei', size: 60, color: 'bad-color', stroke: false },
+        transform: { start: { x: 0, y: 0 }, end: { x: 0, y: 0 }, zRotate: 0, yRotate: 0 },
+        opacity: { from: 1, to: 1 },
+        animation: { duration: 1000, moveDuration: 500, delay: 0, easing: 'speedup' }
+      },
+      relativeToCurrentTime: false
+    })
+    console.log('创建参数检查正常，缺失、冲突与畸形弹幕数据已在调用编辑器前拒绝。')
+
+    await assertRejected('负时间', 'get_frame', { timeMs: -1 })
     console.log('帧截图参数检查正常，负时间已在调用编辑器前拒绝。')
 
-    const invalidRules = await request('tools/call', {
-      name: 'create_generated_danmakus',
-      arguments: { quantity: 1, rules: { unsupportedField: { mode: 'range', start: 0, end: 1 } } }
+    await assertRejected('未知字段规则', 'create_generated_danmakus', {
+      quantity: 1,
+      rules: { unsupportedField: { mode: 'range', start: 0, end: 1 } }
     })
-    if (!invalidRules.error && invalidRules.result?.isError !== true) {
-      throw new Error('生成工具没有拒绝未知字段规则')
-    }
-    console.log('生成规则参数检查正常，未知字段已在调用编辑器前拒绝。')
+    await assertRejected('越界颜色 alpha', 'create_generated_danmakus', {
+      quantity: 2,
+      rules: { 'content.color': { mode: 'relative', start: '#FFFFFF', target: '#000000', alpha: 1.5 } }
+    })
+    await assertRejected('无效颜色值', 'create_generated_danmakus', {
+      quantity: 1,
+      rules: { 'content.color': { mode: 'range', start: 'not-color', target: '#000000' } }
+    })
+    console.log('生成规则参数检查正常，未知字段、无效颜色与越界 alpha 已在调用编辑器前拒绝。')
 
-    const invalidBatchUpdates = await request('tools/call', {
-      name: 'apply_field_updates',
-      arguments: { steps: [] }
+    await assertRejected('空 steps 数组', 'apply_field_updates', { steps: [] })
+    await assertRejected('无效 upset 混合参数', 'apply_field_updates', {
+      steps: [[{ field: 'transform.start.x', method: { op: 'upset', expr: '$startX' } }]]
     })
-    if (!invalidBatchUpdates.error && invalidBatchUpdates.result?.isError !== true) {
-      throw new Error('批量更新工具没有拒绝空的 steps 数组')
-    }
-    const invalidMixedUpset = await request('tools/call', {
-      name: 'apply_field_updates',
-      arguments: { steps: [[{ field: 'transform.start.x', method: { op: 'upset', expr: '$startX' } }]] }
+    await assertRejected('同一步内重复字段', 'apply_field_updates', {
+      steps: [[
+        { field: 'startTime', method: '100' },
+        { field: 'startTime', method: '+50' }
+      ]]
     })
-    if (!invalidMixedUpset.error && invalidMixedUpset.result?.isError !== true) {
-      throw new Error('批量更新工具没有拒绝无效的 upset 混合参数')
-    }
-    console.log('批量字段更新参数检查正常，空 steps 与无效 upset 参数已在调用编辑器前拒绝。')
+    await assertRejected('内部命令字段名', 'apply_field_update', {
+      field: '@danmaku.delete',
+      method: '1'
+    })
+    console.log('字段更新参数检查正常，非法字段、同一步重复字段与无效 upset 已在调用编辑器前拒绝。')
 
-    const invalidMeasure = await request('tools/call', {
-      name: 'measure_text',
-      arguments: {}
+    await assertRejected('缺少测量内容', 'measure_text', {})
+    await assertRejected('items 混用顶层 size 参数', 'measure_text', {
+      items: [{ text: 'hello' }],
+      size: 40
     })
-    if (!invalidMeasure.error && invalidMeasure.result?.isError !== true) {
-      throw new Error('文字测量工具没有拒绝同时缺少 text 和 items 的请求')
-    }
-    console.log('文字测量参数检查正常，缺少测量内容时已拒绝请求。')
+    await assertRejected('过小字号 size < 1', 'measure_text', { text: 'hello', size: 0.2 })
+    console.log('文字测量参数检查正常，缺少内容、混用参数与过小字号已在调用编辑器前拒绝。')
 
-    const invalidCreateFolderProject = await request('tools/call', {
-      name: 'create_folder_project',
-      arguments: { name: 'demo', fromCurrent: true, fromProjectPath: 'demo.json' }
-    })
-    if (!invalidCreateFolderProject.error && invalidCreateFolderProject.result?.isError !== true) {
-      throw new Error('创建文件夹工程工具没有拒绝同时指定 fromCurrent 和 fromProjectPath 的请求')
+    await assertRejected('空白 ids 元素', 'list_danmakus', { ids: ['  '] })
+    await assertRejected('超限 limit', 'list_danmakus', { limit: 501 })
+    await assertRejected('空白筛选命令', 'select_by_command', { command: '   ' })
+    await assertRejected('空编辑器设置对象', 'update_editor_settings', {})
+    await assertRejected('非法运动角度', 'set_movement_length', { length: 100, angle: 'abc' })
+    await assertRejected('非法描边颜色', 'apply_stroke', { width: 2, color: 'red' })
+    await assertRejected('空白 snapshotId', 'get_history_snapshot', { snapshotId: '   ' })
+
+    const copyTool = tools.find((tool: { name?: string }) => tool.name === 'copy_coordinates') as
+      | { inputSchema?: { required?: string[] } }
+      | undefined
+    if (copyTool?.inputSchema?.required?.includes('direction')) {
+      throw new Error('copy_coordinates.direction 不应为必填字段')
     }
-    const invalidEditFolderProject = await request('tools/call', {
-      name: 'edit_folder_project',
-      arguments: { projectPath: 'demo' }
+    console.log('查询、筛选、工具栏与坐标复制参数校验正常。')
+
+    await assertRejected('同时指定 fromCurrent 和 fromProjectPath', 'create_folder_project', {
+      name: 'demo',
+      fromCurrent: true,
+      fromProjectPath: 'demo.json'
     })
-    if (!invalidEditFolderProject.error && invalidEditFolderProject.result?.isError !== true) {
-      throw new Error('编辑文件夹工程工具没有拒绝缺少待更新字段的请求')
-    }
-    const invalidCheckProjectPath = await request('tools/call', {
-      name: 'check_folder_project_path',
-      arguments: { name: '   ' }
-    })
-    if (!invalidCheckProjectPath.error && invalidCheckProjectPath.result?.isError !== true) {
-      throw new Error('工程路径检查工具没有拒绝空白工程名称')
-    }
-    const invalidReloadApp = await request('tools/call', {
-      name: 'reload_app',
-      arguments: { unexpected: true }
-    })
-    if (!invalidReloadApp.error && invalidReloadApp.result?.isError !== true) {
-      throw new Error('应用重启工具没有拒绝未知参数')
-    }
+    await assertRejected('缺少待更新字段', 'edit_folder_project', { projectPath: 'demo' })
+    await assertRejected('空白工程名称', 'check_folder_project_path', { name: '   ' })
+    await assertRejected('未知参数', 'reload_app', { unexpected: true })
+
     const statusTool = tools.find((tool: { name?: string }) => tool.name === 'get_video_export_status') as
       | { annotations?: { readOnlyHint?: boolean } }
       | undefined
@@ -207,10 +218,7 @@ async function main() {
       ['越界 waitMs', 'get_video_export_status', { waitMs: 70000 }],
       ['空 jobId', 'cancel_video_export', { jobId: '   ' }]
     ] as const) {
-      const invalidExportCall = await request('tools/call', { name, arguments: args })
-      if (!invalidExportCall.error && invalidExportCall.result?.isError !== true) {
-        throw new Error(`视频导出工具没有拒绝${label}`)
-      }
+      await assertRejected(label, name, args)
     }
     console.log('文件系统、视频导出与重启工具参数检查正常，无效组合与未知参数已在调用编辑器前拒绝。')
 
@@ -219,7 +227,7 @@ async function main() {
     if (state.result?.isError) {
       const message = state.result.content?.find((item: { type?: string }) => item.type === 'text')?.text || '未知错误'
       if (String(message).includes('编辑器服务离线')) {
-        console.log('MCP 工具调用成功；当前没有检测到运行中的 m7-editor 会话。启动 npm run tauri dev 后再运行本检查即可验证桥接。')
+        console.log(`MCP 工具调用成功；当前没有检测到运行中的 m7-editor 会话（${message}）。启动 npm run tauri dev 后再运行本检查即可验证桥接。`)
         return
       }
       throw new Error(String(message))

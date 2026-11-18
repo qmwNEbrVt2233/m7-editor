@@ -7,6 +7,7 @@ import {
   writeVideoExportChunk,
 } from '@/utils/tauriBackend'
 import {
+  clonePlainDanmakus,
   DanmakuSpriteRasterizer,
   DanmakuTimelineIndex,
   WebGL2DanmakuCompositor,
@@ -110,8 +111,13 @@ function createQueuedSinkWriter(
       writeChain.catch(onWriteError)
     },
     write(position: number, bytes: Uint8Array<ArrayBuffer>) {
-      fileSize = Math.max(fileSize, position + bytes.byteLength)
-      writeChain = writeChain.then(() => sink.writeChunk(position, bytes))
+      if (!Number.isFinite(position) || position < 0) {
+        onWriteError(new Error('无效的写入偏移位置'))
+        return
+      }
+      const safePos = Math.trunc(position)
+      fileSize = Math.max(fileSize, safePos + bytes.byteLength)
+      writeChain = writeChain.then(() => sink.writeChunk(safePos, bytes))
       writeChain.catch(onWriteError)
     },
     async finish() {
@@ -260,7 +266,9 @@ async function runWorkerDirectExport(
         }
 
         if (msg.type === 'chunk') {
-          writer.write(msg.position ?? 0, new Uint8Array(msg.data))
+          if (msg.data instanceof ArrayBuffer) {
+            writer.write(msg.position ?? 0, new Uint8Array(msg.data))
+          }
           return
         }
 
@@ -295,7 +303,7 @@ async function runWorkerDirectExport(
         }
 
         if (msg.type === 'direct-progress') {
-          const frameCount = msg.totalFrames || totalFrames
+          const frameCount = Math.max(1, Number.isFinite(msg.totalFrames) && msg.totalFrames > 0 ? msg.totalFrames : totalFrames)
           if (msg.phase === 'finalizing') {
             onProgress({
               completedFrames: frameCount,
@@ -305,9 +313,10 @@ async function runWorkerDirectExport(
               detail: '正在封装 MP4...',
             })
           } else {
-            const ratio = Math.min(1, msg.completedFrames / Math.max(1, frameCount))
+            const safeCompleted = Number.isFinite(msg.completedFrames) ? Math.max(0, Math.min(frameCount, msg.completedFrames)) : 0
+            const ratio = Math.max(0, Math.min(1, safeCompleted / frameCount))
             onProgress({
-              completedFrames: msg.completedFrames,
+              completedFrames: safeCompleted,
               totalFrames: frameCount,
               percent: ratio,
               stage: 'rendering',
@@ -373,6 +382,7 @@ async function runWorkerDirectExport(
     }
     abortController.abort()
     worker.terminate()
+    rasterizer?.dispose()
     await writer.cleanup()
   }
 }
@@ -407,6 +417,8 @@ async function runMainThreadWebGLDirectExport(
       job.screenHeight
     )
   } catch (error) {
+    canvas.width = 0
+    canvas.height = 0
     return {
       status: 'fallback',
       reason: error instanceof Error ? error.message : 'main-thread-webgl2-unavailable',
@@ -417,12 +429,14 @@ async function runMainThreadWebGLDirectExport(
   let sampleIterator: AsyncIterator<VideoSample, void, unknown> | null = null
   let currentSample: VideoSample | null = null
   let nextSample: VideoSample | null = null
-  let videoDurationSec = Math.max(0, job.mediaDuration)
+  let videoDurationSec = Number.isFinite(job.mediaDuration) ? Math.max(0, job.mediaDuration) : 0
 
   let worker: Worker | null = null
+  let rasterizer: DanmakuSpriteRasterizer | null = null
   let notifyWriteError = (_err: unknown) => {}
   const writer = createQueuedSinkWriter(sink, (err) => notifyWriteError(err))
   let onAbortMain: (() => void) | null = null
+  const inFlight: Promise<void>[] = []
 
   try {
     if (job.mediaUrl) {
@@ -438,13 +452,13 @@ async function runMainThreadWebGLDirectExport(
           if (trackDuration !== null && Number.isFinite(trackDuration) && trackDuration > 0) {
             videoDurationSec = trackDuration
           }
-          const sink = new VideoSampleSink(videoTrack)
+          const sampleSink = new VideoSampleSink(videoTrack)
           const startSec = Math.max(0, job.startMs / 1000)
           const queryStartSec =
             videoDurationSec > 0
               ? Math.max(0, Math.min(startSec, Math.max(0, videoDurationSec - 0.1)))
               : startSec
-          sampleIterator = sink.samples(queryStartSec, Infinity)[Symbol.asyncIterator]()
+          sampleIterator = sampleSink.samples(queryStartSec, Infinity)[Symbol.asyncIterator]()
           const first = await sampleIterator.next()
           if (first.done && videoDurationSec > 0) {
             return { status: 'fallback', reason: 'video-sample-stream-empty' }
@@ -479,6 +493,8 @@ async function runMainThreadWebGLDirectExport(
       completeResolve = res
       completeReject = rej
     })
+    readyPromise.catch(() => undefined)
+    completePromise.catch(() => undefined)
 
     const failAllWaiters = (err: unknown) => {
       readyReject(err)
@@ -488,13 +504,20 @@ async function runMainThreadWebGLDirectExport(
       }
       frameWaiters.clear()
     }
-    notifyWriteError = failAllWaiters
+    notifyWriteError = (err: unknown) => {
+      workerError = err instanceof Error ? err : new Error(String(err))
+      failAllWaiters(workerError)
+    }
 
     onAbortMain = () => {
       worker?.postMessage({ type: 'cancel' })
       failAllWaiters(makeAbortError())
     }
     signal.addEventListener('abort', onAbortMain, { once: true })
+    if (signal.aborted) {
+      onAbortMain()
+      throw makeAbortError()
+    }
 
     worker.onerror = (e) => {
       workerError = new Error(e.message || '编码工作线程异常')
@@ -507,7 +530,9 @@ async function runMainThreadWebGLDirectExport(
         writer.start()
         readyResolve()
       } else if (msg.type === 'chunk') {
-        writer.write(msg.position ?? 0, new Uint8Array(msg.data))
+        if (msg.data instanceof ArrayBuffer) {
+          writer.write(msg.position ?? 0, new Uint8Array(msg.data))
+        }
       } else if (msg.type === 'frame-added') {
         const waiter = frameWaiters.get(msg.index)
         if (waiter) {
@@ -524,6 +549,8 @@ async function runMainThreadWebGLDirectExport(
         })
       } else if (msg.type === 'complete') {
         completeResolve()
+      } else if (msg.type === 'canceled') {
+        failAllWaiters(makeAbortError())
       } else if (msg.type === 'error') {
         workerError = new Error(msg.message || '编码失败')
         failAllWaiters(workerError)
@@ -544,18 +571,23 @@ async function runMainThreadWebGLDirectExport(
     await readyPromise
 
     const timeline = new DanmakuTimelineIndex(job.danmakus)
-    const rasterizer = new DanmakuSpriteRasterizer(compositor.maxTextureSize)
+    rasterizer = new DanmakuSpriteRasterizer(compositor.maxTextureSize)
     const projectScale = job.width / Math.max(1, job.screenWidth)
     const frameDurationMs = 1000 / job.fps
     const activeBuffer: ActiveDanmakuDrawState[] = []
-    const inFlight: Promise<void>[] = []
+    const activeKeys = new Set<string>()
+    const emptySpriteKeys = new Set<string>()
+    let supportsVideoFrameTransfer = true
 
     for (let index = 0; index < totalFrames; index += 1) {
       if (signal.aborted) throw makeAbortError()
       if (workerError) throw workerError
 
       const frameOffsetMs = index * frameDurationMs
-      const durationMs = Math.min(frameDurationMs, Math.max(0, job.endMs - job.startMs - frameOffsetMs))
+      const durationMs = Math.max(
+        0.001,
+        Math.min(frameDurationMs, Math.max(0, job.endMs - job.startMs - frameOffsetMs))
+      )
       const projectTimeMs = Math.max(job.startMs, Math.min(job.endMs - 0.001, job.startMs + frameOffsetMs))
 
       if (sampleIterator) {
@@ -569,20 +601,23 @@ async function runMainThreadWebGLDirectExport(
           currentSample = nextSample
           const iter = await sampleIterator.next()
           nextSample = iter.done ? null : iter.value
+          if (signal.aborted) throw makeAbortError()
         }
       }
 
       timeline.evaluateAt(projectTimeMs, activeBuffer)
-      const activeKeys = new Set<string>()
+      activeKeys.clear()
       for (let i = 0; i < activeBuffer.length; i += 1) {
         activeKeys.add(activeBuffer[i].entry.spriteKey)
       }
       for (let i = 0; i < activeBuffer.length; i += 1) {
         const entry = activeBuffer[i].entry
-        if (!compositor.hasSprite(entry.spriteKey)) {
+        if (!compositor.hasSprite(entry.spriteKey) && !emptySpriteKeys.has(entry.spriteKey)) {
           const sprite = rasterizer.rasterize(entry.spriteKey, entry.spriteSpec, projectScale)
           if (sprite) {
             compositor.uploadSprite(sprite, activeKeys)
+          } else {
+            emptySpriteKeys.add(entry.spriteKey)
           }
         }
       }
@@ -593,38 +628,57 @@ async function runMainThreadWebGLDirectExport(
         await inFlight.shift()
       }
 
+      if (signal.aborted) throw makeAbortError()
+      if (workerError) throw workerError
+
       const addedPromise = new Promise<void>((res, rej) =>
         frameWaiters.set(index, { resolve: res, reject: rej })
       )
+      addedPromise.catch(() => undefined)
       inFlight.push(addedPromise)
 
       let transferred = false
-      try {
-        const vf = new VideoFrame(canvas, {
-          timestamp: Math.round(frameOffsetMs * 1000),
-          duration: Math.max(1, Math.round(durationMs * 1000)),
-        })
-        worker.postMessage(
-          { type: 'frame', index, timestampMs: frameOffsetMs, durationMs, frame: vf },
-          [vf as unknown as Transferable]
-        )
-        transferred = true
-      } catch {
-        // Ignore if VideoFrame(HTMLCanvasElement) transfer isn't supported; fall through to ImageBitmap
+      if (supportsVideoFrameTransfer) {
+        let vf: VideoFrame | null = null
+        try {
+          vf = new VideoFrame(canvas, {
+            timestamp: Math.round(frameOffsetMs * 1000),
+            duration: Math.max(1, Math.round(durationMs * 1000)),
+          })
+          worker.postMessage(
+            { type: 'frame', index, timestampMs: frameOffsetMs, durationMs, frame: vf },
+            [vf as unknown as Transferable]
+          )
+          transferred = true
+          vf = null
+        } catch {
+          vf?.close()
+          supportsVideoFrameTransfer = false
+        }
       }
 
       if (!transferred) {
         const bitmap = await createImageBitmap(canvas)
-        worker.postMessage(
-          { type: 'frame', index, timestampMs: frameOffsetMs, durationMs, bitmap },
-          [bitmap]
-        )
+        if (signal.aborted || workerError) {
+          bitmap.close()
+          if (signal.aborted) throw makeAbortError()
+          throw workerError!
+        }
+        try {
+          worker.postMessage(
+            { type: 'frame', index, timestampMs: frameOffsetMs, durationMs, bitmap },
+            [bitmap]
+          )
+        } catch (error) {
+          bitmap.close()
+          throw error
+        }
       }
 
       onProgress({
         completedFrames: index + 1,
         totalFrames,
-        percent: (index + 1) / totalFrames,
+        percent: Math.min(1, (index + 1) / totalFrames),
         stage: 'rendering',
       })
     }
@@ -647,6 +701,7 @@ async function runMainThreadWebGLDirectExport(
       totalFrames,
     }
   } finally {
+    await Promise.allSettled(inFlight)
     if (onAbortMain) {
       signal.removeEventListener('abort', onAbortMain)
     }
@@ -662,7 +717,10 @@ async function runMainThreadWebGLDirectExport(
     } catch {
       // ignore
     }
+    rasterizer?.dispose()
     compositor.dispose()
+    canvas.width = 0
+    canvas.height = 0
     if (worker) {
       if (!writer.isFinished) {
         worker.postMessage({ type: 'cancel' })
@@ -686,13 +744,41 @@ export async function tryRunDirectVideoExport(
     return { status: 'fallback', reason: 'webcodecs-or-worker-unavailable' }
   }
 
+  if (
+    !Number.isInteger(job.width) ||
+    !Number.isInteger(job.height) ||
+    job.width < 16 ||
+    job.width > 7680 ||
+    job.height < 16 ||
+    job.height > 4320 ||
+    job.width % 2 !== 0 ||
+    job.height % 2 !== 0 ||
+    !Number.isFinite(job.screenWidth) ||
+    !Number.isFinite(job.screenHeight) ||
+    job.screenWidth <= 0 ||
+    job.screenHeight <= 0 ||
+    !Number.isFinite(job.fps) ||
+    job.fps <= 0 ||
+    job.fps > 120 ||
+    !Number.isFinite(job.startMs) ||
+    !Number.isFinite(job.endMs) ||
+    job.startMs < 0 ||
+    job.endMs <= job.startMs
+  ) {
+    return { status: 'fallback', reason: 'invalid-export-parameters' }
+  }
+
   const sink = job.outputSink ?? (job.outputPath ? createTauriOutputSink(job.outputPath) : null)
   if (!sink) {
     throw new Error('缺少视频导出输出目标')
   }
 
-  const durationMs = Math.max(1, job.endMs - job.startMs)
-  const totalFrames = Math.max(1, Math.ceil((durationMs * job.fps) / 1000))
+  const plainJob: DirectExportJob = {
+    ...job,
+    danmakus: clonePlainDanmakus(job.danmakus),
+  }
+  const durationMs = Math.max(1, plainJob.endMs - plainJob.startMs)
+  const totalFrames = Math.max(1, Math.ceil((durationMs * plainJob.fps) / 1000))
 
   onProgress({
     completedFrames: 0,
@@ -707,13 +793,13 @@ export async function tryRunDirectVideoExport(
     throw makeAbortError()
   }
 
-  const workerResult = await runWorkerDirectExport(job, sink, totalFrames, signal, onProgress)
+  const workerResult = await runWorkerDirectExport(plainJob, sink, totalFrames, signal, onProgress)
   if (workerResult.status === 'completed') {
     return workerResult
   }
 
   if (MAIN_THREAD_WEBGL_ELIGIBLE_FALLBACKS.has(workerResult.reason)) {
-    return runMainThreadWebGLDirectExport(job, sink, totalFrames, signal, onProgress)
+    return runMainThreadWebGLDirectExport(plainJob, sink, totalFrames, signal, onProgress)
   }
 
   return workerResult

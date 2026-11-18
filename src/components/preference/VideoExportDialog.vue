@@ -9,23 +9,23 @@
       <div class="dialog-body">
         <label>
           <span>开始时间 (ms)</span>
-          <input v-model.number="startMs" type="number" min="0" :max="endMs" :disabled="busy" />
+          <input v-model.number="startMs" type="number" min="0" :max="endMs" :disabled="busy || starting" />
         </label>
         <label>
           <span>结束时间 (ms)</span>
-          <input v-model.number="endMs" type="number" min="1" :disabled="busy" />
+          <input v-model.number="endMs" type="number" min="1" :disabled="busy || starting" />
         </label>
         <label>
           <span>宽度</span>
-          <input v-model.number="width" type="number" min="16" max="7680" step="2" :disabled="busy" @change="syncHeightToWidth" />
+          <input v-model.number="width" type="number" min="16" max="7680" step="2" :disabled="busy || starting" @change="syncHeightToWidth" />
         </label>
         <label>
           <span>高度</span>
-          <input v-model.number="height" type="number" min="16" max="4320" step="2" :disabled="busy" @change="syncWidthToHeight" />
+          <input v-model.number="height" type="number" min="16" max="4320" step="2" :disabled="busy || starting" @change="syncWidthToHeight" />
         </label>
         <label>
           <span>帧率</span>
-          <select v-model.number="fps" :disabled="busy">
+          <select v-model.number="fps" :disabled="busy || starting">
             <option :value="24">24 fps</option>
             <option :value="30">30 fps</option>
             <option :value="60">60 fps</option>
@@ -34,54 +34,58 @@
         </label>
         <label>
           <span>画质</span>
-          <select v-model="quality" :disabled="busy">
+          <select v-model="quality" :disabled="busy || starting">
             <option value="low">低质量（快速预览）</option>
             <option value="high">高质量</option>
             <option value="very-high">极高质量（速度更慢、文件更大）</option>
             <option value="near-lossless">近无损（速度很慢、文件极大）</option>
           </select>
         </label>
-        <label class="checkbox-field" :class="{ disabled: busy || !nativeRuntime }">
+        <label class="checkbox-field" :class="{ disabled: busy || starting || !nativeRuntime }">
           <input
             type="checkbox"
             :checked="effectiveUseWebgl"
-            :disabled="busy || !nativeRuntime"
+            :disabled="busy || starting || !nativeRuntime"
             @change="onUseWebglChange"
           />
           <span>使用 WebGL 渲染{{ nativeRuntime ? '' : '（网页版仅支持此模式）' }}</span>
         </label>
+        <p v-if="exportSummaryText" class="output-hint">{{ exportSummaryText }}</p>
         <p class="output-hint">{{ renderModeHint }}</p>
         <p class="output-hint">{{ outputHint }}</p>
+        <p v-if="!busy && encoderPrecheckHint" class="warning-hint">{{ encoderPrecheckHint }}</p>
 
         <div v-if="busy" class="progress-section">
           <p class="snapshot-hint">使用导出开始时的弹幕快照；期间继续编辑不会改变当前渲染</p>
-          <progress :value="progress.percent" max="1"></progress>
+          <progress :value="safePercent" max="1"></progress>
           <div class="progress-caption">
             <span>{{ progressText }}</span>
-            <span>{{ Math.round(progress.percent * 100) }}%</span>
+            <span>{{ Math.round(safePercent * 100) }}%</span>
           </div>
           <div class="render-stats">
             <div><span>总渲染时间</span><strong>{{ elapsedTimeText }}</strong></div>
             <div><span>预计剩余时间</span><strong>{{ estimatedFinishText }}</strong></div>
             <div><span>平均每帧</span><strong>{{ averageFrameTimeText }}</strong></div>
           </div>
-          <button class="cancel-button" @click="cancelExport">取消导出</button>
+          <button class="cancel-button" :disabled="canceling" @click="cancelExport">
+            {{ canceling ? '正在取消…' : '取消导出' }}
+          </button>
         </div>
 
-        <p v-if="errorMessage" class="error-message">{{ errorMessage }}</p>
+        <p v-if="displayErrorMessage" class="error-message">{{ displayErrorMessage }}</p>
       </div>
 
       <footer class="dialog-footer">
         <button class="secondary-button" @click="close">{{ busy ? '隐藏' : '关闭' }}</button>
-        <button class="primary-button" :disabled="busy" @click="startExport">
-          {{ busy ? '正在导出…' : '开始导出' }}
+        <button class="primary-button" :disabled="busy || starting || encoderPrecheckFailedWeb" @click="startExport">
+          {{ busy ? '正在导出…' : starting ? '准备中…' : '开始导出' }}
         </button>
       </footer>
     </section>
   </div>
   <div v-if="busy && !visible" class="progress-notice no-select" @click="emit('update:visible', true)">
     <span>{{ progressText + '　预计剩余时间：' + estimatedFinishText }}</span>
-    <progress :value="progress.percent" max="1"></progress>
+    <progress :value="safePercent" max="1"></progress>
   </div>
 </template>
 
@@ -95,7 +99,11 @@ import {
 } from '@/store/editor'
 import { formatDuration } from '@/utils/time'
 import { isTauriRuntime } from '@/utils/tauriBackend'
-import type { ExportQuality } from '@/core/videoExport/quality'
+import {
+  isValidExportQuality,
+  resolveDirectVideoEncodingTarget,
+  type ExportQuality
+} from '@/core/videoExport/quality'
 
 const props = defineProps<{
   visible: boolean
@@ -128,15 +136,37 @@ const quality = ref<ExportQuality>('very-high')
 const width = ref(store.screenWidth)
 const height = ref(store.screenHeight)
 const errorMessage = ref('')
+const starting = ref(false)
+const canceling = ref(false)
+const lastAcknowledgedFailureJobId = ref<string | null>(null)
+const encoderPrecheckHint = ref('')
+const encoderPrecheckFailedWeb = ref(false)
 const progress = computed(() => store.videoExport.progress)
 const elapsedMs = computed(() => store.videoExport.elapsedMs)
+const safePercent = computed(() => {
+  const value = progress.value.percent
+  return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0
+})
 const exportStats = computed(() => computeVideoExportStats(progress.value, elapsedMs.value))
+
+const smoothedFrameMs = ref<number | null>(null)
+let lastFrameSampleCount = 0
+let lastFrameSampleTime = 0
+let precheckTimer: ReturnType<typeof setTimeout> | null = null
+let precheckSeq = 0
 let dragOffset = { x: 0, y: 0 }
 let activePointerId: number | null = null
-const elapsedTimeText = computed(() => formatDuration(elapsedMs.value))
+
+const effectiveAverageFrameMs = computed(() => (
+  smoothedFrameMs.value ?? exportStats.value.averageFrameMs
+))
+
+const elapsedTimeText = computed(() => formatDuration(
+  Number.isFinite(elapsedMs.value) ? Math.max(0, elapsedMs.value) : 0
+))
 const averageFrameTimeText = computed(() => {
-  const averageFrameMs = exportStats.value.averageFrameMs
-  if (averageFrameMs === null) return '计算中'
+  const averageFrameMs = effectiveAverageFrameMs.value
+  if (averageFrameMs === null || !Number.isFinite(averageFrameMs)) return '计算中'
   return averageFrameMs >= 1000
     ? `${(averageFrameMs / 1000).toFixed(2)} 秒/帧`
     : `${Math.round(averageFrameMs)} 毫秒/帧`
@@ -145,10 +175,68 @@ const estimatedFinishText = computed(() => {
   const { stage, completedFrames, totalFrames } = progress.value
   if (stage === 'preparing' || totalFrames <= 0 || completedFrames <= 0) return '计算中'
   if (stage === 'finalizing') return '封装中'
-  const remainingMs = exportStats.value.estimatedRemainingMs
-  if (completedFrames >= totalFrames || remainingMs === null) return '即将完成'
+  if (completedFrames >= totalFrames) return '即将完成'
+  const avgMs = effectiveAverageFrameMs.value
+  if (avgMs === null || !Number.isFinite(avgMs)) return '计算中'
+  const remainingMs = Math.max(0, avgMs * (totalFrames - completedFrames))
   return formatDuration(remainingMs)
 })
+
+const liveValidationError = computed(() => {
+  if (!nativeRuntime && (typeof Worker === 'undefined' || typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined')) {
+    return '当前浏览器不支持 WebCodecs 离线视频编码，请使用最新版 Chrome、Edge 或 Safari。'
+  }
+  if (nativeRuntime && !effectiveUseWebgl.value && store.mediaUrl && !store.mediaFilePath) {
+    return '独立渲染窗口需要本地媒体文件路径，请从本地文件重新导入视频后再导出。'
+  }
+  if (
+    !Number.isFinite(startMs.value) ||
+    !Number.isFinite(endMs.value) ||
+    startMs.value < 0 ||
+    endMs.value <= startMs.value
+  ) {
+    return '请检查导出时间范围（开始时间须 ≥ 0，结束时间须大于开始时间）。'
+  }
+  if (!Number.isFinite(fps.value) || fps.value <= 0 || fps.value > 120) {
+    return '导出帧率必须在 1 到 120 fps 之间。'
+  }
+  if (!isValidExportQuality(quality.value)) {
+    return '不支持的导出画质选项。'
+  }
+  try {
+    resolveVideoExportDimensions(
+      store.screenWidth,
+      store.screenHeight,
+      Number(width.value),
+      Number(height.value)
+    )
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error)
+  }
+  return ''
+})
+
+const displayErrorMessage = computed(() => {
+  if (errorMessage.value) return errorMessage.value
+  if (!busy.value && liveValidationError.value) return liveValidationError.value
+  return ''
+})
+
+const exportSummaryText = computed(() => {
+  if (
+    !Number.isFinite(startMs.value) ||
+    !Number.isFinite(endMs.value) ||
+    endMs.value <= startMs.value ||
+    !Number.isFinite(fps.value) ||
+    fps.value <= 0
+  ) {
+    return ''
+  }
+  const durationMs = endMs.value - startMs.value
+  const totalFrames = Math.max(1, Math.ceil((durationMs * fps.value) / 1000))
+  return `导出范围：${formatDuration(durationMs)}（预计 ${totalFrames.toLocaleString()} 帧，${fps.value} fps）`
+})
+
 const renderModeHint = computed(() => {
   if (!nativeRuntime) {
     return '网页版通过 WebGL + WebCodecs 离线渲染，导出完成后将直接写入所选文件或触发浏览器下载。'
@@ -168,11 +256,123 @@ const progressText = computed(() => {
   return `${progress.value.completedFrames.toLocaleString()} / ${progress.value.totalFrames.toLocaleString()} 帧`
 })
 
+function resetEtaTracking() {
+  smoothedFrameMs.value = null
+  lastFrameSampleCount = 0
+  lastFrameSampleTime = 0
+}
+
+watch(
+  [() => store.videoExport.activeJobId, () => progress.value.stage, () => progress.value.completedFrames, busy],
+  ([_jobId, stage, completedFrames, isBusy], [prevJobId]) => {
+    if (!isBusy || stage === 'preparing' || _jobId !== prevJobId) {
+      resetEtaTracking()
+      return
+    }
+    if (stage !== 'rendering' || !Number.isFinite(completedFrames) || completedFrames <= 0) {
+      return
+    }
+    const now = performance.now()
+    if (lastFrameSampleTime > 0 && lastFrameSampleCount > 0 && completedFrames > lastFrameSampleCount) {
+      const instant = (now - lastFrameSampleTime) / (completedFrames - lastFrameSampleCount)
+      if (Number.isFinite(instant) && instant >= 0) {
+        smoothedFrameMs.value = smoothedFrameMs.value === null
+          ? instant
+          : smoothedFrameMs.value * 0.75 + instant * 0.25
+      }
+    }
+    lastFrameSampleCount = completedFrames
+    lastFrameSampleTime = now
+  }
+)
+
+watch(busy, (isBusy) => {
+  if (!isBusy) {
+    canceling.value = false
+  }
+})
+
+function scheduleEncoderPrecheck() {
+  if (precheckTimer !== null) {
+    clearTimeout(precheckTimer)
+    precheckTimer = null
+  }
+  const seq = ++precheckSeq
+  encoderPrecheckHint.value = ''
+  encoderPrecheckFailedWeb.value = false
+
+  if (!props.visible || busy.value || liveValidationError.value) {
+    return
+  }
+
+  let resolved: { width: number; height: number }
+  try {
+    resolved = resolveVideoExportDimensions(
+      store.screenWidth,
+      store.screenHeight,
+      Number(width.value),
+      Number(height.value)
+    )
+  } catch {
+    return
+  }
+
+  const targetFps = fps.value
+  const targetQuality = quality.value
+  const useWebgl = effectiveUseWebgl.value
+
+  precheckTimer = setTimeout(() => {
+    precheckTimer = null
+    if (!useWebgl && nativeRuntime) return
+    void resolveDirectVideoEncodingTarget(resolved.width, resolved.height, targetFps, targetQuality)
+      .then((target) => {
+        if (seq !== precheckSeq || !props.visible || busy.value || liveValidationError.value) return
+        if (!target) {
+          if (!nativeRuntime) {
+            encoderPrecheckHint.value = '当前浏览器或设备不支持所选分辨率/帧率的视频编码，请尝试降低分辨率或帧率。'
+            encoderPrecheckFailedWeb.value = true
+          } else {
+            encoderPrecheckHint.value = '提示：当前规格暂不支持 WebCodecs 直出，导出时将自动尝试独立渲染窗口或 FFmpeg 后备方案。'
+            encoderPrecheckFailedWeb.value = false
+          }
+        }
+      })
+      .catch(() => undefined)
+  }, 180)
+}
+
+function clampDialogToViewport() {
+  if (!dialogPosition.value || !dialogRoot.value) return
+  const bounds = dialogRoot.value.getBoundingClientRect()
+  dialogPosition.value = {
+    left: Math.min(Math.max(0, dialogPosition.value.left), Math.max(0, window.innerWidth - bounds.width)),
+    top: Math.min(Math.max(0, dialogPosition.value.top), Math.max(0, window.innerHeight - bounds.height))
+  }
+}
+
+function handleKeyDown(event: KeyboardEvent) {
+  if (!props.visible || event.key !== 'Escape' || event.isComposing) return
+  if (event.target instanceof HTMLSelectElement) return
+  event.preventDefault()
+  close()
+}
+
 watch(() => props.visible, (visible) => {
   if (!visible) {
     stopDialogDrag()
+    window.removeEventListener('resize', clampDialogToViewport)
+    window.removeEventListener('keydown', handleKeyDown)
+    if (precheckTimer !== null) {
+      clearTimeout(precheckTimer)
+      precheckTimer = null
+    }
+    encoderPrecheckHint.value = ''
+    encoderPrecheckFailedWeb.value = false
     return
   }
+  window.addEventListener('resize', clampDialogToViewport)
+  window.addEventListener('keydown', handleKeyDown)
+  canceling.value = false
   errorMessage.value = ''
   if (busy.value) {
     startMs.value = store.videoExport.startMs
@@ -183,14 +383,40 @@ watch(() => props.visible, (visible) => {
     height.value = store.videoExport.height
     return
   }
+  if (
+    store.videoExport.status === 'failed' &&
+    store.videoExport.activeJobId &&
+    store.videoExport.activeJobId !== lastAcknowledgedFailureJobId.value
+  ) {
+    errorMessage.value = store.videoExport.error || '上次视频导出失败'
+    lastAcknowledgedFailureJobId.value = store.videoExport.activeJobId
+  }
   startMs.value = 0
   endMs.value = store.getDefaultVideoExportEndMs()
-  width.value = store.screenWidth
-  height.value = store.screenHeight
+  width.value = Number.isFinite(store.screenWidth) && store.screenWidth > 0
+    ? Math.min(7680, normalizeEvenVideoDimension(store.screenWidth))
+    : 1920
+  height.value = Number.isFinite(store.screenHeight) && store.screenHeight > 0
+    ? Math.min(4320, normalizeEvenVideoDimension(store.screenHeight))
+    : 1080
 })
+
+watch(
+  [() => props.visible, startMs, endMs, width, height, fps, quality, effectiveUseWebgl, busy, liveValidationError],
+  () => {
+    scheduleEncoderPrecheck()
+  },
+  { flush: 'post' }
+)
 
 onBeforeUnmount(() => {
   stopDialogDrag()
+  window.removeEventListener('resize', clampDialogToViewport)
+  window.removeEventListener('keydown', handleKeyDown)
+  if (precheckTimer !== null) {
+    clearTimeout(precheckTimer)
+    precheckTimer = null
+  }
 })
 
 function startDialogDrag(event: PointerEvent) {
@@ -228,34 +454,31 @@ function onUseWebglChange(event: Event) {
 }
 
 async function startExport() {
-  if (busy.value) return
+  if (busy.value || starting.value) return
   errorMessage.value = ''
-  if (nativeRuntime && !effectiveUseWebgl.value && store.mediaUrl && !store.mediaFilePath) {
-    errorMessage.value = '独立渲染窗口需要本地媒体文件路径，请从本地文件重新导入视频后再导出。'
+  if (liveValidationError.value) {
+    errorMessage.value = liveValidationError.value
     return
   }
-  if (
-    !Number.isFinite(startMs.value) ||
-    !Number.isFinite(endMs.value) ||
-    startMs.value < 0 ||
-    endMs.value <= startMs.value
-  ) {
-    errorMessage.value = '请检查导出时间范围。'
+  if (encoderPrecheckFailedWeb.value && encoderPrecheckHint.value) {
+    errorMessage.value = encoderPrecheckHint.value
     return
   }
+
   let resolvedSize: { width: number; height: number }
   try {
     resolvedSize = resolveVideoExportDimensions(
       store.screenWidth,
       store.screenHeight,
-      width.value,
-      height.value
+      Number(width.value),
+      Number(height.value)
     )
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error)
     return
   }
 
+  starting.value = true
   try {
     const result = await store.startVideoExportFromDialog({
       startMs: startMs.value,
@@ -266,34 +489,61 @@ async function startExport() {
       height: resolvedSize.height,
       useWebgl: effectiveUseWebgl.value
     })
+    lastAcknowledgedFailureJobId.value = result.jobId
     if (result.status === 'completed') {
       emit('update:visible', false)
-    } else if (result.status === 'failed' && result.error) {
-      errorMessage.value = result.error
+    } else if (result.status === 'failed') {
+      errorMessage.value = result.error || '视频导出失败'
     }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    starting.value = false
   }
 }
 
 function syncHeightToWidth() {
-  const widthValue = Number(width.value)
   const aspectRatio = store.screenWidth / store.screenHeight
-  if (Number.isFinite(widthValue) && widthValue > 0 && Number.isFinite(aspectRatio)) {
-    height.value = normalizeEvenVideoDimension(widthValue / aspectRatio)
+  if (!Number.isFinite(aspectRatio) || aspectRatio <= 0) return
+  const rawWidth = Number(width.value)
+  if (!Number.isFinite(rawWidth) || rawWidth <= 0) {
+    width.value = Math.min(7680, normalizeEvenVideoDimension(store.screenWidth))
   }
+  let w = Math.min(7680, normalizeEvenVideoDimension(Number(width.value)))
+  let h = normalizeEvenVideoDimension(w / aspectRatio)
+  if (h > 4320) {
+    h = 4320
+    w = Math.min(7680, normalizeEvenVideoDimension(h * aspectRatio))
+  }
+  width.value = w
+  height.value = h
 }
 
 function syncWidthToHeight() {
-  const heightValue = Number(height.value)
   const aspectRatio = store.screenWidth / store.screenHeight
-  if (Number.isFinite(heightValue) && heightValue > 0 && Number.isFinite(aspectRatio)) {
-    width.value = normalizeEvenVideoDimension(heightValue * aspectRatio)
+  if (!Number.isFinite(aspectRatio) || aspectRatio <= 0) return
+  const rawHeight = Number(height.value)
+  if (!Number.isFinite(rawHeight) || rawHeight <= 0) {
+    height.value = Math.min(4320, normalizeEvenVideoDimension(store.screenHeight))
   }
+  let h = Math.min(4320, normalizeEvenVideoDimension(Number(height.value)))
+  let w = normalizeEvenVideoDimension(h * aspectRatio)
+  if (w > 7680) {
+    w = 7680
+    h = Math.min(4320, normalizeEvenVideoDimension(w / aspectRatio))
+  }
+  width.value = w
+  height.value = h
 }
 
 function cancelExport() {
-  void store.cancelVideoExport()
+  if (canceling.value) return
+  canceling.value = true
+  void store.cancelVideoExport().finally(() => {
+    if (!busy.value) {
+      canceling.value = false
+    }
+  })
 }
 
 function close() {
@@ -313,10 +563,10 @@ function close() {
 
 .dialog-card {
   pointer-events: auto;
-}
-
-.dialog-card {
+  display: flex;
+  flex-direction: column;
   width: min(480px, calc(100vw - 32px));
+  max-height: calc(100vh - 24px);
   overflow: hidden;
   border: 1px solid #444;
   border-radius: 8px;
@@ -355,6 +605,7 @@ function close() {
   grid-template-columns: 1fr 1fr;
   gap: 12px;
   padding: 18px;
+  overflow-y: auto;
   font-size: 13px;
 }
 
@@ -399,6 +650,7 @@ select {
 }
 
 .output-hint,
+.warning-hint,
 .progress-section,
 .error-message {
   grid-column: 1 / -1;
@@ -407,6 +659,11 @@ select {
 
 .output-hint {
   color: #9a9da1;
+  font-size: 12px;
+}
+
+.warning-hint {
+  color: #f3c46b;
   font-size: 12px;
 }
 

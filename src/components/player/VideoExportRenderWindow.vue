@@ -39,26 +39,53 @@ const renderReady = ref(false)
 const abortController = new AbortController()
 let unlistenCancel: UnlistenFn | null = null
 
+const handleBeforeUnload = () => {
+  abortController.abort()
+}
+
 onMounted(() => {
+  window.addEventListener('beforeunload', handleBeforeUnload)
   void runRenderJob()
 })
 
 onUnmounted(() => {
+  window.removeEventListener('beforeunload', handleBeforeUnload)
   unlistenCancel?.()
+  unlistenCancel = null
   abortController.abort()
 })
 
-async function runRenderJob() {
-  let outputJob: ExportJob | null = null
+function makeRenderAbortError() {
+  return new DOMException('视频导出已取消', 'AbortError')
+}
 
+async function runRenderJob() {
   try {
     if (!jobId) throw new Error('缺少独立渲染任务标识')
 
     unlistenCancel = await listen<{ jobId: string }>(VIDEO_EXPORT_RENDER_CANCEL_EVENT, ({ payload }) => {
-      if (payload.jobId === jobId) abortController.abort()
+      if (payload?.jobId === jobId) abortController.abort()
     })
 
-    outputJob = await getVideoExportRenderJob(jobId) as ExportJob
+    if (abortController.signal.aborted) {
+      throw makeRenderAbortError()
+    }
+
+    let outputJob = await getVideoExportRenderJob(jobId) as ExportJob
+    if (
+      !outputJob ||
+      !Number.isFinite(outputJob.screenWidth) ||
+      !Number.isFinite(outputJob.screenHeight) ||
+      outputJob.screenWidth <= 0 ||
+      outputJob.screenHeight <= 0 ||
+      !Number.isFinite(outputJob.width) ||
+      !Number.isFinite(outputJob.height) ||
+      outputJob.width <= 0 ||
+      outputJob.height <= 0
+    ) {
+      throw new Error('独立渲染任务画布参数无效')
+    }
+
     if (outputJob.mediaUrl) {
       if (!outputJob.mediaFilePath) {
         throw new Error('独立渲染窗口需要本地媒体文件路径，请从本地文件重新导入视频后再导出。')
@@ -73,23 +100,26 @@ async function runRenderJob() {
       outputJob = { ...outputJob, mediaFilePath: '' }
     }
 
+    if (abortController.signal.aborted) {
+      throw makeRenderAbortError()
+    }
+
     store.$patch({
       InitializationPhase: false,
       showProjectManager: false,
       mediaUrl: outputJob.mediaUrl,
       mediaDuration: outputJob.mediaDuration,
       mediaFilePath: outputJob.mediaFilePath,
-      danmakus: outputJob.danmakus,
+      danmakus: Array.isArray(outputJob.danmakus) ? outputJob.danmakus : [],
       screenWidth: outputJob.screenWidth,
       screenHeight: outputJob.screenHeight,
       screenScale: 0,
-      currentTime: outputJob.startMs,
+      currentTime: Number.isFinite(outputJob.startMs) ? Math.max(0, outputJob.startMs) : 0,
       playing: false,
       aggressiveOptimization: false,
       screenRecordingMode: true
     })
 
-    // await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
     const viewportWidth = window.innerWidth || outputJob.width
     const viewportHeight = window.innerHeight || outputJob.height
     const recordingScale = Math.min(
@@ -100,15 +130,22 @@ async function runRenderJob() {
       viewportHeight / store.screenHeight * 100,
       viewportWidth / store.screenWidth * 100
     )
-    store.screenScale = Math.min(recordingScale, exactFitScale)
+    store.screenScale = Math.max(1, Math.min(recordingScale, exactFitScale))
 
     renderReady.value = true
     await nextTick()
     await playerRef.value?.waitUntilReady()
-    await document.fonts?.ready
+    await document.fonts?.ready.catch(() => undefined)
+    if (abortController.signal.aborted) {
+      throw makeRenderAbortError()
+    }
     if (!playerRef.value) throw new Error('独立渲染播放器未能启动')
 
     await emit(VIDEO_EXPORT_RENDER_READY_EVENT, { jobId })
+    if (abortController.signal.aborted) {
+      throw makeRenderAbortError()
+    }
+
     if (outputJob.frameCapture) {
       const frame = await captureVideoExportFrame(outputJob, playerRef.value, outputJob.frameCapture.timeMs)
       await emit(VIDEO_EXPORT_RENDER_FINISHED_EVENT, {
@@ -123,7 +160,9 @@ async function runRenderJob() {
       playerRef.value,
       abortController.signal,
       (progress) => {
-        void emit(VIDEO_EXPORT_RENDER_PROGRESS_EVENT, { jobId, progress })
+        if (!abortController.signal.aborted) {
+          void emit(VIDEO_EXPORT_RENDER_PROGRESS_EVENT, { jobId, progress })
+        }
       }
     )
     await emit(VIDEO_EXPORT_RENDER_FINISHED_EVENT, { jobId, result })
@@ -134,7 +173,9 @@ async function runRenderJob() {
       : { jobId, error: error instanceof Error ? error.message : String(error) }
     await emit(VIDEO_EXPORT_RENDER_FINISHED_EVENT, detail).catch(() => undefined)
   } finally {
+    window.removeEventListener('beforeunload', handleBeforeUnload)
     unlistenCancel?.()
+    unlistenCancel = null
   }
 }
 </script>

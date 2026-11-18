@@ -165,7 +165,18 @@ export const RANGE_EXPRESSION_PRESETS: ExpressionPreset[] = [
   
 ]
 
+const MAX_GENERATE_QUANTITY = 10000
+const agentCycleValuesMap = new WeakMap<object, string[]>()
+
+function getRuleCycleEntries(rule: { cycleList: string }): string[] {
+  const exactValues = agentCycleValuesMap.get(rule)
+  return exactValues ? [...exactValues] : parseStrictList(rule.cycleList)
+}
+
 export function createDefaultNumericRules(currentTime = 0): Record<NumericFieldPath, NumericRuleState> {
+  const safeCurrentTime = typeof currentTime === 'number' && Number.isFinite(currentTime)
+    ? Math.max(0, currentTime)
+    : 0
   const createRule = (mode: RuleMode, start = '', end = '', step = ''): NumericRuleState => ({
     mode,
     cycleList: '',
@@ -178,7 +189,7 @@ export function createDefaultNumericRules(currentTime = 0): Record<NumericFieldP
 
   return {
     layer: createRule('relative', '0', '9', '+1'),
-    startTime: createRule('relative', String(Math.round(currentTime)), String(Math.round(currentTime + 900)), '+100'),
+    startTime: createRule('relative', String(Math.round(safeCurrentTime)), String(Math.round(safeCurrentTime + 900)), '+100'),
     'content.size': createRule('range', '60', '60', '+2'),
     'transform.start.x': createRule('range', '0', '0', '+20'),
     'transform.start.y': createRule('range', '0', '0', '+10'),
@@ -249,6 +260,9 @@ export function buildToolWriteRequestFromAgentRules(
       const target = request.numericRules[rawPath]
       target.mode = rule.mode
       if (rule.mode === 'range') {
+        if (!Number.isFinite(rule.start) || !Number.isFinite(rule.end)) {
+          throw new Error(`${rawPath} 的 start 和 end 必须是有限数字`)
+        }
         target.start = String(rule.start)
         target.end = String(rule.end)
         if (rule.expression !== undefined) {
@@ -256,10 +270,18 @@ export function buildToolWriteRequestFromAgentRules(
           request.expressionEnabled = true
         }
       } else if (rule.mode === 'relative') {
+        if (!Number.isFinite(rule.start)) {
+          throw new Error(`${rawPath} 的 start 必须是有限数字`)
+        }
         target.start = String(rule.start)
         target.step = String(rule.step)
       } else {
-        target.cycleList = rule.values.map(String).join(';\n')
+        if (!Array.isArray(rule.values) || rule.values.length === 0) {
+          throw new Error(`${rawPath} 的 cycle values 不能为空`)
+        }
+        const values = rule.values.map(String)
+        target.cycleList = values.join(';\n')
+        agentCycleValuesMap.set(target, values)
       }
       continue
     }
@@ -268,7 +290,12 @@ export function buildToolWriteRequestFromAgentRules(
       const rule = rawRule as AgentColorRule
       request.colorRule.mode = rule.mode
       if (rule.mode === 'cycle') {
-        request.colorRule.cycleList = rule.values.join(';\n')
+        if (!Array.isArray(rule.values) || rule.values.length === 0) {
+          throw new Error('content.color 的 cycle values 不能为空')
+        }
+        const values = rule.values.map(String)
+        request.colorRule.cycleList = values.join(';\n')
+        agentCycleValuesMap.set(request.colorRule, values)
       } else {
         request.colorRule.start = rule.start
         request.colorRule.startText = rule.start
@@ -292,7 +319,12 @@ export function buildToolWriteRequestFromAgentRules(
     if (rule.mode === 'assign') {
       target.value = rule.value as never
     } else {
-      target.cycleList = rule.values.map(String).join(';\n')
+      if (!Array.isArray(rule.values) || rule.values.length === 0) {
+        throw new Error(`${rawPath} 的 cycle values 不能为空`)
+      }
+      const values = rule.values.map(String)
+      target.cycleList = values.join(';\n')
+      agentCycleValuesMap.set(target, values)
     }
   }
 
@@ -373,8 +405,12 @@ export function writeGeneratedDanmakusToPreview(request: ToolWriteRequest): Gene
 }
 
 export function generateDanmakuDraftsFromRules(request: ToolWriteRequest): DanmakuDraft[] {
+  if (typeof request.quantity === 'number' && Number.isFinite(request.quantity) && request.quantity > MAX_GENERATE_QUANTITY) {
+    throw new Error(`单次生成数量不能超过 ${MAX_GENERATE_QUANTITY} 条`)
+  }
   const quantity = normalizeQuantity(request.quantity)
-  const fieldSeries = buildFieldSeriesMap(request, quantity)
+  const screenSize = resolveScreenDimensions()
+  const fieldSeries = buildFieldSeriesMap(request, quantity, screenSize)
   const numericSeries = fieldSeries as Record<NumericFieldPath, number[]>
   const colorSeries = fieldSeries['content.color'] as string[]
   const textSeries = fieldSeries['content.text'] as string[]
@@ -424,6 +460,9 @@ export function generateDanmakuDraftsFromRules(request: ToolWriteRequest): Danma
 }
 
 export function parsePreviewDanmakus(text: string): DanmakuDraft[] {
+  if (typeof text !== 'string') {
+    throw new Error('预览内容必须是字符串')
+  }
   const trimmed = text.trim()
   if (!trimmed) {
     return []
@@ -435,6 +474,10 @@ export function parsePreviewDanmakus(text: string): DanmakuDraft[] {
     parsed = JSON.parse(trimmed)
   } catch (error) {
     throw new Error(`JSON 解析失败: ${error instanceof Error ? error.message : '未知错误'}`)
+  }
+
+  if (Array.isArray(parsed) && parsed.length === 0) {
+    return []
   }
 
   const drafts = extractDanmakuDrafts(parsed)
@@ -485,7 +528,11 @@ export function normalizeGeneratedDraft(draft: DanmakuDraft, allowNegativeValues
   }
 }
 
-function buildFieldSeriesMap(request: ToolWriteRequest, quantity: number): Record<AllFieldPath, unknown[]> {
+function buildFieldSeriesMap(
+  request: ToolWriteRequest,
+  quantity: number,
+  screenSize: { width: number; height: number }
+): Record<AllFieldPath, unknown[]> {
   const cache: FieldSeriesMap = {}
   const states = new Map<AllFieldPath, FieldResolveState>()
   const stack: AllFieldPath[] = []
@@ -513,7 +560,7 @@ function buildFieldSeriesMap(request: ToolWriteRequest, quantity: number): Recor
       resolveField(dependency)
     }
 
-    const series = buildFieldSeries(path, request, quantity, cache)
+    const series = buildFieldSeries(path, request, quantity, cache, screenSize)
     cache[path] = series
     stack.pop()
     states.set(path, 'resolved')
@@ -536,7 +583,7 @@ function getFieldDependencies(path: AllFieldPath, request: ToolWriteRequest): Se
       return extractExpressionDependencies(expression, `${path} `)
     }
     if (rule.mode === 'cycle') {
-      return getNumericCycleDependencies(rule.cycleList, path)
+      return getNumericCycleDependencies(rule, path)
     }
   }
 
@@ -551,10 +598,11 @@ function buildFieldSeries(
   path: AllFieldPath,
   request: ToolWriteRequest,
   quantity: number,
-  fieldSeries: FieldSeriesMap
+  fieldSeries: FieldSeriesMap,
+  screenSize: { width: number; height: number }
 ): unknown[] {
   if (isNumericFieldPath(path)) {
-    return buildNumericSeries(path, request.numericRules[path], quantity, request.expressionEnabled, fieldSeries)
+    return buildNumericSeries(path, request.numericRules[path], quantity, request.expressionEnabled, fieldSeries, screenSize)
   }
 
   if (path === 'content.color') {
@@ -562,7 +610,7 @@ function buildFieldSeries(
   }
 
   if (path === 'content.text') {
-    return buildTextFieldSeries(request.directRules.text, quantity, fieldSeries)
+    return buildTextFieldSeries(request.directRules.text, quantity, fieldSeries, screenSize)
   }
 
   if (path === 'content.font') {
@@ -581,10 +629,11 @@ function buildNumericSeries(
   rule: NumericRuleState,
   quantity: number,
   expressionEnabled: boolean,
-  fieldSeries: FieldSeriesMap
+  fieldSeries: FieldSeriesMap,
+  screenSize: { width: number; height: number }
 ): number[] {
   if (rule.mode === 'cycle') {
-    return buildCycleNumericSeries(path, rule.cycleList, quantity, fieldSeries)
+    return buildCycleNumericSeries(path, rule, quantity, fieldSeries, screenSize)
   }
 
   const startValue = parseRequiredNumber(rule.start, `${path} 起始值`)
@@ -597,17 +646,24 @@ function buildNumericSeries(
     const endValue = parseRequiredNumber(rule.end, `${path} 结束值`)
     if (expressionEnabled) {
       const expression = rule.expression?.trim() || RANGE_EXPRESSION_PRESETS[0].expression
-      return evaluateRangeExpression({
+      return evaluateRangeExpressionInternal({
         expression,
         startVal: startValue,
         endVal: endValue,
         quantity,
         fieldSeries
-      })
+      }, screenSize)
     }
 
-    const step = (endValue - startValue) / (quantity - 1)
-    return Array.from({ length: quantity }, (_, index) => startValue + (step * index))
+    const diff = endValue - startValue
+    return Array.from({ length: quantity }, (_, index) => {
+      const t = index / (quantity - 1)
+      const val = Number.isFinite(diff) ? startValue + diff * t : startValue * (1 - t) + endValue * t
+      if (!Number.isFinite(val)) {
+        throw new Error(`${path} 范围插值结果超出有效数字范围`)
+      }
+      return val
+    })
   }
 
   if (isOpacityPath(path)) {
@@ -616,6 +672,9 @@ function buildNumericSeries(
 
     while (values.length < quantity) {
       const nextValue = applyOpacityOperation(values[values.length - 1], operation)
+      if (!Number.isFinite(nextValue)) {
+        throw new Error(`${path} 计算结果超出有效数字范围`)
+      }
       values.push(nextValue)
     }
 
@@ -633,7 +692,12 @@ function buildNumericSeries(
 
   const values = [startValue]
   while (values.length < quantity) {
-    values.push(applyOperation(values[values.length - 1], operation))
+    const prevValue = values[values.length - 1]
+    const nextValue = applyOperation(prevValue, operation)
+    if (!Number.isFinite(nextValue)) {
+      throw new Error(`${path} 计算结果超出有效数字范围`)
+    }
+    values.push(nextValue)
   }
 
   return values
@@ -641,7 +705,7 @@ function buildNumericSeries(
 
 function buildColorSeries(rule: ColorRuleState, quantity: number): string[] {
   if (rule.mode === 'cycle') {
-    return buildCycleColorSeries(rule.cycleList, quantity)
+    return buildCycleColorSeries(rule, quantity)
   }
 
   const startColor = normalizeColor(rule.startText || rule.start)
@@ -699,11 +763,12 @@ function parseRelativeColorStep(value: string): number {
 
 function buildCycleNumericSeries(
   path: NumericFieldPath,
-  cycleList: string,
+  rule: NumericRuleState,
   quantity: number,
-  fieldSeries: FieldSeriesMap
+  fieldSeries: FieldSeriesMap,
+  screenSize: { width: number; height: number }
 ): number[] {
-  const entries = parseStrictList(cycleList)
+  const entries = getRuleCycleEntries(rule)
   if (entries.length === 0) {
     throw new Error(`${path} 循环列表不能为空`)
   }
@@ -724,6 +789,7 @@ function buildCycleNumericSeries(
       startVal: 0,
       endVal: 0,
       fieldSeries,
+      screenSize,
       label: `${path} 循环值`
     })
 
@@ -735,8 +801,8 @@ function buildCycleNumericSeries(
   })
 }
 
-function getNumericCycleDependencies(cycleList: string, path: NumericFieldPath): Set<AllFieldPath> {
-  const entries = parseStrictList(cycleList)
+function getNumericCycleDependencies(rule: NumericRuleState, path: NumericFieldPath): Set<AllFieldPath> {
+  const entries = getRuleCycleEntries(rule)
   const dependencies = new Set<AllFieldPath>()
 
   for (const [index, entry] of entries.entries()) {
@@ -746,8 +812,8 @@ function getNumericCycleDependencies(cycleList: string, path: NumericFieldPath):
   return dependencies
 }
 
-function buildCycleColorSeries(cycleList: string, quantity: number): string[] {
-  const entries = parseStrictList(cycleList)
+function buildCycleColorSeries(rule: ColorRuleState, quantity: number): string[] {
+  const entries = getRuleCycleEntries(rule)
   if (entries.length === 0) {
     throw new Error('颜色循环列表不能为空')
   }
@@ -770,7 +836,7 @@ function getTextRuleDependencies(rule: DirectRuleState<string>): Set<AllFieldPat
     return dependencies
   }
 
-  const entries = parseStrictList(rule.cycleList)
+  const entries = getRuleCycleEntries(rule)
   for (const [entryIndex, rawValue] of entries.entries()) {
     mergeDependencies(dependencies, collectTextTemplateDependencies(rawValue, `content.text 循环值 ${entryIndex + 1} `))
   }
@@ -796,7 +862,8 @@ function collectTextTemplateDependencies(rawValue: string, label: string): Set<A
 function buildTextFieldSeries(
   rule: DirectRuleState<string>,
   quantity: number,
-  fieldSeries: FieldSeriesMap
+  fieldSeries: FieldSeriesMap,
+  screenSize: { width: number; height: number }
 ): string[] {
   if (rule.mode === 'assign') {
     const template = compileTextTemplate(rule.value, 'content.text ')
@@ -811,12 +878,13 @@ function buildTextFieldSeries(
         startVal: 0,
         endVal: 0,
         fieldSeries,
+        screenSize,
         label: 'content.text '
       })
     })
   }
 
-  const entries = parseStrictList(rule.cycleList)
+  const entries = getRuleCycleEntries(rule)
   if (entries.length === 0) {
     throw new Error('content.text 循环列表不能为空')
   }
@@ -840,6 +908,7 @@ function buildTextFieldSeries(
       startVal: 0,
       endVal: 0,
       fieldSeries,
+      screenSize,
       label: 'content.text '
     })
   })
@@ -854,7 +923,7 @@ function buildDirectFieldSeries<T>(
     return Array.from({ length: quantity }, () => rule.value)
   }
 
-  const entries = parseStrictList(rule.cycleList)
+  const entries = getRuleCycleEntries(rule)
   if (entries.length === 0) {
     throw new Error(`${path} 循环列表不能为空`)
   }
@@ -882,7 +951,7 @@ function parseDirectCycleValue(path: DirectFieldPath, rawValue: string): any {
 }
 
 function scanTextTemplateExpressions(rawValue: string): Array<{ start: number; end: number; source: string }> | null {
-  if (!rawValue.startsWith('`') || !rawValue.endsWith('`') || rawValue.length < 2) {
+  if (typeof rawValue !== 'string' || !rawValue.startsWith('`') || !rawValue.endsWith('`') || rawValue.length < 2) {
     return null
   }
 
@@ -896,18 +965,39 @@ function scanTextTemplateExpressions(rawValue: string): Array<{ start: number; e
       break
     }
 
-    const end = inner.indexOf('}', start + 2)
-    if (end === -1) {
+    let depth = 1
+    let pos = start + 2
+    let quote: '"' | "'" | null = null
+    let escaping = false
+    while (pos < inner.length && depth > 0) {
+      const ch = inner[pos]
+      if (escaping) {
+        escaping = false
+      } else if (quote) {
+        if (ch === '\\') escaping = true
+        else if (ch === quote) quote = null
+      } else if (ch === '"' || ch === "'") {
+        quote = ch
+      } else if (ch === '{') {
+        depth++
+      } else if (ch === '}') {
+        depth--
+        if (depth === 0) break
+      }
+      pos++
+    }
+
+    if (depth !== 0) {
       cursor = start + 2
       continue
     }
 
     expressions.push({
       start,
-      end,
-      source: inner.slice(start + 2, end)
+      end: pos,
+      source: inner.slice(start + 2, pos)
     })
-    cursor = end + 1
+    cursor = pos + 1
   }
 
   return expressions.length > 0 ? expressions : null
@@ -957,6 +1047,7 @@ function renderTextTemplate(
     startVal: number
     endVal: number
     fieldSeries: FieldSeriesMap
+    screenSize?: { width: number; height: number }
     label: string
   }
 ): string {
@@ -966,14 +1057,16 @@ function renderTextTemplate(
     }
 
     const result = evaluateCompiledExpression(part.compiled, params)
+    if (typeof result === 'function') {
+      throw new Error(`${params.label}模板表达式不能返回函数`)
+    }
     return String(result ?? '')
   }).join('')
 }
 
-function compileMathExpression(expression: string, label: string): any {
+function compileMathExpression(expression: string, label: string): { evaluate: (scope: Record<string, any>) => unknown } {
   try {
-    parseMathExpression(expression)
-    return expression
+    return parseMathExpression(expression).compile()
   } catch (error) {
     throw new Error(`${label}表达式解析失败: ${getErrorMessage(error)}`)
   }
@@ -997,6 +1090,18 @@ function extractExpressionDependencies(expression: string, label: string): Set<A
   }
 }
 
+function resolveScreenDimensions(): { width: number; height: number } {
+  try {
+    const store = useEditorStore()
+    return {
+      width: Number.isFinite(store.screenWidth) && store.screenWidth > 0 ? store.screenWidth : 800,
+      height: Number.isFinite(store.screenHeight) && store.screenHeight > 0 ? store.screenHeight : 450
+    }
+  } catch {
+    return { width: 800, height: 450 }
+  }
+}
+
 function evaluateCompiledExpression(
   compiledExpression: any,
   params: {
@@ -1005,11 +1110,16 @@ function evaluateCompiledExpression(
     startVal: number
     endVal: number
     fieldSeries?: FieldSeriesMap
+    screenSize?: { width: number; height: number }
     label?: string
   }
 ): unknown {
   try {
-    return evaluateMathExpressionValue(compiledExpression, createExpressionScope(params))
+    const scope = createExpressionScope(params)
+    if (compiledExpression && typeof compiledExpression.evaluate === 'function') {
+      return compiledExpression.evaluate(scope)
+    }
+    return evaluateMathExpressionValue(String(compiledExpression), scope)
   } catch (error) {
     if (params.label !== undefined) {
       throw new Error(`${params.label}表达式解析失败: ${getErrorMessage(error)}`)
@@ -1024,8 +1134,9 @@ function createExpressionScope(params: {
   startVal: number
   endVal: number
   fieldSeries?: FieldSeriesMap
+  screenSize?: { width: number; height: number }
 }) {
-  const store = useEditorStore()
+  const screenSize = params.screenSize ?? resolveScreenDimensions()
   const t = params.quantity <= 1 ? 0 : params.index / (params.quantity - 1)
   const scope: Record<string, any> = {
     S: params.startVal,
@@ -1035,8 +1146,8 @@ function createExpressionScope(params: {
     t,
     bezier: evaluateBezier,
     seededRandom: (seed: number, index: number = params.index) => evaluateSeededRandom(seed, index),
-    width: store.screenWidth,
-    height: store.screenHeight
+    width: screenSize.width,
+    height: screenSize.height
   }
 
   for (const [path, series] of Object.entries(params.fieldSeries || {}) as Array<[AllFieldPath, unknown[]]>) {
@@ -1062,6 +1173,15 @@ function assignScopePath(scope: Record<string, any>, path: AllFieldPath, value: 
 }
 
 function evaluateBezier(x1: number, y1: number, x2: number, y2: number, t: number) {
+  if (
+    typeof x1 !== 'number' || !Number.isFinite(x1) ||
+    typeof y1 !== 'number' || !Number.isFinite(y1) ||
+    typeof x2 !== 'number' || !Number.isFinite(x2) ||
+    typeof y2 !== 'number' || !Number.isFinite(y2) ||
+    typeof t !== 'number' || !Number.isFinite(t)
+  ) {
+    throw new Error('bezier 参数必须是有限数字')
+  }
   const solver = createCubicBezierSolver(x1, y1, x2, y2)
   return solver(t)
 }
@@ -1085,11 +1205,11 @@ function getErrorMessage(error: unknown): string {
 }
 
 function parseStrictList(rawText: string): string[] {
-  if (!rawText) {
+  if (typeof rawText !== 'string' || !rawText) {
     return []
   }
 
-  const strictRegex = /;\n|;$/
+  const strictRegex = /;\r?\n|;$/
   const list = rawText.split(strictRegex)
 
   if (rawText.endsWith(';') && list[list.length - 1] === '') {
@@ -1149,7 +1269,7 @@ function normalizeQuantity(quantity: number): number {
     return 1
   }
 
-  return Math.max(1, Math.round(quantity))
+  return Math.max(1, Math.min(MAX_GENERATE_QUANTITY, Math.round(quantity)))
 }
 
 function isOpacityPath(path: NumericFieldPath): path is 'opacity.from' | 'opacity.to' {
@@ -1157,14 +1277,15 @@ function isOpacityPath(path: NumericFieldPath): path is 'opacity.from' | 'opacit
 }
 
 function parseOpacityOperation(input: string, path: NumericFieldPath) {
-  const trimmed = input.trim()
+  const trimmed = typeof input === 'string' ? input.trim() : ''
   if (!trimmed) {
     throw new Error(`${path} 相对值不能为空`)
   }
 
-  if (/^[+\-*/]/.test(trimmed)) {
-    const operator = trimmed[0]
-    const rawValue = operator === '-' ? trimmed : trimmed.slice(1)
+  const compact = trimmed.replace(/\s+/g, '')
+  if (/^[+\-*/]/.test(compact)) {
+    const operator = compact[0]
+    const rawValue = operator === '-' ? compact : compact.slice(1)
     const parsedValue = Number(rawValue)
 
     if (!Number.isFinite(parsedValue)) {
@@ -1187,7 +1308,7 @@ function parseOpacityOperation(input: string, path: NumericFieldPath) {
     }
   }
 
-  const parsedValue = Number(trimmed)
+  const parsedValue = Number(compact)
   if (!Number.isFinite(parsedValue)) {
     throw new Error(`${path} 相对值无效: 无效的透明度数值`)
   }
@@ -1202,16 +1323,22 @@ function applyOpacityOperation(
     value: number
   }
 ): number {
+  let result: number
   switch (operation.mode) {
     case 'set':
-      return operation.value
+      result = operation.value
+      break
     case 'add':
-      return originalValue + operation.value
+      result = originalValue + operation.value
+      break
     case 'mul':
-      return originalValue * operation.value
+      result = originalValue * operation.value
+      break
     case 'div':
-      return originalValue / operation.value
+      result = originalValue / operation.value
+      break
   }
+  return Number.isFinite(result) ? result : originalValue
 }
 
 function roundInteger(value: unknown, allowNegative: boolean = false): number {
@@ -1290,14 +1417,19 @@ function parseEasingLike(value: string): DanmakuItem['animation']['easing'] {
 
 // 标准三阶贝塞尔曲线缓动求解器 (Cubic Bezier Easing Solver)
 export function createCubicBezierSolver(x1: number, y1: number, x2: number, y2: number) {
-  // 贝塞尔曲线公式系数
-  const ax = 3 * x1 - 3 * x2 + 1;
-  const bx = 3 * x2 - 6 * x1;
-  const cx = 3 * x1;
+  const safeX1 = Number.isFinite(x1) ? validateRange(x1, 0, 1) : 0
+  const safeY1 = Number.isFinite(y1) ? y1 : 0
+  const safeX2 = Number.isFinite(x2) ? validateRange(x2, 0, 1) : 1
+  const safeY2 = Number.isFinite(y2) ? y2 : 1
 
-  const ay = 3 * y1 - 3 * y2 + 1;
-  const by = 3 * y2 - 6 * y1;
-  const cy = 3 * y1;
+  // 贝塞尔曲线公式系数
+  const ax = 3 * safeX1 - 3 * safeX2 + 1;
+  const bx = 3 * safeX2 - 6 * safeX1;
+  const cx = 3 * safeX1;
+
+  const ay = 3 * safeY1 - 3 * safeY2 + 1;
+  const by = 3 * safeY2 - 6 * safeY1;
+  const cy = 3 * safeY1;
 
   function sampleCurveX(t: number) { return ((ax * t + bx) * t + cx) * t; }
   function sampleCurveY(t: number) { return ((ay * t + by) * t + cy) * t; }
@@ -1305,6 +1437,7 @@ export function createCubicBezierSolver(x1: number, y1: number, x2: number, y2: 
 
   // 给定 x 轴进度，求解曲线内部的参数 t_param
   return function solve(x: number): number {
+    if (typeof x !== 'number' || !Number.isFinite(x)) return 0;
     if (x <= 0) return 0;
     if (x >= 1) return 1;
 
@@ -1315,20 +1448,24 @@ export function createCubicBezierSolver(x1: number, y1: number, x2: number, y2: 
       if (Math.abs(xSample) < 1e-6) return sampleCurveY(tParam);
       const dX = sampleCurveDerivativeX(tParam);
       if (Math.abs(dX) < 1e-6) break;
-      tParam -= xSample / dX;
+      const nextT = tParam - xSample / dX;
+      if (!Number.isFinite(nextT) || nextT < 0 || nextT > 1) break;
+      tParam = nextT;
     }
 
-    // 2. 如果牛顿法失效（导数趋近于0），退化到二分法兜底
+    // 2. 如果牛顿法失效（导数趋近于0），退化到二分法兜底（限制最大迭代次数防止浮点停滞死循环）
     let lower = 0;
     let upper = 1;
     tParam = x;
 
-    while (lower < upper) {
+    for (let i = 0; i < 64 && lower < upper; i++) {
       const xSample = sampleCurveX(tParam);
       if (Math.abs(xSample - x) < 1e-6) return sampleCurveY(tParam);
       if (x > xSample) lower = tParam;
       else upper = tParam;
-      tParam = (upper + lower) / 2;
+      const mid = (upper + lower) / 2;
+      if (mid === tParam) break;
+      tParam = mid;
     }
 
     return sampleCurveY(tParam);
@@ -1339,6 +1476,13 @@ export function createCubicBezierSolver(x1: number, y1: number, x2: number, y2: 
  * 范围模式下，根据数学表达式批量计算数值序列
  */
 export function evaluateRangeExpression(params: RangeEvaluationParams): number[] {
+  return evaluateRangeExpressionInternal(params, resolveScreenDimensions());
+}
+
+function evaluateRangeExpressionInternal(
+  params: RangeEvaluationParams,
+  screenSize: { width: number; height: number }
+): number[] {
   const { expression, startVal, endVal, quantity, fieldSeries } = params;
   const results: number[] = [];
 
@@ -1355,7 +1499,8 @@ export function evaluateRangeExpression(params: RangeEvaluationParams): number[]
         quantity,
         startVal,
         endVal,
-        fieldSeries
+        fieldSeries,
+        screenSize
       });
       
       if (typeof evalResult !== 'number' || Number.isNaN(evalResult) || !Number.isFinite(evalResult)) {

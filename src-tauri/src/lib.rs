@@ -1,12 +1,12 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     net::{TcpListener, TcpStream},
-    path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    path::{Component, Path, PathBuf},
+    process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc, Arc, Mutex,
     },
     thread,
@@ -33,7 +33,13 @@ const APP_CONFIG_FILE: &str = "config.json";
 const PROJECT_CONFIG_FILE: &str = "project_config.json";
 const MCP_DESCRIPTOR_PREFIX: &str = "m7-editor-mcp-bridge-";
 const MCP_MAX_BODY_BYTES: usize = 1024 * 1024;
+const MCP_MAX_HEADER_BYTES: usize = 8192;
+const MCP_MAX_CONCURRENT_CONNECTIONS: usize = 32;
+const MCP_MAX_PENDING_REQUESTS: usize = 64;
+const MAX_IMPORT_TEXT_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_FFMPEG_STDERR_BYTES: usize = 8192;
 static MCP_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Serialize)]
 struct MediaFile {
@@ -42,14 +48,63 @@ struct MediaFile {
 
 #[derive(Default)]
 struct FileSystemRuntime {
-    log_file: Mutex<Option<PathBuf>>,
+    log_file: Mutex<Option<File>>,
+    config_lock: Mutex<()>,
+}
+
+struct FfmpegSession {
+    stdin: Mutex<Option<ChildStdin>>,
+    child: Mutex<Option<Child>>,
+    stderr_tail: Arc<Mutex<String>>,
+    stderr_thread: Mutex<Option<thread::JoinHandle<()>>>,
+    expected_rgba_frame_bytes: Option<usize>,
+}
+
+impl FfmpegSession {
+    fn terminate(&self) {
+        // Kill the child first so any blocked stdin.write_all wakes with BrokenPipe.
+        if let Ok(mut guard) = self.child.lock() {
+            if let Some(mut child) = guard.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        if let Ok(mut guard) = self.stdin.lock() {
+            guard.take();
+        }
+        if let Ok(mut guard) = self.stderr_thread.lock() {
+            if let Some(handle) = guard.take() {
+                let _ = handle.join();
+            }
+        }
+    }
 }
 
 #[derive(Default)]
 struct VideoExportRuntime {
-    ffmpeg_processes: Mutex<HashMap<String, Child>>,
-    export_files: Mutex<HashMap<PathBuf, File>>,
+    ffmpeg_processes: Mutex<HashMap<PathBuf, Arc<FfmpegSession>>>,
+    starting_ffmpeg: Mutex<HashSet<PathBuf>>,
+    export_files: Mutex<HashMap<PathBuf, Arc<Mutex<File>>>>,
     render_jobs: Mutex<HashMap<String, Value>>,
+}
+
+impl VideoExportRuntime {
+    fn shutdown(&self) {
+        let sessions: Vec<Arc<FfmpegSession>> = if let Ok(mut guard) = self.ffmpeg_processes.lock() {
+            guard.drain().map(|(_, session)| session).collect()
+        } else {
+            Vec::new()
+        };
+        for session in sessions {
+            session.terminate();
+        }
+        if let Ok(mut guard) = self.export_files.lock() {
+            guard.clear();
+        }
+        if let Ok(mut guard) = self.render_jobs.lock() {
+            guard.clear();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -62,8 +117,52 @@ struct McpBridgeInner {
     port: u16,
     descriptor_path: PathBuf,
     pending: Mutex<HashMap<String, mpsc::SyncSender<Result<Value, String>>>>,
+    active_connections: Arc<AtomicUsize>,
     running: AtomicBool,
     frontend_ready: AtomicBool,
+}
+
+impl Drop for McpBridgeInner {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
+
+struct McpConnectionGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for McpConnectionGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl McpBridgeInner {
+    fn drain_pending(&self) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.clear();
+        }
+    }
+
+    fn cleanup(&self) {
+        self.running.store(false, Ordering::Release);
+        self.drain_pending();
+        if let Ok(contents) = fs::read_to_string(&self.descriptor_path) {
+            let is_current = serde_json::from_str::<Value>(&contents)
+                .ok()
+                .and_then(|descriptor| {
+                    descriptor
+                        .get("token")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .is_some_and(|token| constant_time_equal(&token, &self.token));
+            if is_current {
+                let _ = fs::remove_file(&self.descriptor_path);
+            }
+        }
+    }
 }
 
 impl McpBridgeRuntime {
@@ -79,6 +178,9 @@ impl McpBridgeRuntime {
             .port();
         let token = create_mcp_token()?;
         let descriptor_id = create_mcp_token()?;
+        let descriptor_prefix = descriptor_id
+            .get(..24)
+            .ok_or_else(|| "无法生成 MCP 描述文件标识".to_string())?;
         let descriptor_dir = app
             .path()
             .app_config_dir()
@@ -89,15 +191,21 @@ impl McpBridgeRuntime {
         let descriptor_path = descriptor_dir.join(format!(
             "{}{}.json",
             MCP_DESCRIPTOR_PREFIX,
-            &descriptor_id[..24]
+            descriptor_prefix
         ));
         write_mcp_descriptor(&descriptor_path, port, &token)?;
+        let sweep_dir = descriptor_dir.clone();
+        let own_descriptor = descriptor_path.clone();
+        let _ = thread::Builder::new()
+            .name("m7-editor-mcp-sweep".to_string())
+            .spawn(move || sweep_stale_mcp_descriptors(&sweep_dir, &own_descriptor));
         let bridge = Self {
             inner: Arc::new(McpBridgeInner {
                 token,
                 port,
                 descriptor_path,
                 pending: Mutex::new(HashMap::new()),
+                active_connections: Arc::new(AtomicUsize::new(0)),
                 running: AtomicBool::new(true),
                 frontend_ready: AtomicBool::new(false),
             }),
@@ -106,17 +214,47 @@ impl McpBridgeRuntime {
         thread::Builder::new()
             .name("m7-editor-mcp-bridge".to_string())
             .spawn(move || {
-                while listener_bridge.inner.running.load(Ordering::Relaxed) {
+                while listener_bridge.inner.running.load(Ordering::Acquire) {
                     match listener.accept() {
-                        Ok((stream, _)) => {
+                        Ok((mut stream, _)) => {
+                            let prev = listener_bridge
+                                .inner
+                                .active_connections
+                                .fetch_add(1, Ordering::AcqRel);
+                            if prev >= MCP_MAX_CONCURRENT_CONNECTIONS {
+                                listener_bridge
+                                    .inner
+                                    .active_connections
+                                    .fetch_sub(1, Ordering::AcqRel);
+                                let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+                                write_mcp_http_response(
+                                    &mut stream,
+                                    503,
+                                    "Service Unavailable",
+                                    &json!({ "error": "MCP 本机桥连接繁忙，请稍后重试" }),
+                                );
+                                continue;
+                            }
+                            let guard = McpConnectionGuard {
+                                counter: Arc::clone(&listener_bridge.inner.active_connections),
+                            };
                             let request_bridge = listener_bridge.clone();
                             let request_app = app.clone();
-                            let _ = thread::Builder::new()
+                            if thread::Builder::new()
                                 .name("m7-editor-mcp-request".to_string())
-                                .spawn(move || request_bridge.serve_connection(&request_app, stream));
+                                .spawn(move || {
+                                    let _guard = guard;
+                                    request_bridge.serve_connection(&request_app, stream);
+                                })
+                                .is_err()
+                            {
+                                // `_guard` is dropped here if spawn failed? No, moved into closure only on success,
+                                // wait: if `spawn` returns Err, the closure isn't constructed/called; Wait: in Rust
+                                // the closure was moved into `spawn`, so on Err it's dropped, which drops `guard`!
+                            }
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(25));
+                            thread::sleep(Duration::from_millis(40));
                         }
                         Err(_) => thread::sleep(Duration::from_millis(100)),
                     }
@@ -143,45 +281,95 @@ impl McpBridgeRuntime {
         app: &AppHandle,
         stream: &mut TcpStream,
     ) -> Result<Value, (u16, String)> {
-        let mut headers = Vec::with_capacity(1024);
-        let mut byte = [0u8; 1];
-        while headers.len() < 8192 {
-            stream
-                .read_exact(&mut byte)
-                .map_err(|_| (400, "HTTP 请求头不完整".to_string()))?;
-            headers.push(byte[0]);
-            if headers.ends_with(b"\r\n\r\n") {
-                break;
+        let mut buffer = Vec::with_capacity(2048);
+        let mut chunk = [0u8; 2048];
+        let header_end = loop {
+            if let Some(pos) = find_http_header_end(&buffer) {
+                break pos;
             }
-        }
-        if !headers.ends_with(b"\r\n\r\n") {
+            if buffer.len() >= MCP_MAX_HEADER_BYTES {
+                return Err((431, "HTTP 请求头过大".to_string()));
+            }
+            let read = stream
+                .read(&mut chunk)
+                .map_err(|_| (400, "HTTP 请求头不完整".to_string()))?;
+            if read == 0 {
+                return Err((400, "HTTP 请求头不完整".to_string()));
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+        };
+        if header_end > MCP_MAX_HEADER_BYTES {
             return Err((431, "HTTP 请求头过大".to_string()));
         }
-        let headers_text = std::str::from_utf8(&headers)
+
+        let headers_text = std::str::from_utf8(&buffer[..header_end])
             .map_err(|_| (400, "HTTP 请求头格式无效".to_string()))?;
+        let leftover = &buffer[header_end + 4..];
+
         let mut lines = headers_text.split("\r\n");
         let request_line = lines.next().unwrap_or_default();
-        if request_line != "POST /rpc HTTP/1.1" && request_line != "POST /rpc HTTP/1.0" {
+        let mut request_parts = request_line.split(' ');
+        let http_method = request_parts.next().unwrap_or_default();
+        let http_target = request_parts.next().unwrap_or_default();
+        let http_version = request_parts.next().unwrap_or_default();
+        if request_parts.next().is_some()
+            || (http_version != "HTTP/1.1" && http_version != "HTTP/1.0")
+        {
+            return Err((400, "HTTP 请求行无效".to_string()));
+        }
+        if http_target != "/rpc" {
             return Err((404, "仅支持 POST /rpc".to_string()));
         }
+        if http_method != "POST" {
+            return Err((405, "仅支持 POST /rpc".to_string()));
+        }
 
-        let mut content_length = None;
-        let mut authorization = None;
-        let mut host = None;
+        let mut content_length: Option<usize> = None;
+        let mut authorization: Option<String> = None;
+        let mut host: Option<String> = None;
         let mut has_origin = false;
-        let mut json_content_type = false;
+        let mut json_content_type: Option<bool> = None;
         let mut has_transfer_encoding = false;
         for line in lines {
-            let Some((name, value)) = line.split_once(':') else {
+            if line.is_empty() {
                 continue;
+            }
+            let Some((name, value)) = line.split_once(':') else {
+                return Err((400, "HTTP 请求头格式无效".to_string()));
             };
+            let trimmed_value = value.trim();
             match name.trim().to_ascii_lowercase().as_str() {
-                "content-length" => content_length = value.trim().parse::<usize>().ok(),
-                "authorization" => authorization = Some(value.trim().to_string()),
-                "host" => host = Some(value.trim().to_ascii_lowercase()),
+                "content-length" => {
+                    if content_length.is_some() {
+                        return Err((400, "重复的 Content-Length 请求头".to_string()));
+                    }
+                    if trimmed_value.is_empty() || !trimmed_value.bytes().all(|b| b.is_ascii_digit()) {
+                        return Err((400, "Content-Length 请求头无效".to_string()));
+                    }
+                    let parsed = trimmed_value
+                        .parse::<usize>()
+                        .map_err(|_| (413, "MCP 请求体超过 1 MiB".to_string()))?;
+                    content_length = Some(parsed);
+                }
+                "authorization" => {
+                    if authorization.is_some() {
+                        return Err((400, "重复的 Authorization 请求头".to_string()));
+                    }
+                    authorization = Some(trimmed_value.to_string());
+                }
+                "host" => {
+                    if host.is_some() {
+                        return Err((400, "重复的 Host 请求头".to_string()));
+                    }
+                    host = Some(trimmed_value.to_ascii_lowercase());
+                }
                 "origin" => has_origin = true,
                 "content-type" => {
-                    json_content_type = value.trim().to_ascii_lowercase().starts_with("application/json")
+                    if json_content_type.is_some() {
+                        return Err((400, "重复的 Content-Type 请求头".to_string()));
+                    }
+                    let media_type = trimmed_value.split(';').next().unwrap_or("").trim();
+                    json_content_type = Some(media_type.eq_ignore_ascii_case("application/json"));
                 }
                 "transfer-encoding" => has_transfer_encoding = true,
                 _ => {}
@@ -193,58 +381,94 @@ impl McpBridgeRuntime {
         }
         let expected_host = format!("127.0.0.1:{}", self.inner.port);
         let expected_localhost = format!("localhost:{}", self.inner.port);
-        if !host.as_deref().is_some_and(|value| value == expected_host || value == expected_localhost) {
+        if !host
+            .as_deref()
+            .is_some_and(|value| value == expected_host || value == expected_localhost)
+        {
             return Err((403, "MCP 本机桥拒绝了非本机 Host".to_string()));
         }
+        let expected_auth = format!("Bearer {}", self.inner.token);
         if !authorization
             .as_deref()
-            .is_some_and(|value| constant_time_equal(value, &format!("Bearer {}", self.inner.token)))
+            .is_some_and(|value| constant_time_equal(value, &expected_auth))
         {
             return Err((401, "MCP 桥接令牌无效".to_string()));
         }
-        if !self.inner.frontend_ready.load(Ordering::Relaxed) {
+        if !self.inner.running.load(Ordering::Acquire) {
+            return Err((503, "MCP 本机桥正在关闭".to_string()));
+        }
+        if !self.inner.frontend_ready.load(Ordering::Acquire) {
             return Err((503, "编辑器界面尚未连接 MCP 桥，请稍后重试".to_string()));
         }
-        if !json_content_type || has_transfer_encoding {
+        if json_content_type != Some(true) || has_transfer_encoding {
             return Err((400, "请求必须使用固定长度的 application/json 内容".to_string()));
         }
-        if content_length.is_none_or(|length| length == 0 || length > MCP_MAX_BODY_BYTES) {
-            return Err((413, "MCP 请求体为空或超过 1 MiB".to_string()));
+        let Some(content_length) = content_length else {
+            return Err((411, "请求缺少 Content-Length".to_string()));
+        };
+        if content_length == 0 {
+            return Err((400, "MCP 请求体不能为空".to_string()));
         }
-        let content_length = content_length.unwrap();
-        let mut body = vec![0u8; content_length];
-        stream
-            .read_exact(&mut body)
-            .map_err(|_| (400, "MCP 请求体不完整".to_string()))?;
+        if content_length > MCP_MAX_BODY_BYTES {
+            return Err((413, "MCP 请求体超过 1 MiB".to_string()));
+        }
+        if leftover.len() > content_length {
+            return Err((400, "HTTP 请求体长度与 Content-Length 不匹配".to_string()));
+        }
+
+        let remaining = content_length - leftover.len();
+        let mut body = Vec::with_capacity(leftover.len().saturating_add(remaining.min(64 * 1024)));
+        body.extend_from_slice(leftover);
+        if remaining > 0 {
+            let mut limited = stream.take(remaining as u64);
+            limited
+                .read_to_end(&mut body)
+                .map_err(|_| (400, "MCP 请求体不完整".to_string()))?;
+            if body.len() != content_length {
+                return Err((400, "MCP 请求体不完整".to_string()));
+            }
+        }
+
         let request: Value = serde_json::from_slice(&body)
             .map_err(|error| (400, format!("MCP 请求 JSON 无效: {error}")))?;
-        let method = request
+        let Some(request_obj) = request.as_object() else {
+            return Err((400, "MCP 请求体必须是 JSON 对象".to_string()));
+        };
+        let method = request_obj
             .get("method")
             .and_then(Value::as_str)
             .filter(|method| !method.is_empty())
             .ok_or_else(|| (400, "MCP 请求缺少 method".to_string()))?;
-        let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+        let params = match request_obj.get("params") {
+            None | Some(Value::Null) => json!({}),
+            Some(Value::Object(_)) => request_obj.get("params").cloned().unwrap_or_else(|| json!({})),
+            Some(_) => return Err((400, "MCP 请求 params 必须是 JSON 对象".to_string())),
+        };
         let request_id = format!(
             "mcp-{}-{}",
             now_millis(),
             MCP_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
         let (sender, receiver) = mpsc::sync_channel(1);
-        self.inner
-            .pending
-            .lock()
-            .map_err(|_| (500, "MCP 请求队列不可用".to_string()))?
-            .insert(request_id.clone(), sender);
+        {
+            let mut pending = self
+                .inner
+                .pending
+                .lock()
+                .map_err(|_| (500, "MCP 请求队列不可用".to_string()))?;
+            if pending.len() >= MCP_MAX_PENDING_REQUESTS {
+                return Err((503, "MCP 请求队列已满，请稍后重试".to_string()));
+            }
+            pending.insert(request_id.clone(), sender);
+        }
         if let Err(error) = app.emit_to(
             MAIN_WINDOW_LABEL,
             "mcp-command",
             json!({ "requestId": request_id, "method": method, "params": params }),
         ) {
-            self.inner
-                .pending
-                .lock()
-                .ok()
-                .and_then(|mut pending| pending.remove(&request_id));
+            if let Ok(mut pending) = self.inner.pending.lock() {
+                pending.remove(&request_id);
+            }
             return Err((503, format!("编辑器窗口未连接 MCP 桥: {error}")));
         }
 
@@ -259,17 +483,17 @@ impl McpBridgeRuntime {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(message)) => Err((422, message)),
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                self.inner
-                    .pending
-                    .lock()
-                    .ok()
-                    .and_then(|mut pending| pending.remove(&request_id));
+                if let Ok(mut pending) = self.inner.pending.lock() {
+                    pending.remove(&request_id);
+                }
                 Err((
                     504,
                     format!("编辑器未在 {} 秒内响应 MCP 请求", response_timeout.as_secs()),
                 ))
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err((503, "编辑器 MCP 请求通道已关闭".to_string())),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err((503, "编辑器 MCP 请求通道已关闭".to_string()))
+            }
         }
     }
 
@@ -291,21 +515,70 @@ impl McpBridgeRuntime {
     }
 
     fn shutdown(&self) {
-        self.inner.running.store(false, Ordering::Relaxed);
-        if let Ok(contents) = fs::read_to_string(&self.inner.descriptor_path) {
-            let is_current = serde_json::from_str::<Value>(&contents)
-                .ok()
-                .and_then(|descriptor| descriptor.get("token").and_then(Value::as_str).map(str::to_string))
-                .is_some_and(|token| constant_time_equal(&token, &self.inner.token));
-            if is_current {
-                let _ = fs::remove_file(&self.inner.descriptor_path);
-            }
-        }
+        self.inner.cleanup();
     }
 
     fn set_frontend_ready(&self, ready: bool) {
-        self.inner.frontend_ready.store(ready, Ordering::Relaxed);
+        self.inner.frontend_ready.store(ready, Ordering::Release);
+        if !ready {
+            self.inner.drain_pending();
+        }
     }
+}
+
+fn sweep_stale_mcp_descriptors(descriptor_dir: &Path, own_descriptor: &Path) {
+    let Ok(entries) = fs::read_dir(descriptor_dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == own_descriptor {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|v| v.to_str()) else {
+            continue;
+        };
+        if !name.starts_with(MCP_DESCRIPTOR_PREFIX) || !name.ends_with(".json") {
+            continue;
+        }
+        let is_old = entry
+            .metadata()
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > Duration::from_secs(10));
+        let Ok(contents) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let parsed = serde_json::from_str::<Value>(&contents);
+        let port = parsed
+            .as_ref()
+            .ok()
+            .and_then(|v| v.get("port"))
+            .and_then(Value::as_u64)
+            .and_then(|p| u16::try_from(p).ok())
+            .filter(|&p| p > 0);
+        let Some(port) = port else {
+            if is_old {
+                let _ = fs::remove_file(&path);
+            }
+            continue;
+        };
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        if let Err(error) = TcpStream::connect_timeout(&addr, Duration::from_millis(2500)) {
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::AddrNotAvailable
+            ) {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+fn find_http_header_end(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
 #[tauri::command]
@@ -338,14 +611,16 @@ fn write_mcp_http_response(stream: &mut TcpStream, status: u16, reason: &str, pa
 }
 
 fn constant_time_equal(left: &str, right: &str) -> bool {
-    if left.len() != right.len() {
-        return false;
+    let left_bytes = left.as_bytes();
+    let right_bytes = right.as_bytes();
+    let max_len = left_bytes.len().max(right_bytes.len());
+    let mut diff = left_bytes.len() ^ right_bytes.len();
+    for i in 0..max_len {
+        let l = left_bytes.get(i).copied().unwrap_or(0);
+        let r = right_bytes.get(i).copied().unwrap_or(0);
+        diff |= usize::from(l ^ r);
     }
-    left.as_bytes()
-        .iter()
-        .zip(right.as_bytes())
-        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
-        == 0
+    diff == 0
 }
 
 fn create_mcp_token() -> Result<String, String> {
@@ -607,7 +882,36 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-fn sanitize_file_name(name: &str) -> String {
+fn is_windows_reserved_name(name: &str) -> bool {
+    let base = name.split('.').next().unwrap_or(name).trim();
+    matches!(
+        base.to_ascii_uppercase().as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
+}
+
+fn sanitize_file_name_core(name: &str) -> Option<String> {
     let sanitized: String = name
         .chars()
         .map(|character| match character {
@@ -617,12 +921,143 @@ fn sanitize_file_name(name: &str) -> String {
         })
         .collect();
 
-    let trimmed = sanitized.trim().trim_matches('.').to_string();
+    let mut trimmed = sanitized
+        .trim_matches(|c: char| c.is_whitespace() || c == '.')
+        .chars()
+        .take(180)
+        .collect::<String>();
+    trimmed = trimmed
+        .trim_matches(|c: char| c.is_whitespace() || c == '.')
+        .to_string();
     if trimmed.is_empty() {
-        "Project".to_string()
-    } else {
-        trimmed
+        return None;
     }
+    if is_windows_reserved_name(&trimmed) {
+        Some(format!("_{trimmed}"))
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn sanitize_file_name(name: &str) -> String {
+    sanitize_file_name_core(name).unwrap_or_else(|| "Project".to_string())
+}
+
+fn validate_single_file_name(name: &str, label: &str) -> Result<String, String> {
+    if name.is_empty() || name.trim().is_empty() {
+        return Err(format!("{label}文件名不能为空"));
+    }
+    if name.trim() != name || name.ends_with('.') {
+        return Err(format!("{label}文件名无效"));
+    }
+    if name.contains(['/', '\\', '\0']) || name.chars().any(|c| c.is_control()) {
+        return Err(format!("{label}文件名包含非法字符"));
+    }
+    if name == "." || name == ".." || is_windows_reserved_name(name) {
+        return Err(format!("{label}文件名无效"));
+    }
+    let mut components = Path::new(name).components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(_)), None) => Ok(name.to_string()),
+        _ => Err(format!("{label}文件名包含非法路径段")),
+    }
+}
+
+fn resolve_file_inside_dir(base_dir: &Path, file_name: &str, label: &str) -> Result<PathBuf, String> {
+    validate_single_file_name(file_name, label)?;
+    let canonical_base = base_dir
+        .canonicalize()
+        .map_err(|error| format!("无法读取{label}目录: {error}"))?;
+    let candidate = canonical_base.join(file_name);
+    match fs::symlink_metadata(&candidate) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let canonical_target = candidate
+                .canonicalize()
+                .map_err(|error| format!("{label}符号链接无效: {error}"))?;
+            if !canonical_target.starts_with(&canonical_base) {
+                return Err(format!("{label}路径不能指向目录外部"));
+            }
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("无法检查{label}路径: {error}")),
+    }
+    Ok(candidate)
+}
+
+fn validate_absolute_dir_input(raw: &str, label: &str) -> Result<PathBuf, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{label}不能为空"));
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.is_absolute() {
+        return Err(format!("{label}必须是绝对路径"));
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(format!("{label}不能包含 .. 路径段"));
+    }
+    Ok(path)
+}
+
+fn paths_refer_to_same_entry(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+fn copy_file_safely(source: &Path, target: &Path, label: &str) -> Result<(), String> {
+    let canonical_source = source
+        .canonicalize()
+        .map_err(|error| format!("无法读取{label}: {error}"))?;
+    if !canonical_source.is_file() {
+        return Err(format!("{label}不是有效文件"));
+    }
+    if target.exists() && paths_refer_to_same_entry(&canonical_source, target) {
+        return Ok(());
+    }
+    let parent = target
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .ok_or_else(|| format!("无法确定目标{label}目录"))?;
+    fs::create_dir_all(parent).map_err(|error| format!("无法创建目标{label}目录: {error}"))?;
+
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("copy.tmp");
+    let seq = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_path = parent.join(format!(".{file_name}.{}.{seq}.tmp", std::process::id()));
+
+    let copy_result = (|| -> Result<(), String> {
+        fs::copy(&canonical_source, &temp_path)
+            .map_err(|error| format!("无法复制{label}: {error}"))?;
+        let file = OpenOptions::new()
+            .read(true)
+            .open(&temp_path)
+            .map_err(|error| format!("无法校验{label}: {error}"))?;
+        let _ = file.sync_all();
+        Ok(())
+    })();
+
+    if let Err(error) = copy_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    if let Err(error) = fs::rename(&temp_path, target) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(format!("无法写入目标{label}: {error}"));
+    }
+
+    Ok(())
 }
 
 fn app_config_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -659,26 +1094,127 @@ fn default_app_config() -> AppConfig {
     }
 }
 
+fn read_text_file_bounded(path: &Path, max_bytes: u64, label: &str) -> Result<String, String> {
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("无法读取{label} {}: {error}", path.display()))?;
+    let meta = fs::metadata(&canonical)
+        .map_err(|error| format!("无法读取{label}信息 {}: {error}", canonical.display()))?;
+    if !meta.is_file() {
+        return Err(format!("{label}路径不是文件: {}", canonical.display()));
+    }
+    if meta.len() > max_bytes {
+        return Err(format!(
+            "{label}过大（{} 字节），超过允许上限 {} 字节",
+            meta.len(),
+            max_bytes
+        ));
+    }
+    fs::read_to_string(&canonical)
+        .map_err(|error| format!("无法读取{label} {}: {error}", canonical.display()))
+}
+
+fn read_json_bounded<T>(path: &Path, max_bytes: u64) -> Result<T, String>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("无法读取文件 {}: {error}", path.display()))?;
+    let file = File::open(&canonical)
+        .map_err(|error| format!("无法读取文件 {}: {error}", canonical.display()))?;
+    let meta = file
+        .metadata()
+        .map_err(|error| format!("无法读取文件信息 {}: {error}", canonical.display()))?;
+    if !meta.is_file() {
+        return Err(format!("路径不是文件: {}", canonical.display()));
+    }
+    if meta.len() > max_bytes {
+        return Err(format!(
+            "JSON 文件过大（{} 字节），超过允许上限 {} 字节",
+            meta.len(),
+            max_bytes
+        ));
+    }
+    let reader = BufReader::new(file);
+    serde_json::from_reader(reader)
+        .map_err(|error| format!("无法解析 JSON {}: {error}", canonical.display()))
+}
+
 fn read_json<T>(path: &Path) -> Result<T, String>
 where
     T: for<'de> Deserialize<'de>,
 {
-    let text = fs::read_to_string(path)
-        .map_err(|error| format!("无法读取文件 {}: {error}", path.display()))?;
-    serde_json::from_str(&text)
-        .map_err(|error| format!("无法解析 JSON {}: {error}", path.display()))
+    read_json_bounded(path, MAX_IMPORT_TEXT_BYTES)
 }
 
 fn write_json<T>(path: &Path, value: &T) -> Result<(), String>
 where
     T: Serialize + ?Sized,
 {
-    let text =
-        serde_json::to_string_pretty(value).map_err(|error| format!("无法序列化 JSON: {error}"))?;
-    fs::write(path, text).map_err(|error| format!("无法写入文件 {}: {error}", path.display()))
+    let parent = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .ok_or_else(|| format!("无法确定文件 {} 的父目录", path.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("无法创建目录 {}: {error}", parent.display()))?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("data.json");
+    let seq = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_path = parent.join(format!(".{file_name}.{}.{seq}.tmp", std::process::id()));
+
+    let write_result = (|| -> Result<(), String> {
+        let file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .map_err(|error| format!("无法创建临时文件 {}: {error}", temp_path.display()))?;
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer_pretty(&mut writer, value)
+            .map_err(|error| format!("无法序列化 JSON: {error}"))?;
+        writer
+            .flush()
+            .map_err(|error| format!("无法刷新写入 {}: {error}", temp_path.display()))?;
+        let file = writer
+            .into_inner()
+            .map_err(|error| format!("无法刷新缓冲区 {}: {error}", temp_path.display()))?;
+        file.sync_all()
+            .map_err(|error| format!("无法同步文件 {}: {error}", temp_path.display()))?;
+        Ok(())
+    })();
+
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    if let Err(error) = fs::rename(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(format!("无法写入文件 {}: {error}", path.display()));
+    }
+
+    Ok(())
 }
 
-fn load_app_config(app: &AppHandle) -> Result<AppConfig, String> {
+fn with_app_config_lock<T>(
+    app: &AppHandle,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    if let Some(runtime) = app.try_state::<FileSystemRuntime>() {
+        let _guard = runtime
+            .config_lock
+            .lock()
+            .map_err(|_| "应用配置状态锁定失败".to_string())?;
+        operation()
+    } else {
+        operation()
+    }
+}
+
+fn load_app_config_unlocked(app: &AppHandle) -> Result<AppConfig, String> {
     let path = app_config_path(app)?;
 
     if !path.exists() {
@@ -693,7 +1229,7 @@ fn load_app_config(app: &AppHandle) -> Result<AppConfig, String> {
     Ok(config)
 }
 
-fn save_app_config(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
+fn save_app_config_unlocked(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
     let path = app_config_path(app)?;
     write_json(&path, config)
 }
@@ -703,15 +1239,15 @@ fn add_project_to_app_config(app: &AppHandle, project_path: &Path) -> Result<(),
         .canonicalize()
         .map_err(|error| format!("无法读取工程路径: {error}"))?;
     let path_text = canonical.to_string_lossy().into_owned();
-    let mut config = load_app_config(app)?;
-
-    if !config.projects.iter().any(|path| path == &path_text) {
-        config.projects.push(path_text);
-        config.projects.sort();
-        save_app_config(app, &config)?;
-    }
-
-    Ok(())
+    with_app_config_lock(app, || {
+        let mut config = load_app_config_unlocked(app)?;
+        if !config.projects.iter().any(|path| path == &path_text) {
+            config.projects.push(path_text);
+            config.projects.sort();
+            save_app_config_unlocked(app, &config)?;
+        }
+        Ok(())
+    })
 }
 
 fn remove_project_from_app_config(app: &AppHandle, project_path: &Path) -> Result<(), String> {
@@ -720,23 +1256,69 @@ fn remove_project_from_app_config(app: &AppHandle, project_path: &Path) -> Resul
         .canonicalize()
         .ok()
         .map(|path| path.to_string_lossy().into_owned());
-    let mut config = load_app_config(app)?;
+    with_app_config_lock(app, || {
+        let mut config = load_app_config_unlocked(app)?;
+        config.projects.retain(|path| {
+            path != &candidate
+                && canonical
+                    .as_ref()
+                    .is_none_or(|canonical_path| path != canonical_path)
+        });
+        save_app_config_unlocked(app, &config)
+    })
+}
 
-    config.projects.retain(|path| {
-        path != &candidate
-            && canonical
-                .as_ref()
-                .is_none_or(|canonical_path| path != canonical_path)
-    });
+fn replace_project_in_app_config(
+    app: &AppHandle,
+    old_project_path: &Path,
+    new_project_path: &Path,
+) -> Result<(), String> {
+    let old_candidate = old_project_path.to_string_lossy().into_owned();
+    let old_canonical = old_project_path
+        .canonicalize()
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned());
+    let new_canonical = new_project_path
+        .canonicalize()
+        .map_err(|error| format!("无法读取工程路径: {error}"))?;
+    let new_text = new_canonical.to_string_lossy().into_owned();
+    with_app_config_lock(app, || {
+        let mut config = load_app_config_unlocked(app)?;
+        config.projects.retain(|path| {
+            path != &old_candidate
+                && old_canonical
+                    .as_ref()
+                    .is_none_or(|canonical_path| path != canonical_path)
+        });
+        if !config.projects.iter().any(|path| path == &new_text) {
+            config.projects.push(new_text);
+        }
+        config.projects.sort();
+        config.projects.dedup();
+        save_app_config_unlocked(app, &config)
+    })
+}
 
-    save_app_config(app, &config)
+fn validate_project_config_fields(config: &ProjectConfig) -> Result<(), String> {
+    validate_single_file_name(&config.project_file, "工程文件")?;
+    if let Some(media) = config.media.as_ref() {
+        if !media.use_external_link {
+            if let Some(name) = media.name.as_deref().filter(|value| !value.is_empty()) {
+                validate_single_file_name(name, "工程媒体文件")?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn load_project_config(project_dir: &Path) -> Result<ProjectConfig, String> {
-    read_json(&project_dir.join(PROJECT_CONFIG_FILE))
+    let config: ProjectConfig = read_json(&project_dir.join(PROJECT_CONFIG_FILE))?;
+    validate_project_config_fields(&config)?;
+    Ok(config)
 }
 
 fn save_project_config(project_dir: &Path, config: &ProjectConfig) -> Result<(), String> {
+    validate_project_config_fields(config)?;
     write_json(&project_dir.join(PROJECT_CONFIG_FILE), config)
 }
 
@@ -747,15 +1329,19 @@ fn resolve_project_media_path(project_dir: &Path, config: &ProjectConfig) -> Opt
         return media
             .external_path
             .as_ref()
-            .filter(|path| !path.is_empty())
+            .filter(|path| !path.trim().is_empty())
             .map(PathBuf::from);
     }
 
-    media
-        .name
-        .as_ref()
-        .filter(|name| !name.is_empty())
-        .map(|name| project_dir.join("media").join(name))
+    let name = media.name.as_deref().filter(|name| !name.is_empty())?;
+    let media_dir = project_dir.join("media");
+    if media_dir.is_dir() {
+        resolve_file_inside_dir(&media_dir, name, "媒体").ok()
+    } else {
+        validate_single_file_name(name, "媒体")
+            .ok()
+            .map(|safe_name| media_dir.join(safe_name))
+    }
 }
 
 fn media_config_from_path(
@@ -792,8 +1378,8 @@ fn media_config_from_path(
     let media_file_name = format!("{}{}", sanitize_file_name(project_name), extension);
     let media_dir = project_dir.join("media");
     fs::create_dir_all(&media_dir).map_err(|error| format!("无法创建媒体目录: {error}"))?;
-    let target = media_dir.join(&media_file_name);
-    fs::copy(&canonical, &target).map_err(|error| format!("无法复制媒体文件: {error}"))?;
+    let target = resolve_file_inside_dir(&media_dir, &media_file_name, "媒体")?;
+    copy_file_safely(&canonical, &target, "媒体文件")?;
 
     Ok((
         Some(ProjectMediaConfig {
@@ -825,30 +1411,21 @@ fn set_project_media_value(project: &mut Value, media_path: Option<&Path>) {
     }
 }
 
-fn load_folder_project_payload(
+fn build_folder_project_payload(
     app: &AppHandle,
-    project_dir: &Path,
+    canonical_dir: &Path,
+    config: ProjectConfig,
+    mut project: Value,
 ) -> Result<FolderProjectPayload, String> {
-    let canonical_dir = project_dir
-        .canonicalize()
-        .map_err(|error| format!("无法读取工程文件夹: {error}"))?;
-    let config = load_project_config(&canonical_dir)?;
-    let project_file = canonical_dir.join(&config.project_file);
-    let mut project = read_json::<Value>(&project_file)?;
-    let resolved_media = resolve_project_media_path(&canonical_dir, &config);
+    let resolved_media = resolve_project_media_path(canonical_dir, &config);
     let media_path = resolved_media.as_ref().filter(|path| path.is_file());
     set_project_media_value(&mut project, media_path.map(|p| p.as_path()));
 
     let mut warnings: Vec<String> = Vec::new();
-
-    // 检测媒体文件缺失
     if config.media.is_some() {
         match &resolved_media {
             Some(expected_path) if !expected_path.is_file() => {
-                warnings.push(format!(
-                    "媒体文件不存在：{}",
-                    expected_path.display()
-                ));
+                warnings.push(format!("媒体文件不存在：{}", expected_path.display()));
             }
             None => {
                 warnings.push("工程配置了媒体文件但无法解析其路径".to_string());
@@ -871,12 +1448,33 @@ fn load_folder_project_payload(
     })
 }
 
+fn load_folder_project_payload(
+    app: &AppHandle,
+    project_dir: &Path,
+) -> Result<FolderProjectPayload, String> {
+    let canonical_dir = project_dir
+        .canonicalize()
+        .map_err(|error| format!("无法读取工程文件夹: {error}"))?;
+    if !canonical_dir.is_dir() {
+        return Err("工程路径不是有效文件夹".to_string());
+    }
+    let config = load_project_config(&canonical_dir)?;
+    let project_file = resolve_file_inside_dir(&canonical_dir, &config.project_file, "工程文件")?;
+    let project = read_validated_project_json(&project_file)?;
+    build_folder_project_payload(app, &canonical_dir, config, project)
+}
+
 fn project_summary(project_path: &Path) -> Result<ProjectSummary, String> {
     let canonical = project_path
         .canonicalize()
         .map_err(|error| format!("无法读取工程路径: {error}"))?;
+    if !canonical.is_dir() {
+        return Err("工程路径不是有效文件夹".to_string());
+    }
     let config = load_project_config(&canonical)?;
-    let project_exists = canonical.join(&config.project_file).is_file();
+    let project_exists = resolve_file_inside_dir(&canonical, &config.project_file, "工程文件")
+        .map(|path| path.is_file())
+        .unwrap_or(false);
     let media_path = resolve_project_media_path(&canonical, &config);
     let media_exists = media_path.as_ref().is_some_and(|path| path.is_file());
 
@@ -895,12 +1493,17 @@ fn save_folder_project_inner(
     mut project: Value,
     pending_media_path: Option<String>,
 ) -> Result<FolderProjectPayload, String> {
+    validate_project_json_value(&project, "保存的工程数据")?;
     let project_dir = project_path
         .canonicalize()
         .map_err(|error| format!("无法读取工程路径: {error}"))?;
+    if !project_dir.is_dir() {
+        return Err("工程路径不是有效文件夹".to_string());
+    }
     let mut config = load_project_config(&project_dir)?;
     let mut media_path =
         resolve_project_media_path(&project_dir, &config).filter(|path| path.is_file());
+    let mut old_internal_to_remove: Option<PathBuf> = None;
 
     if let Some(raw_path) = pending_media_path.filter(|path| !path.trim().is_empty()) {
         let next_media = canonical_media_file(raw_path.trim())?;
@@ -934,15 +1537,15 @@ fn save_folder_project_inner(
             let media_file_name = format!("{}{}", sanitize_file_name(&config.name), extension);
             let media_dir = project_dir.join("media");
             fs::create_dir_all(&media_dir).map_err(|error| format!("无法创建媒体目录: {error}"))?;
-            let target = media_dir.join(&media_file_name);
+            let target = resolve_file_inside_dir(&media_dir, &media_file_name, "媒体")?;
 
+            copy_file_safely(&next_media, &target, "媒体文件")?;
             if let Some(old_path) = old_internal_media {
-                if old_path != target && old_path.is_file() {
-                    let _ = fs::remove_file(old_path);
+                if !paths_refer_to_same_entry(&old_path, &target) && old_path.is_file() {
+                    old_internal_to_remove = Some(old_path);
                 }
             }
 
-            fs::copy(&next_media, &target).map_err(|error| format!("无法复制媒体文件: {error}"))?;
             config.media = Some(ProjectMediaConfig {
                 name: Some(media_file_name),
                 use_external_link: false,
@@ -954,17 +1557,21 @@ fn save_folder_project_inner(
 
     config.last_change_at = now_millis();
     set_project_media_value(&mut project, media_path.as_deref());
-    write_json(&project_dir.join(&config.project_file), &project)?;
+    let project_file = resolve_file_inside_dir(&project_dir, &config.project_file, "工程文件")?;
+    write_json(&project_file, &project)?;
     save_project_config(&project_dir, &config)?;
+    if let Some(old_path) = old_internal_to_remove {
+        let _ = fs::remove_file(old_path);
+    }
     add_project_to_app_config(app, &project_dir)?;
 
-    load_folder_project_payload(app, &project_dir)
+    build_folder_project_payload(app, &project_dir, config, project)
 }
 
 fn backup_timestamp(timestamp: i64) -> String {
     let seconds = timestamp / 1000;
-    let millis = timestamp % 1000;
-    format!("{seconds}_{millis}")
+    let millis = (timestamp % 1000).abs();
+    format!("{seconds}_{millis:03}")
 }
 
 fn canonical_media_file(path: impl AsRef<Path>) -> Result<PathBuf, String> {
@@ -980,183 +1587,236 @@ fn canonical_media_file(path: impl AsRef<Path>) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
-fn initialize_file_system(app: &AppHandle) -> Result<PathBuf, String> {
+fn initialize_file_system(app: &AppHandle) -> Result<File, String> {
     let (_data_dir, logs_dir, _projects_dir) = documents_data_dirs(app)?;
-    let _ = load_app_config(app)?;
-    let log_file = logs_dir.join(format!("m7-editor_{}.log", backup_timestamp(now_millis())));
-    fs::write(&log_file, format!("m7-editor {APP_VERSION} log started\n"))
+    let _ = load_app_config_unlocked(app)?;
+    let log_path = logs_dir.join(format!("m7-editor_{}.log", backup_timestamp(now_millis())));
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
         .map_err(|error| format!("无法创建日志文件: {error}"))?;
+    writeln!(file, "m7-editor {APP_VERSION} log started")
+        .map_err(|error| format!("无法写入日志文件: {error}"))?;
 
-    Ok(log_file)
+    Ok(file)
 }
 
 #[tauri::command]
-fn get_file_system_state(app: AppHandle) -> Result<FileSystemStateDto, String> {
-    let config_path = app_config_path(&app)?;
-    let (documents_data_dir, logs_dir, default_projects_dir) = documents_data_dirs(&app)?;
-    let mut config = load_app_config(&app)?;
+async fn get_file_system_state(app: AppHandle) -> Result<FileSystemStateDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let config_path = app_config_path(&app)?;
+        let (documents_data_dir, logs_dir, default_projects_dir) = documents_data_dirs(&app)?;
+        let mut config = with_app_config_lock(&app, || {
+            let mut config = load_app_config_unlocked(&app)?;
+            let mut normalized_projects: Vec<String> = Vec::with_capacity(config.projects.len());
+            let mut changed = false;
 
-    // 清理已失效的注册路径（目录不存在或缺少 project_config.json）
-    let invalid_paths: Vec<String> = config
-        .projects
-        .iter()
-        .filter(|path_text| {
-            let path = Path::new(path_text);
-            !path.exists() || !path.join(PROJECT_CONFIG_FILE).is_file()
+            for path_text in &config.projects {
+                let path = Path::new(path_text);
+                if let Ok(canonical) = path.canonicalize() {
+                    if canonical.is_dir() && canonical.join(PROJECT_CONFIG_FILE).is_file() {
+                        let canonical_text = canonical.to_string_lossy().into_owned();
+                        if &canonical_text != path_text {
+                            changed = true;
+                        }
+                        if !normalized_projects.contains(&canonical_text) {
+                            normalized_projects.push(canonical_text);
+                        } else {
+                            changed = true;
+                        }
+                        continue;
+                    }
+                }
+                changed = true;
+            }
+
+            if changed {
+                normalized_projects.sort();
+                config.projects = normalized_projects;
+                save_app_config_unlocked(&app, &config)?;
+            }
+            Ok(config)
+        })?;
+
+        let projects = config
+            .projects
+            .drain(..)
+            .filter_map(|path| project_summary(Path::new(&path)).ok())
+            .collect();
+
+        Ok(FileSystemStateDto {
+            config_path: config_path.to_string_lossy().into_owned(),
+            documents_data_dir: documents_data_dir.to_string_lossy().into_owned(),
+            logs_dir: logs_dir.to_string_lossy().into_owned(),
+            default_projects_dir: default_projects_dir.to_string_lossy().into_owned(),
+            projects,
+            global_settings: config.global_settings,
         })
-        .cloned()
-        .collect();
-
-    if !invalid_paths.is_empty() {
-        config.projects.retain(|path_text| {
-            let path = Path::new(path_text);
-            path.exists() && path.join(PROJECT_CONFIG_FILE).is_file()
-        });
-        save_app_config(&app, &config)?;
-    }
-
-    let projects = config
-        .projects
-        .iter()
-        .filter_map(|path| project_summary(Path::new(path)).ok())
-        .collect();
-
-    Ok(FileSystemStateDto {
-        config_path: config_path.to_string_lossy().into_owned(),
-        documents_data_dir: documents_data_dir.to_string_lossy().into_owned(),
-        logs_dir: logs_dir.to_string_lossy().into_owned(),
-        default_projects_dir: default_projects_dir.to_string_lossy().into_owned(),
-        projects,
-        global_settings: config.global_settings,
     })
+    .await
+    .map_err(|error| format!("读取文件系统状态失败: {error}"))?
 }
 
 #[tauri::command]
-fn update_global_settings(app: AppHandle, settings: GlobalSettings) -> Result<(), String> {
-    let mut config = load_app_config(&app)?;
-    config.global_settings = settings;
-    save_app_config(&app, &config)
+async fn update_global_settings(app: AppHandle, settings: GlobalSettings) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        with_app_config_lock(&app, || {
+            let mut config = load_app_config_unlocked(&app)?;
+            config.global_settings = settings;
+            save_app_config_unlocked(&app, &config)
+        })
+    })
+    .await
+    .map_err(|error| format!("保存全局设置失败: {error}"))?
 }
 
 fn template_file_path(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
-    let normalized_name = name.trim();
-    if normalized_name.is_empty() {
-        return Err("模板名称不能为空".to_string());
-    }
+    let Some(sanitized) = sanitize_file_name_core(name) else {
+        return Err("模板名称不能为空或仅包含无效字符".to_string());
+    };
     let (data_dir, _, _) = documents_data_dirs(app)?;
-    Ok(data_dir
-        .join("templates")
-        .join(format!("{}.json", sanitize_file_name(normalized_name))))
-}
-
-#[tauri::command]
-fn list_danmaku_templates(app: AppHandle) -> Result<Vec<DanmakuTemplateRecord>, String> {
-    let (data_dir, _, _) = documents_data_dirs(&app)?;
     let templates_dir = data_dir.join("templates");
-    let mut entries = fs::read_dir(&templates_dir)
-        .map_err(|error| format!("无法读取模板目录: {error}"))?
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .is_some_and(|extension| extension == "json")
-        })
-        .collect::<Vec<_>>();
-    entries.sort_by_key(|entry| entry.file_name());
+    resolve_file_inside_dir(&templates_dir, &format!("{sanitized}.json"), "模板")
+}
 
-    entries
-        .into_iter()
-        .map(|entry| {
-            let name = entry
-                .path()
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .ok_or_else(|| "模板文件名无效".to_string())?
-                .to_string();
-            let value = read_json::<Value>(&entry.path())?;
-            let danmakus = value
-                .get("danmakus")
-                .and_then(Value::as_array)
-                .cloned()
-                .ok_or_else(|| format!("模板 {name} 缺少有效的 danmakus 数组"))?;
-            Ok(DanmakuTemplateRecord {
-                name,
-                created_at: value.get("createdAt").and_then(Value::as_i64).unwrap_or(0),
-                last_change_at: value
-                    .get("lastChangeAt")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0),
-                danmakus,
+#[tauri::command]
+async fn list_danmaku_templates(app: AppHandle) -> Result<Vec<DanmakuTemplateRecord>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (data_dir, _, _) = documents_data_dirs(&app)?;
+        let templates_dir = data_dir.join("templates");
+        let mut entries = fs::read_dir(&templates_dir)
+            .map_err(|error| format!("无法读取模板目录: {error}"))?
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry.file_type().is_ok_and(|ft| ft.is_file())
+                    && entry
+                        .path()
+                        .extension()
+                        .is_some_and(|extension| extension == "json")
             })
-        })
-        .collect()
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.file_name());
+
+        entries
+            .into_iter()
+            .map(|entry| {
+                let name = entry
+                    .path()
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| "模板文件名无效".to_string())?
+                    .to_string();
+                let value = read_json::<Value>(&entry.path())?;
+                let danmakus = value
+                    .get("danmakus")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .ok_or_else(|| format!("模板 {name} 缺少有效的 danmakus 数组"))?;
+                Ok(DanmakuTemplateRecord {
+                    name,
+                    created_at: value.get("createdAt").and_then(Value::as_i64).unwrap_or(0),
+                    last_change_at: value
+                        .get("lastChangeAt")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0),
+                    danmakus,
+                })
+            })
+            .collect()
+    })
+    .await
+    .map_err(|error| format!("读取模板列表失败: {error}"))?
 }
 
 #[tauri::command]
-fn create_danmaku_template(
+async fn create_danmaku_template(
     app: AppHandle,
     name: String,
     danmakus: Vec<Value>,
 ) -> Result<(), String> {
-    let path = template_file_path(&app, &name)?;
-    if path.exists() {
-        return Err("同名模板已存在".to_string());
-    }
-    let now = now_millis();
-    write_json(
-        &path,
-        &json!({
-            "version": APP_VERSION,
-            "createdAt": now,
-            "lastChangeAt": now,
-            "danmakus": danmakus
-        }),
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = template_file_path(&app, &name)?;
+        if path.exists() {
+            return Err("同名模板已存在".to_string());
+        }
+        let now = now_millis();
+        write_json(
+            &path,
+            &json!({
+                "version": APP_VERSION,
+                "createdAt": now,
+                "lastChangeAt": now,
+                "danmakus": danmakus
+            }),
+        )
+    })
+    .await
+    .map_err(|error| format!("创建模板失败: {error}"))?
 }
 
 #[tauri::command]
-fn update_danmaku_template(
+async fn update_danmaku_template(
     app: AppHandle,
     name: String,
     danmakus: Vec<Value>,
 ) -> Result<(), String> {
-    let path = template_file_path(&app, &name)?;
-    let mut value = read_json::<Value>(&path)?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| "模板文件内容必须是 JSON 对象".to_string())?;
-    object.insert("danmakus".to_string(), Value::Array(danmakus));
-    object.insert("lastChangeAt".to_string(), json!(now_millis()));
-    write_json(&path, &value)
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = template_file_path(&app, &name)?;
+        let mut value = read_json::<Value>(&path)?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| "模板文件内容必须是 JSON 对象".to_string())?;
+        object.insert("danmakus".to_string(), Value::Array(danmakus));
+        object.insert("lastChangeAt".to_string(), json!(now_millis()));
+        write_json(&path, &value)
+    })
+    .await
+    .map_err(|error| format!("更新模板失败: {error}"))?
 }
 
 #[tauri::command]
-fn rename_danmaku_template(app: AppHandle, name: String, new_name: String) -> Result<(), String> {
-    let old_path = template_file_path(&app, &name)?;
-    let new_path = template_file_path(&app, &new_name)?;
-    if !old_path.is_file() {
-        return Err("模板不存在".to_string());
-    }
-    if old_path != new_path && new_path.exists() {
-        return Err("同名模板已存在".to_string());
-    }
-    fs::rename(old_path, new_path).map_err(|error| format!("无法重命名模板: {error}"))
+async fn rename_danmaku_template(
+    app: AppHandle,
+    name: String,
+    new_name: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let old_path = template_file_path(&app, &name)?;
+        let new_path = template_file_path(&app, &new_name)?;
+        if !old_path.is_file() {
+            return Err("模板不存在".to_string());
+        }
+        if old_path != new_path && new_path.exists() && !paths_refer_to_same_entry(&old_path, &new_path) {
+            return Err("同名模板已存在".to_string());
+        }
+        fs::rename(old_path, new_path).map_err(|error| format!("无法重命名模板: {error}"))
+    })
+    .await
+    .map_err(|error| format!("重命名模板失败: {error}"))?
 }
 
 #[tauri::command]
-fn delete_danmaku_template(app: AppHandle, name: String) -> Result<(), String> {
-    let path = template_file_path(&app, &name)?;
-    if !path.is_file() {
-        return Err("模板不存在".to_string());
-    }
-    move_path_to_recycle_bin(&path)
+async fn delete_danmaku_template(app: AppHandle, name: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = template_file_path(&app, &name)?;
+        if !path.is_file() {
+            return Err("模板不存在".to_string());
+        }
+        move_path_to_recycle_bin(&path)
+    })
+    .await
+    .map_err(|error| format!("删除模板失败: {error}"))?
 }
 
 #[tauri::command]
 fn check_folder_project_path(parent_dir: String, name: String) -> Result<ProjectPathCheck, String> {
+    if name.trim().is_empty() {
+        return Err("工程名称不能为空".to_string());
+    }
+    let parent_path = validate_absolute_dir_input(&parent_dir, "工程父目录")?;
     let project_name = sanitize_file_name(&name);
-    let path = PathBuf::from(parent_dir).join(project_name);
+    let path = parent_path.join(project_name);
 
     Ok(ProjectPathCheck {
         exists: path.exists(),
@@ -1164,387 +1824,539 @@ fn check_folder_project_path(parent_dir: String, name: String) -> Result<Project
     })
 }
 
-fn read_validated_project_json(path: &Path) -> Result<Value, String> {
-    let project = read_json::<Value>(path)
-        .map_err(|error| format!("无法读取工程文件 {}: {error}", path.display()))?;
+fn validate_project_json_value(project: &Value, label: &str) -> Result<(), String> {
     if !project.is_object() {
-        return Err(format!("工程文件格式无效（根节点必须是对象）: {}", path.display()));
+        return Err(format!("{label}格式无效（根节点必须是对象）"));
     }
     if let Some(danmakus) = project.get("danmakus") {
         if !danmakus.is_array() {
-            return Err(format!("工程文件格式无效（danmakus 必须是数组）: {}", path.display()));
+            return Err(format!("{label}格式无效（danmakus 必须是数组）"));
         }
     }
+    Ok(())
+}
+
+fn read_validated_project_json(path: &Path) -> Result<Value, String> {
+    let project = read_json::<Value>(path)
+        .map_err(|error| format!("无法读取工程文件 {}: {error}", path.display()))?;
+    validate_project_json_value(&project, &format!("工程文件 {}", path.display()))?;
     Ok(project)
 }
 
 #[tauri::command]
-fn create_folder_project(
+async fn create_folder_project(
     app: AppHandle,
     request: CreateFolderProjectRequest,
 ) -> Result<FolderProjectPayload, String> {
-    let trimmed_name = request.name.trim();
-    if trimmed_name.is_empty() {
-        return Err("工程名称不能为空".to_string());
-    }
-
-    let from_project_path = request
-        .from_project_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty());
-    if request.from_project.is_some() && from_project_path.is_some() {
-        return Err("不能同时指定 fromProject 和 fromProjectPath".to_string());
-    }
-
-    let source_project = match (request.from_project, from_project_path) {
-        (Some(project), None) => {
-            if !project.is_object() {
-                return Err("fromProject 必须是 JSON 对象".to_string());
-            }
-            if let Some(danmakus) = project.get("danmakus") {
-                if !danmakus.is_array() {
-                    return Err("fromProject 中的 danmakus 必须是数组".to_string());
-                }
-            }
-            Some(project)
+    tauri::async_runtime::spawn_blocking(move || {
+        let trimmed_name = request.name.trim();
+        if trimmed_name.is_empty() {
+            return Err("工程名称不能为空".to_string());
         }
-        (None, Some(path)) => Some(read_validated_project_json(Path::new(path))?),
-        (None, None) => None,
-        (Some(_), Some(_)) => unreachable!(),
-    };
 
-    let project_name = sanitize_file_name(trimmed_name);
-    let parent_dir = PathBuf::from(request.parent_dir);
-    fs::create_dir_all(&parent_dir).map_err(|error| format!("无法创建工程父目录: {error}"))?;
+        let from_project_path = request
+            .from_project_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty());
+        if request.from_project.is_some() && from_project_path.is_some() {
+            return Err("不能同时指定 fromProject 和 fromProjectPath".to_string());
+        }
 
-    let project_dir = parent_dir.join(&project_name);
-    if project_dir.exists() {
-        return Err(format!("工程目录已存在: {}", project_dir.display()));
-    }
+        let source_project = match (request.from_project, from_project_path) {
+            (Some(project), None) => {
+                validate_project_json_value(&project, "fromProject")?;
+                Some(project)
+            }
+            (None, Some(path)) => Some(read_validated_project_json(Path::new(path))?),
+            (None, None) => None,
+            (Some(_), Some(_)) => unreachable!(),
+        };
 
-    fs::create_dir_all(project_dir.join("backup"))
-        .map_err(|error| format!("无法创建备份目录: {error}"))?;
-    fs::create_dir_all(project_dir.join("media"))
-        .map_err(|error| format!("无法创建媒体目录: {error}"))?;
+        let project_name = sanitize_file_name(trimmed_name);
+        let parent_dir = validate_absolute_dir_input(&request.parent_dir, "工程父目录")?;
+        fs::create_dir_all(&parent_dir).map_err(|error| format!("无法创建工程父目录: {error}"))?;
 
-    let created_at = now_millis();
-    let project_file = format!("{project_name}.json");
-    let (media, media_path) = match request.media_path.filter(|path| !path.trim().is_empty()) {
-        Some(path) => media_config_from_path(
-            &project_dir,
-            &project_name,
-            Path::new(path.trim()),
-            request.copy_media,
-        )?,
-        None => (None, None),
-    };
+        let project_dir = parent_dir.join(&project_name);
+        if project_dir.exists() {
+            return Err(format!("工程目录已存在: {}", project_dir.display()));
+        }
 
-    let config = ProjectConfig {
-        version: APP_VERSION.to_string(),
-        name: project_name.clone(),
-        created_at,
-        last_change_at: created_at,
-        last_back_up_at: None,
-        project_file: project_file.clone(),
-        media,
-        description: request.description.unwrap_or_default(),
-    };
+        fs::create_dir_all(project_dir.join("backup"))
+            .map_err(|error| format!("无法创建备份目录: {error}"))?;
+        let init_result = (|| -> Result<FolderProjectPayload, String> {
+            fs::create_dir_all(project_dir.join("media"))
+                .map_err(|error| format!("无法创建媒体目录: {error}"))?;
 
-    let mut project = source_project.unwrap_or_else(|| {
-        json!({
-            "meta": {
-                "version": APP_VERSION,
-                "createdAt": created_at
-            },
-            "timeline": {},
-            "media": {},
-            "player": {
-                "screenWidth": 800,
-                "screenHeight": 450,
-                "maxLayers": 100
-            },
-            "preprocess": {},
-            "danmakus": []
-        })
-    });
-    set_project_media_value(&mut project, media_path.as_deref());
+            let created_at = now_millis();
+            let project_file = format!("{project_name}.json");
+            let (media, media_path) = match request.media_path.filter(|path| !path.trim().is_empty()) {
+                Some(path) => media_config_from_path(
+                    &project_dir,
+                    &project_name,
+                    Path::new(path.trim()),
+                    request.copy_media,
+                )?,
+                None => (None, None),
+            };
 
-    write_json(&project_dir.join(PROJECT_CONFIG_FILE), &config)?;
-    write_json(&project_dir.join(project_file), &project)?;
-    add_project_to_app_config(&app, &project_dir)?;
+            let config = ProjectConfig {
+                version: APP_VERSION.to_string(),
+                name: project_name.clone(),
+                created_at,
+                last_change_at: created_at,
+                last_back_up_at: None,
+                project_file: project_file.clone(),
+                media,
+                description: request.description.unwrap_or_default(),
+            };
 
-    load_folder_project_payload(&app, &project_dir)
+            let mut project = source_project.unwrap_or_else(|| {
+                json!({
+                    "meta": {
+                        "version": APP_VERSION,
+                        "createdAt": created_at
+                    },
+                    "timeline": {},
+                    "media": {},
+                    "player": {
+                        "screenWidth": 800,
+                        "screenHeight": 450,
+                        "maxLayers": 100
+                    },
+                    "preprocess": {},
+                    "danmakus": []
+                })
+            });
+            set_project_media_value(&mut project, media_path.as_deref());
+
+            let canonical_dir = project_dir
+                .canonicalize()
+                .map_err(|error| format!("无法读取新工程文件夹: {error}"))?;
+            save_project_config(&canonical_dir, &config)?;
+            let project_file_path = resolve_file_inside_dir(&canonical_dir, &project_file, "工程文件")?;
+            write_json(&project_file_path, &project)?;
+            add_project_to_app_config(&app, &canonical_dir)?;
+
+            build_folder_project_payload(&app, &canonical_dir, config, project)
+        })();
+
+        if let Err(error) = init_result {
+            let _ = fs::remove_dir_all(&project_dir);
+            return Err(error);
+        }
+        init_result
+    })
+    .await
+    .map_err(|error| format!("创建文件夹工程失败: {error}"))?
 }
 
 #[tauri::command]
-fn load_folder_project(
+async fn load_folder_project(
     app: AppHandle,
     project_path: String,
 ) -> Result<FolderProjectPayload, String> {
-    load_folder_project_payload(&app, Path::new(&project_path))
+    tauri::async_runtime::spawn_blocking(move || {
+        load_folder_project_payload(&app, Path::new(&project_path))
+    })
+    .await
+    .map_err(|error| format!("加载文件夹工程失败: {error}"))?
 }
 
 #[tauri::command]
-fn save_folder_project(
+async fn save_folder_project(
     app: AppHandle,
     request: SaveFolderProjectRequest,
 ) -> Result<FolderProjectPayload, String> {
-    save_folder_project_inner(
-        &app,
-        Path::new(&request.project_path),
-        request.project,
-        request.pending_media_path,
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        save_folder_project_inner(
+            &app,
+            Path::new(&request.project_path),
+            request.project,
+            request.pending_media_path,
+        )
+    })
+    .await
+    .map_err(|error| format!("保存文件夹工程失败: {error}"))?
 }
 
 #[tauri::command]
-fn backup_folder_project(
+async fn backup_folder_project(
     app: AppHandle,
     request: SaveFolderProjectRequest,
 ) -> Result<FolderProjectPayload, String> {
-    let mut payload = save_folder_project_inner(
-        &app,
-        Path::new(&request.project_path),
-        request.project,
-        request.pending_media_path,
-    )?;
-    let project_dir = PathBuf::from(&payload.path);
-    let backup_dir = project_dir.join("backup");
-    fs::create_dir_all(&backup_dir).map_err(|error| format!("无法创建备份目录: {error}"))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut payload = save_folder_project_inner(
+            &app,
+            Path::new(&request.project_path),
+            request.project,
+            request.pending_media_path,
+        )?;
+        let project_dir = PathBuf::from(&payload.path);
+        let backup_dir = project_dir.join("backup");
+        fs::create_dir_all(&backup_dir).map_err(|error| format!("无法创建备份目录: {error}"))?;
 
-    let backed_up_at = now_millis();
-    let backup_name = format!(
-        "{}_backup_{}.json",
-        sanitize_file_name(&payload.config.name),
-        backup_timestamp(backed_up_at)
-    );
-    fs::copy(
-        project_dir.join(&payload.config.project_file),
-        backup_dir.join(backup_name),
-    )
-    .map_err(|error| format!("无法创建工程备份: {error}"))?;
+        let backed_up_at = now_millis();
+        let safe_stem = sanitize_file_name(&payload.config.name);
+        let stamp = backup_timestamp(backed_up_at);
+        let mut backup_name = format!("{safe_stem}_backup_{stamp}.json");
+        let mut backup_target = resolve_file_inside_dir(&backup_dir, &backup_name, "备份文件")?;
+        if backup_target.exists() {
+            let seq = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            backup_name = format!("{safe_stem}_backup_{stamp}_{seq}.json");
+            backup_target = resolve_file_inside_dir(&backup_dir, &backup_name, "备份文件")?;
+        }
+        let source_project_file =
+            resolve_file_inside_dir(&project_dir, &payload.config.project_file, "工程文件")?;
+        copy_file_safely(&source_project_file, &backup_target, "工程备份")?;
 
-    payload.config.last_back_up_at = Some(backed_up_at);
-    payload.config.last_change_at = backed_up_at;
-    save_project_config(&project_dir, &payload.config)?;
-    payload = load_folder_project_payload(&app, &project_dir)?;
-    Ok(payload)
+        payload.config.last_back_up_at = Some(backed_up_at);
+        payload.config.last_change_at = backed_up_at;
+        save_project_config(&project_dir, &payload.config)?;
+        Ok(payload)
+    })
+    .await
+    .map_err(|error| format!("备份文件夹工程失败: {error}"))?
 }
 
 #[tauri::command]
-fn update_folder_project_config(
+async fn update_folder_project_config(
     app: AppHandle,
     request: UpdateFolderProjectConfigRequest,
 ) -> Result<ProjectSummary, String> {
-    let project_dir = PathBuf::from(request.project_path)
-        .canonicalize()
-        .map_err(|error| format!("无法读取工程路径: {error}"))?;
-    let mut config = request.config;
-    config.last_change_at = now_millis();
-    save_project_config(&project_dir, &config)?;
-    add_project_to_app_config(&app, &project_dir)?;
-    project_summary(&project_dir)
-}
-
-#[tauri::command]
-fn edit_folder_project(
-    app: AppHandle,
-    request: EditFolderProjectRequest,
-) -> Result<ProjectSummary, String> {
-    let project_dir = PathBuf::from(&request.project_path)
-        .canonicalize()
-        .map_err(|error| format!("无法读取工程路径: {error}"))?;
-    let mut config = load_project_config(&project_dir)?;
-    let mut new_project_dir = project_dir.clone();
-    let mut needs_rename = false;
-    let mut needs_move = false;
-
-    // 处理重命名
-    if let Some(ref new_name) = request.name {
-        let sanitized = sanitize_file_name(new_name);
-        if sanitized != config.name {
-            let parent = new_project_dir
-                .parent()
-                .ok_or("无法获取工程父目录")?
-                .to_path_buf();
-            let candidate = parent.join(&sanitized);
-            if candidate.exists() && candidate != new_project_dir {
-                return Err(format!("目标目录已存在: {}", candidate.display()));
-            }
-            let old_project_file = config.project_file.clone();
-            let extension = std::path::Path::new(&config.project_file)
-                .extension()
-                .map(|ext| format!(".{}", ext.to_string_lossy()))
-                .unwrap_or_else(|| ".json".to_string());
-            let new_project_file = format!("{}{}", sanitized, extension);
-            config.name = sanitized;
-            config.project_file = new_project_file.clone();
-            new_project_dir = candidate;
-            needs_rename = true;
-
-            let old_file_path = project_dir.join(&old_project_file);
-            let new_file_path = project_dir.join(&new_project_file);
-            if old_file_path.is_file() && !new_file_path.exists() {
-                fs::rename(&old_file_path, &new_file_path)
-                    .map_err(|error| format!("无法重命名工程文件: {error}"))?;
-            }
+    tauri::async_runtime::spawn_blocking(move || {
+        let project_dir = PathBuf::from(request.project_path)
+            .canonicalize()
+            .map_err(|error| format!("无法读取工程路径: {error}"))?;
+        if !project_dir.is_dir() || !project_dir.join(PROJECT_CONFIG_FILE).is_file() {
+            return Err("目标路径不是有效的文件夹工程".to_string());
         }
-    }
-
-    // 处理移动
-    if let Some(ref new_parent) = request.new_parent_dir {
-        let trimmed_parent = new_parent.trim();
-        if !trimmed_parent.is_empty() {
-            let parent = PathBuf::from(trimmed_parent);
-            fs::create_dir_all(&parent)
-                .map_err(|error| format!("无法创建目标父目录: {error}"))?;
-            let canonical_parent = fs::canonicalize(&parent).unwrap_or(parent);
-            let current_parent = new_project_dir
-                .parent()
-                .map(|p| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
-                .unwrap_or_default();
-            if canonical_parent != current_parent {
-                let candidate = canonical_parent
-                    .join(new_project_dir.file_name().ok_or("无法获取工程文件夹名")?);
-                let canonical_candidate = fs::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
-                let canonical_current = fs::canonicalize(&new_project_dir).unwrap_or_else(|_| new_project_dir.clone());
-                if candidate.exists() && canonical_candidate != canonical_current {
-                    return Err(format!("目标目录已存在: {}", candidate.display()));
-                }
-                new_project_dir = candidate;
-                needs_move = true;
-            }
-        }
-    }
-
-    // 处理媒体链接方式变更
-    if request.media_use_external_link.is_some() || request.media_external_path.is_some() {
-        let use_external = request.media_use_external_link.unwrap_or_else(|| {
-            config.media.as_ref().map(|m| m.use_external_link).unwrap_or(false)
-        });
-
-        if use_external {
-            let ext_path = request.media_external_path.clone().unwrap_or_else(|| {
-                config.media.as_ref()
-                    .and_then(|m| m.external_path.clone())
-                    .unwrap_or_default()
-            });
-            if ext_path.is_empty() {
-                config.media = None;
-            } else {
-                let file_name = std::path::Path::new(&ext_path)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| config.name.clone());
-                // 如果是内部模式切换到外部模式，删除内部副本
-                if config.media.as_ref().is_some_and(|m| !m.use_external_link) {
-                    if let Some(old_internal) = resolve_project_media_path(&project_dir, &config) {
-                        if old_internal.is_file() {
-                            let _ = fs::remove_file(&old_internal);
-                        }
-                    }
-                }
-                config.media = Some(ProjectMediaConfig {
-                    name: Some(file_name),
-                    use_external_link: true,
-                    external_path: Some(ext_path),
-                });
-            }
-        } else {
-            // 切换到内部复制模式：尝试从当前路径复制媒体到工程内
-            let source_path = config.media.as_ref()
-                .and_then(|m| {
-                    if m.use_external_link {
-                        m.external_path.clone()
-                    } else {
-                        resolve_project_media_path(&project_dir, &config)
-                            .map(|p| p.to_string_lossy().into_owned())
-                    }
-                })
-                .unwrap_or_default();
-
-            if source_path.is_empty() {
-                config.media = None;
-            } else {
-                let source = Path::new(&source_path);
-                if source.is_file() {
-                    let extension = source
-                        .extension()
-                        .map(|ext| format!(".{}", ext.to_string_lossy()))
-                        .unwrap_or_default();
-                    let media_file_name = format!("{}{}", sanitize_file_name(&config.name), extension);
-                    let media_dir = project_dir.join("media");
-                    fs::create_dir_all(&media_dir)
-                        .map_err(|error| format!("无法创建媒体目录: {error}"))?;
-                    let target = media_dir.join(&media_file_name);
-                    fs::copy(source, &target)
-                        .map_err(|error| format!("无法复制媒体文件: {error}"))?;
-                    config.media = Some(ProjectMediaConfig {
-                        name: Some(media_file_name),
-                        use_external_link: false,
-                        external_path: None,
-                    });
-                }
-            }
-        }
-    }
-
-    // 处理描述
-    if let Some(ref desc) = request.description {
-        config.description = desc.clone();
-    }
-
-    config.last_change_at = now_millis();
-
-    // 执行重命名/移动
-    if needs_rename || needs_move {
-        if new_project_dir != project_dir {
-            if new_project_dir.exists() {
-                return Err(format!("目标路径已存在: {}", new_project_dir.display()));
-            }
-            // 从旧注册中移除
-            remove_project_from_app_config(&app, &project_dir)?;
-            // 移动目录
-            fs::rename(&project_dir, &new_project_dir)
-                .map_err(|error| format!("无法移动/重命名工程目录: {error}"))?;
-        }
-        save_project_config(&new_project_dir, &config)?;
-        add_project_to_app_config(&app, &new_project_dir)?;
-        project_summary(&new_project_dir)
-    } else {
+        let mut config = request.config;
+        validate_project_config_fields(&config)?;
+        config.last_change_at = now_millis();
         save_project_config(&project_dir, &config)?;
         add_project_to_app_config(&app, &project_dir)?;
         project_summary(&project_dir)
-    }
+    })
+    .await
+    .map_err(|error| format!("更新工程配置失败: {error}"))?
 }
 
 #[tauri::command]
-fn remove_folder_project(app: AppHandle, project_path: String) -> Result<(), String> {
-    let project_dir = PathBuf::from(&project_path);
-    if project_dir.exists() {
-        move_path_to_recycle_bin(&project_dir)?;
-    }
-    remove_project_from_app_config(&app, &project_dir)
+async fn edit_folder_project(
+    app: AppHandle,
+    request: EditFolderProjectRequest,
+) -> Result<ProjectSummary, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let project_dir = PathBuf::from(&request.project_path)
+            .canonicalize()
+            .map_err(|error| format!("无法读取工程路径: {error}"))?;
+        if !project_dir.is_dir() {
+            return Err("工程路径不是有效文件夹".to_string());
+        }
+        let mut config = load_project_config(&project_dir)?;
+        let old_project_file = config.project_file.clone();
+
+        let mut target_dir_name = project_dir
+            .file_name()
+            .ok_or("无法获取工程文件夹名")?
+            .to_os_string();
+        let mut new_project_file = old_project_file.clone();
+
+        // 计算重命名后的目录名和工程文件名（先计算校验，不修改磁盘）
+        if let Some(ref new_name) = request.name {
+            if new_name.trim().is_empty() {
+                return Err("工程名称不能为空".to_string());
+            }
+            let sanitized = sanitize_file_name(new_name);
+            if sanitized != config.name {
+                let extension = Path::new(&config.project_file)
+                    .extension()
+                    .map(|ext| format!(".{}", ext.to_string_lossy()))
+                    .unwrap_or_else(|| ".json".to_string());
+                new_project_file = format!("{sanitized}{extension}");
+                config.name = sanitized.clone();
+                config.project_file = new_project_file.clone();
+                target_dir_name = std::ffi::OsString::from(&sanitized);
+            }
+        }
+
+        // 计算移动后的父目录
+        let current_parent = project_dir
+            .parent()
+            .map(|p| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
+            .ok_or("无法获取工程父目录")?;
+        let mut target_parent = current_parent.clone();
+        if let Some(ref new_parent) = request.new_parent_dir {
+            let trimmed_parent = new_parent.trim();
+            if !trimmed_parent.is_empty() {
+                let parent = validate_absolute_dir_input(trimmed_parent, "目标父目录")?;
+                fs::create_dir_all(&parent)
+                    .map_err(|error| format!("无法创建目标父目录: {error}"))?;
+                target_parent = fs::canonicalize(&parent).unwrap_or(parent);
+            }
+        }
+
+        let target_project_dir = target_parent.join(&target_dir_name);
+        let dir_changed = target_project_dir != project_dir;
+        if dir_changed
+            && target_project_dir.exists()
+            && !paths_refer_to_same_entry(&target_project_dir, &project_dir)
+        {
+            return Err(format!("目标目录已存在: {}", target_project_dir.display()));
+        }
+
+        // 检查工程文件重命名冲突（仍在原目录上校验，避免目录移动后才失败）
+        let file_rename_needed = new_project_file != old_project_file;
+        if file_rename_needed {
+            let old_file_path = resolve_file_inside_dir(&project_dir, &old_project_file, "旧工程文件")?;
+            let new_file_path = resolve_file_inside_dir(&project_dir, &new_project_file, "新工程文件")?;
+            if old_file_path.is_file()
+                && new_file_path.exists()
+                && !paths_refer_to_same_entry(&old_file_path, &new_file_path)
+            {
+                return Err(format!("目标工程文件已存在: {}", new_file_path.display()));
+            }
+        }
+
+        // 准备媒体变更（先校验并拷贝，成功提交后再删除旧内部文件）
+        enum PendingMediaOp {
+            None,
+            DeleteOldInternal(PathBuf),
+            CopyToInternal {
+                source: PathBuf,
+                target_name: String,
+                old_internal: Option<PathBuf>,
+            },
+        }
+        let mut media_op = PendingMediaOp::None;
+
+        if request.media_use_external_link.is_some() || request.media_external_path.is_some() {
+            let use_external = request.media_use_external_link.unwrap_or_else(|| {
+                config
+                    .media
+                    .as_ref()
+                    .map(|m| m.use_external_link)
+                    .unwrap_or(false)
+            });
+
+            if use_external {
+                let ext_path = request
+                    .media_external_path
+                    .clone()
+                    .unwrap_or_else(|| {
+                        config
+                            .media
+                            .as_ref()
+                            .and_then(|m| m.external_path.clone())
+                            .unwrap_or_default()
+                    })
+                    .trim()
+                    .to_string();
+
+                let old_internal = config
+                    .media
+                    .as_ref()
+                    .filter(|m| !m.use_external_link)
+                    .and_then(|_| resolve_project_media_path(&project_dir, &config))
+                    .filter(|p| p.is_file());
+
+                if ext_path.is_empty() {
+                    config.media = None;
+                } else {
+                    let canonical_ext = canonical_media_file(&ext_path)?;
+                    let file_name = canonical_ext
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| config.name.clone());
+                    config.media = Some(ProjectMediaConfig {
+                        name: Some(file_name),
+                        use_external_link: true,
+                        external_path: Some(canonical_ext.to_string_lossy().into_owned()),
+                    });
+                }
+                if let Some(old_path) = old_internal {
+                    media_op = PendingMediaOp::DeleteOldInternal(old_path);
+                }
+            } else {
+                let explicit_source = request
+                    .media_external_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_string);
+                let existing_internal = config
+                    .media
+                    .as_ref()
+                    .filter(|m| !m.use_external_link)
+                    .and_then(|_| resolve_project_media_path(&project_dir, &config));
+                let source_path = explicit_source.or_else(|| {
+                    config.media.as_ref().and_then(|m| {
+                        if m.use_external_link {
+                            m.external_path.clone()
+                        } else {
+                            existing_internal
+                                .as_ref()
+                                .map(|p| p.to_string_lossy().into_owned())
+                        }
+                    })
+                });
+
+                match source_path.filter(|p| !p.trim().is_empty()) {
+                    None => {
+                        config.media = None;
+                    }
+                    Some(raw_source) => {
+                        let canonical_source = canonical_media_file(raw_source.trim())?;
+                        let extension = canonical_source
+                            .extension()
+                            .map(|ext| format!(".{}", ext.to_string_lossy()))
+                            .unwrap_or_default();
+                        let media_file_name =
+                            format!("{}{}", sanitize_file_name(&config.name), extension);
+                        media_op = PendingMediaOp::CopyToInternal {
+                            source: canonical_source,
+                            target_name: media_file_name.clone(),
+                            old_internal: existing_internal,
+                        };
+                        config.media = Some(ProjectMediaConfig {
+                            name: Some(media_file_name),
+                            use_external_link: false,
+                            external_path: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        if let Some(ref desc) = request.description {
+            config.description = desc.clone();
+        }
+        config.last_change_at = now_millis();
+        validate_project_config_fields(&config)?;
+
+        // 1. 先执行目录移动/重命名（若失败，磁盘上没有任何部分变更）
+        let active_dir = if dir_changed {
+            fs::rename(&project_dir, &target_project_dir).map_err(|error| {
+                format!("无法移动/重命名工程目录（若工程中的媒体正在播放，请先停止或切换工程）: {error}")
+            })?;
+            target_project_dir
+        } else {
+            project_dir.clone()
+        };
+
+        // 2. 在最终目录中重命名工程 JSON 文件，若失败则回滚目录移动
+        if file_rename_needed {
+            let old_file = resolve_file_inside_dir(&active_dir, &old_project_file, "工程文件")?;
+            let new_file = resolve_file_inside_dir(&active_dir, &new_project_file, "工程文件")?;
+            if old_file.is_file() {
+                if let Err(error) = fs::rename(&old_file, &new_file) {
+                    if dir_changed {
+                        let _ = fs::rename(&active_dir, &project_dir);
+                    }
+                    return Err(format!("无法重命名工程文件: {error}"));
+                }
+            }
+        }
+
+        // 3. 如有内部媒体复制操作，先安全复制到新目录后再保存配置
+        let mut deferred_delete: Option<PathBuf> = None;
+        match media_op {
+            PendingMediaOp::None => {}
+            PendingMediaOp::DeleteOldInternal(old_path) => {
+                if let Some(name) = old_path.file_name() {
+                    let relocated = active_dir.join("media").join(name);
+                    if relocated.is_file() {
+                        deferred_delete = Some(relocated);
+                    }
+                }
+            }
+            PendingMediaOp::CopyToInternal {
+                source,
+                target_name,
+                old_internal,
+            } => {
+                let media_dir = active_dir.join("media");
+                fs::create_dir_all(&media_dir)
+                    .map_err(|error| format!("无法创建媒体目录: {error}"))?;
+                let target = resolve_file_inside_dir(&media_dir, &target_name, "媒体")?;
+                let actual_source = if let Some(ref old_path) = old_internal {
+                    if paths_refer_to_same_entry(&source, old_path) {
+                        old_path
+                            .file_name()
+                            .map(|n| media_dir.join(n))
+                            .unwrap_or_else(|| source.clone())
+                    } else {
+                        source.clone()
+                    }
+                } else {
+                    source.clone()
+                };
+                copy_file_safely(&actual_source, &target, "媒体文件")?;
+                if let Some(old_path) = old_internal {
+                    if let Some(name) = old_path.file_name() {
+                        let relocated_old = media_dir.join(name);
+                        if !paths_refer_to_same_entry(&relocated_old, &target)
+                            && relocated_old.is_file()
+                        {
+                            deferred_delete = Some(relocated_old);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. 原子保存工程配置和全局工程注册表，最后清理旧媒体副本
+        save_project_config(&active_dir, &config)?;
+        if let Some(old_path) = deferred_delete {
+            let _ = fs::remove_file(old_path);
+        }
+        if dir_changed {
+            replace_project_in_app_config(&app, &project_dir, &active_dir)?;
+        } else {
+            add_project_to_app_config(&app, &active_dir)?;
+        }
+        project_summary(&active_dir)
+    })
+    .await
+    .map_err(|error| format!("编辑工程失败: {error}"))?
+}
+
+#[tauri::command]
+async fn remove_folder_project(app: AppHandle, project_path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let trimmed = project_path.trim();
+        if trimmed.is_empty() {
+            return Err("工程路径不能为空".to_string());
+        }
+        let project_dir = PathBuf::from(trimmed);
+        if project_dir.exists() {
+            if !project_dir.is_dir() || !project_dir.join(PROJECT_CONFIG_FILE).is_file() {
+                return Err("目标路径不是有效的文件夹工程（缺少 project_config.json），已拒绝删除".to_string());
+            }
+            move_path_to_recycle_bin(&project_dir)?;
+        }
+        remove_project_from_app_config(&app, &project_dir)
+    })
+    .await
+    .map_err(|error| format!("删除文件夹工程失败: {error}"))?
 }
 
 #[tauri::command]
 fn append_log(runtime: tauri::State<FileSystemRuntime>, line: String) -> Result<(), String> {
-    let Some(path) = runtime
+    let mut guard = runtime
         .log_file
         .lock()
-        .map_err(|_| "日志状态锁定失败".to_string())?
-        .clone()
-    else {
+        .map_err(|_| "日志状态锁定失败".to_string())?;
+    let Some(file) = guard.as_mut() else {
         return Ok(());
     };
 
-    let mut file = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(&path)
-        .map_err(|error| format!("无法打开日志文件: {error}"))?;
-    writeln!(file, "{line}").map_err(|error| format!("无法写入日志文件: {error}"))
+    let mut buffer = Vec::with_capacity(line.len() + 1);
+    buffer.extend_from_slice(line.as_bytes());
+    buffer.push(b'\n');
+    file.write_all(&buffer)
+        .map_err(|error| format!("无法写入日志文件: {error}"))
 }
 
 fn register_media_path(app: &AppHandle, path: PathBuf) -> Result<MediaFile, String> {
@@ -1593,107 +2405,178 @@ fn toggle_main_window(app: &AppHandle) {
 }
 
 #[cfg(windows)]
-fn open_media_file_dialog() -> Result<Option<PathBuf>, String> {
-    use windows::core::w;
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER,
-        COINIT_APARTMENTTHREADED,
-    };
-    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
-    use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH};
-
-    const HRESULT_FROM_WIN32_ERROR_CANCELLED: i32 = -2147023673;
-
-    unsafe {
-        let init_hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let should_uninitialize = init_hr.is_ok();
-
-        if !init_hr.is_ok() {
-            return Err(format!("初始化文件选择器失败: {init_hr:?}"));
-        }
-
-        let result = (|| {
-            let dialog: IFileOpenDialog =
-                CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
-                    .map_err(|error| format!("创建文件选择器失败: {error}"))?;
-
-            let filters = [
-                COMDLG_FILTERSPEC {
-                    pszName: w!("媒体文件"),
-                    pszSpec: w!("*.mp4;*.mov;*.mkv;*.avi;*.webm;*.flv;*.wmv;*.mp3;*.wav;*.flac;*.aac;*.m4a;*.ogg"),
-                },
-                COMDLG_FILTERSPEC {
-                    pszName: w!("所有文件"),
-                    pszSpec: w!("*.*"),
-                },
-            ];
-
-            dialog
-                .SetTitle(w!("选择媒体文件"))
-                .map_err(|error| format!("设置文件选择器标题失败: {error}"))?;
-            dialog
-                .SetFileTypes(&filters)
-                .map_err(|error| format!("设置媒体文件筛选器失败: {error}"))?;
-
-            if let Err(error) = dialog.Show(None) {
-                if error.code().0 == HRESULT_FROM_WIN32_ERROR_CANCELLED {
-                    return Ok(None);
-                }
-
-                return Err(format!("打开文件选择器失败: {error}"));
-            }
-
-            let item = dialog
-                .GetResult()
-                .map_err(|error| format!("读取文件选择结果失败: {error}"))?;
-            let display_name = item
-                .GetDisplayName(SIGDN_FILESYSPATH)
-                .map_err(|error| format!("读取文件路径失败: {error}"))?;
-            let path_result = display_name
-                .to_string()
-                .map_err(|error| format!("转换文件路径失败: {error}"));
-
-            CoTaskMemFree(Some(display_name.0 as _));
-
-            let path = path_result?;
-
-            Ok(Some(PathBuf::from(path)))
-        })();
-
-        if should_uninitialize {
-            CoUninitialize();
-        }
-
-        result
+fn run_windows_sta_dialog<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<Option<T>, String> + Send + 'static,
+) -> Result<Option<T>, String> {
+    let handle = thread::Builder::new()
+        .name("m7-win-dialog".to_string())
+        .spawn(operation)
+        .map_err(|error| format!("无法启动系统对话框线程: {error}"))?;
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Err("系统对话框线程意外中止".to_string()),
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(windows)]
+struct WinComGuard;
+
+#[cfg(windows)]
+impl Drop for WinComGuard {
+    fn drop(&mut self) {
+        unsafe {
+            windows::Win32::System::Com::CoUninitialize();
+        }
+    }
+}
+
+#[cfg(windows)]
+struct WinCoTaskMemGuard(*mut std::ffi::c_void);
+
+#[cfg(windows)]
+impl Drop for WinCoTaskMemGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                windows::Win32::System::Com::CoTaskMemFree(Some(self.0));
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+unsafe fn read_win_shell_item_path(
+    item: &windows::Win32::UI::Shell::IShellItem,
+) -> Result<PathBuf, String> {
+    use windows::Win32::UI::Shell::SIGDN_FILESYSPATH;
+
+    let display_name = item
+        .GetDisplayName(SIGDN_FILESYSPATH)
+        .map_err(|error| format!("读取文件路径失败: {error}"))?;
+    let _guard = WinCoTaskMemGuard(display_name.0.cast());
+    if display_name.0.is_null() {
+        return Err("系统对话框返回了空路径".to_string());
+    }
+    let path = display_name
+        .to_string()
+        .map_err(|error| format!("转换文件路径失败: {error}"))?;
+    if path.trim().is_empty() {
+        return Err("系统对话框返回了空路径".to_string());
+    }
+    Ok(PathBuf::from(path))
+}
+
+#[cfg(windows)]
+fn open_windows_file_dialog(
+    title: &'static str,
+    filters: &'static [(&'static str, &'static str)],
+    pick_folders: bool,
+) -> Result<Option<PathBuf>, String> {
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+    use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, FOS_PICKFOLDERS};
+
+    const HRESULT_FROM_WIN32_ERROR_CANCELLED: i32 = -2147023673;
+
+    run_windows_sta_dialog(move || unsafe {
+        let init_hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        if !init_hr.is_ok() {
+            return Err(format!("初始化系统选择器失败: {init_hr:?}"));
+        }
+        let _com = WinComGuard;
+
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
+                .map_err(|error| format!("创建系统选择器失败: {error}"))?;
+
+        if pick_folders {
+            dialog
+                .SetOptions(FOS_PICKFOLDERS)
+                .map_err(|error| format!("设置文件夹选择器失败: {error}"))?;
+        }
+        let title_h = HSTRING::from(title);
+        dialog
+            .SetTitle(&title_h)
+            .map_err(|error| format!("设置选择器标题失败: {error}"))?;
+        if !filters.is_empty() {
+            let owned_filters: Vec<(HSTRING, HSTRING)> = filters
+                .iter()
+                .map(|(name, spec)| (HSTRING::from(*name), HSTRING::from(*spec)))
+                .collect();
+            let filter_specs: Vec<COMDLG_FILTERSPEC> = owned_filters
+                .iter()
+                .map(|(name, spec)| COMDLG_FILTERSPEC {
+                    pszName: PCWSTR(name.as_ptr()),
+                    pszSpec: PCWSTR(spec.as_ptr()),
+                })
+                .collect();
+            dialog
+                .SetFileTypes(&filter_specs)
+                .map_err(|error| format!("设置文件筛选器失败: {error}"))?;
+        }
+
+        if let Err(error) = dialog.Show(None) {
+            if error.code().0 == HRESULT_FROM_WIN32_ERROR_CANCELLED {
+                return Ok(None);
+            }
+            return Err(format!("打开系统选择器失败: {error}"));
+        }
+
+        let item = dialog
+            .GetResult()
+            .map_err(|error| format!("读取选择结果失败: {error}"))?;
+        read_win_shell_item_path(&item).map(Some)
+    })
+}
+
+#[cfg(windows)]
 fn open_media_file_dialog() -> Result<Option<PathBuf>, String> {
+    open_windows_file_dialog(
+        "选择媒体文件",
+        &[
+            (
+                "媒体文件",
+                "*.mp4;*.mov;*.mkv;*.avi;*.webm;*.flv;*.wmv;*.mp3;*.wav;*.flac;*.aac;*.m4a;*.ogg",
+            ),
+            ("所有文件", "*.*"),
+        ],
+        false,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn open_macos_panel(
+    title_str: &str,
+    choose_files: bool,
+    choose_dirs: bool,
+    extensions: &[&str],
+) -> Result<Option<PathBuf>, String> {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
     use objc2_foundation::{NSArray, NSString};
 
     let Some(mtm) = MainThreadMarker::new() else {
-        return Err("macOS 文件选择器必须在主线程调用".to_string());
+        return Err("macOS 选择器必须在主线程调用".to_string());
     };
 
     let panel = NSOpenPanel::openPanel(mtm);
-
-    panel.setCanChooseFiles(true);
-    panel.setCanChooseDirectories(false);
+    panel.setCanChooseFiles(choose_files);
+    panel.setCanChooseDirectories(choose_dirs);
     panel.setAllowsMultipleSelection(false);
 
-    let title = NSString::from_str("选择媒体文件");
+    let title = NSString::from_str(title_str);
     panel.setTitle(Some(&title));
 
-    let extensions = ["mp4", "mov", "mkv", "avi", "mp3", "wav", "flac"];
-    let ns_exts = extensions.map(NSString::from_str);
-    let refs: Vec<&NSString> = ns_exts.iter().map(|extension| &**extension).collect();
-    let allowed_types = NSArray::from_slice(&refs);
-
-    #[allow(deprecated)]
-    panel.setAllowedFileTypes(Some(&allowed_types));
+    if !extensions.is_empty() {
+        let ns_exts: Vec<_> = extensions.iter().map(|ext| NSString::from_str(ext)).collect();
+        let refs: Vec<&NSString> = ns_exts.iter().map(|extension| &**extension).collect();
+        let allowed_types = NSArray::from_slice(&refs);
+        #[allow(deprecated)]
+        panel.setAllowedFileTypes(Some(&allowed_types));
+    }
 
     if panel.runModal() == NSModalResponseOK {
         let urls = panel.URLs();
@@ -1708,15 +2591,59 @@ fn open_media_file_dialog() -> Result<Option<PathBuf>, String> {
     Ok(None)
 }
 
-// 保留针对其他平台的兜底
+#[cfg(target_os = "macos")]
+fn open_media_file_dialog() -> Result<Option<PathBuf>, String> {
+    open_macos_panel(
+        "选择媒体文件",
+        true,
+        false,
+        &[
+            "mp4", "mov", "mkv", "avi", "webm", "flv", "wmv", "mp3", "wav", "flac", "aac", "m4a",
+            "ogg",
+        ],
+    )
+}
+
 #[cfg(not(any(windows, target_os = "macos")))]
 fn open_media_file_dialog() -> Result<Option<PathBuf>, String> {
     Err("当前平台暂未实现后端媒体文件选择器".to_string())
 }
 
+async fn run_platform_dialog(
+    app: &AppHandle,
+    dialog_fn: impl FnOnce() -> Result<Option<PathBuf>, String> + Send + 'static,
+    label: &str,
+) -> Result<Option<PathBuf>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        app.run_on_main_thread(move || {
+            let _ = sender.send(dialog_fn());
+        })
+        .map_err(|error| format!("调度 macOS {label}失败: {error}"))?;
+
+        let dialog_result: Result<Option<PathBuf>, String> =
+            tauri::async_runtime::spawn_blocking(move || {
+                receiver.recv_timeout(Duration::from_secs(300))
+            })
+            .await
+            .map_err(|error| format!("等待 macOS {label}失败: {error}"))?
+            .map_err(|error| format!("等待 macOS {label}超时或失败: {error}"))?;
+        dialog_result
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        tauri::async_runtime::spawn_blocking(dialog_fn)
+            .await
+            .map_err(|error| format!("等待{label}失败: {error}"))?
+    }
+}
+
 #[tauri::command]
-fn open_media_file(app: AppHandle) -> Result<Option<MediaFile>, String> {
-    let Some(path) = open_media_file_dialog()? else {
+async fn open_media_file(app: AppHandle) -> Result<Option<MediaFile>, String> {
+    let Some(path) = run_platform_dialog(&app, open_media_file_dialog, "媒体文件选择器").await?
+    else {
         return Ok(None);
     };
 
@@ -1726,98 +2653,12 @@ fn open_media_file(app: AppHandle) -> Result<Option<MediaFile>, String> {
 
 #[cfg(windows)]
 fn open_project_folder_dialog() -> Result<Option<PathBuf>, String> {
-    use windows::core::w;
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER,
-        COINIT_APARTMENTTHREADED,
-    };
-    use windows::Win32::UI::Shell::{
-        FileOpenDialog, IFileOpenDialog, FOS_PICKFOLDERS, SIGDN_FILESYSPATH,
-    };
-
-    const HRESULT_FROM_WIN32_ERROR_CANCELLED: i32 = -2147023673;
-
-    unsafe {
-        let init_hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let should_uninitialize = init_hr.is_ok();
-
-        if !init_hr.is_ok() {
-            return Err(format!("初始化文件夹选择器失败: {init_hr:?}"));
-        }
-
-        let result = (|| {
-            let dialog: IFileOpenDialog =
-                CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
-                    .map_err(|error| format!("创建文件夹选择器失败: {error}"))?;
-
-            dialog
-                .SetOptions(FOS_PICKFOLDERS)
-                .map_err(|error| format!("设置文件夹选择器失败: {error}"))?;
-            dialog
-                .SetTitle(w!("选择工程文件夹"))
-                .map_err(|error| format!("设置文件夹选择器标题失败: {error}"))?;
-
-            if let Err(error) = dialog.Show(None) {
-                if error.code().0 == HRESULT_FROM_WIN32_ERROR_CANCELLED {
-                    return Ok(None);
-                }
-
-                return Err(format!("打开文件夹选择器失败: {error}"));
-            }
-
-            let item = dialog
-                .GetResult()
-                .map_err(|error| format!("读取文件夹选择结果失败: {error}"))?;
-            let display_name = item
-                .GetDisplayName(SIGDN_FILESYSPATH)
-                .map_err(|error| format!("读取文件夹路径失败: {error}"))?;
-            let path_result = display_name
-                .to_string()
-                .map_err(|error| format!("转换文件夹路径失败: {error}"));
-
-            CoTaskMemFree(Some(display_name.0 as _));
-
-            let path = path_result?;
-
-            Ok(Some(PathBuf::from(path)))
-        })();
-
-        if should_uninitialize {
-            CoUninitialize();
-        }
-
-        result
-    }
+    open_windows_file_dialog("选择工程文件夹", &[], true)
 }
 
 #[cfg(target_os = "macos")]
 fn open_project_folder_dialog() -> Result<Option<PathBuf>, String> {
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
-    use objc2_foundation::NSString;
-
-    let Some(mtm) = MainThreadMarker::new() else {
-        return Err("macOS 文件夹选择器必须在主线程调用".to_string());
-    };
-
-    let panel = NSOpenPanel::openPanel(mtm);
-    panel.setCanChooseFiles(false);
-    panel.setCanChooseDirectories(true);
-    panel.setAllowsMultipleSelection(false);
-    let title = NSString::from_str("选择工程文件夹");
-    panel.setTitle(Some(&title));
-
-    if panel.runModal() == NSModalResponseOK {
-        let urls = panel.URLs();
-        if urls.count() > 0 {
-            let url = urls.objectAtIndex(0);
-            if let Some(path_str) = url.path() {
-                return Ok(Some(PathBuf::from(path_str.to_string())));
-            }
-        }
-    }
-
-    Ok(None)
+    open_macos_panel("选择工程文件夹", false, true, &[])
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -1826,12 +2667,16 @@ fn open_project_folder_dialog() -> Result<Option<PathBuf>, String> {
 }
 
 #[tauri::command]
-fn choose_project_folder() -> Result<Option<String>, String> {
-    Ok(open_project_folder_dialog()?.map(|path| path.to_string_lossy().into_owned()))
+async fn choose_project_folder(app: AppHandle) -> Result<Option<String>, String> {
+    Ok(
+        run_platform_dialog(&app, open_project_folder_dialog, "文件夹选择器")
+            .await?
+            .map(|path| path.to_string_lossy().into_owned()),
+    )
 }
 
 #[tauri::command]
-fn import_folder_project(
+async fn import_folder_project(
     app: AppHandle,
     project_path: Option<String>,
 ) -> Result<Option<FolderProjectPayload>, String> {
@@ -1843,127 +2688,34 @@ fn import_folder_project(
             }
             PathBuf::from(trimmed)
         }
-        None => match open_project_folder_dialog()? {
+        None => match run_platform_dialog(&app, open_project_folder_dialog, "文件夹选择器").await?
+        {
             Some(selected) => selected,
             None => return Ok(None),
         },
     };
 
-    let payload = load_folder_project_payload(&app, &path)?;
-    add_project_to_app_config(&app, Path::new(&payload.path))?;
-    Ok(Some(payload))
+    tauri::async_runtime::spawn_blocking(move || {
+        let payload = load_folder_project_payload(&app, &path)?;
+        add_project_to_app_config(&app, Path::new(&payload.path))?;
+        Ok(Some(payload))
+    })
+    .await
+    .map_err(|error| format!("导入文件夹工程失败: {error}"))?
 }
 
 #[cfg(windows)]
 fn open_project_file_dialog() -> Result<Option<PathBuf>, String> {
-    use windows::core::w;
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER,
-        COINIT_APARTMENTTHREADED,
-    };
-    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
-    use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH};
-
-    const HRESULT_FROM_WIN32_ERROR_CANCELLED: i32 = -2147023673;
-
-    unsafe {
-        let init_hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let should_uninitialize = init_hr.is_ok();
-
-        if !init_hr.is_ok() {
-            return Err(format!("初始化文件选择器失败: {init_hr:?}"));
-        }
-
-        let result = (|| {
-            let dialog: IFileOpenDialog =
-                CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
-                    .map_err(|error| format!("创建文件选择器失败: {error}"))?;
-
-            let filters = [
-                COMDLG_FILTERSPEC {
-                    pszName: w!("m7-editor 工程文件"),
-                    pszSpec: w!("*.json"),
-                },
-                COMDLG_FILTERSPEC {
-                    pszName: w!("所有文件"),
-                    pszSpec: w!("*.*"),
-                },
-            ];
-
-            dialog
-                .SetTitle(w!("选择工程文件"))
-                .map_err(|error| format!("设置文件选择器标题失败: {error}"))?;
-            dialog
-                .SetFileTypes(&filters)
-                .map_err(|error| format!("设置工程文件筛选器失败: {error}"))?;
-
-            if let Err(error) = dialog.Show(None) {
-                if error.code().0 == HRESULT_FROM_WIN32_ERROR_CANCELLED {
-                    return Ok(None);
-                }
-                return Err(format!("打开文件选择器失败: {error}"));
-            }
-
-            let item = dialog
-                .GetResult()
-                .map_err(|error| format!("读取文件选择结果失败: {error}"))?;
-            let display_name = item
-                .GetDisplayName(SIGDN_FILESYSPATH)
-                .map_err(|error| format!("读取文件路径失败: {error}"))?;
-            let path_result = display_name
-                .to_string()
-                .map_err(|error| format!("转换文件路径失败: {error}"));
-
-            CoTaskMemFree(Some(display_name.0 as _));
-
-            let path = path_result?;
-            Ok(Some(PathBuf::from(path)))
-        })();
-
-        if should_uninitialize {
-            CoUninitialize();
-        }
-
-        result
-    }
+    open_windows_file_dialog(
+        "选择工程文件",
+        &[("m7-editor 工程文件", "*.json"), ("所有文件", "*.*")],
+        false,
+    )
 }
 
 #[cfg(target_os = "macos")]
 fn open_project_file_dialog() -> Result<Option<PathBuf>, String> {
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
-    use objc2_foundation::{NSArray, NSString};
-
-    let Some(mtm) = MainThreadMarker::new() else {
-        return Err("macOS 文件选择器必须在主线程调用".to_string());
-    };
-
-    let panel = NSOpenPanel::openPanel(mtm);
-    panel.setCanChooseFiles(true);
-    panel.setCanChooseDirectories(false);
-    panel.setAllowsMultipleSelection(false);
-    let title = NSString::from_str("选择工程文件");
-    panel.setTitle(Some(&title));
-
-    let extensions = ["json"];
-    let ns_exts = extensions.map(NSString::from_str);
-    let refs: Vec<&NSString> = ns_exts.iter().map(|ext| &**ext).collect();
-    let allowed_types = NSArray::from_slice(&refs);
-
-    #[allow(deprecated)]
-    panel.setAllowedFileTypes(Some(&allowed_types));
-
-    if panel.runModal() == NSModalResponseOK {
-        let urls = panel.URLs();
-        if urls.count() > 0 {
-            let url = urls.objectAtIndex(0);
-            if let Some(path_str) = url.path() {
-                return Ok(Some(PathBuf::from(path_str.to_string())));
-            }
-        }
-    }
-
-    Ok(None)
+    open_macos_panel("选择工程文件", true, false, &["json"])
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -1972,33 +2724,40 @@ fn open_project_file_dialog() -> Result<Option<PathBuf>, String> {
 }
 
 #[tauri::command]
-fn open_project_file() -> Result<Option<Value>, String> {
-    let Some(path) = open_project_file_dialog()? else {
+async fn open_project_file(app: AppHandle) -> Result<Option<Value>, String> {
+    let Some(path) =
+        run_platform_dialog(&app, open_project_file_dialog, "工程文件选择器").await?
+    else {
         return Ok(None);
     };
 
-    let project = read_json::<Value>(&path)
-        .map_err(|error| format!("无法读取工程文件 {}: {error}", path.display()))?;
-    Ok(Some(project))
+    tauri::async_runtime::spawn_blocking(move || read_validated_project_json(&path).map(Some))
+        .await
+        .map_err(|error| format!("读取工程文件失败: {error}"))?
 }
 
 #[tauri::command]
-fn read_project_json_file(path: String) -> Result<Value, String> {
-    let trimmed = path.trim();
+async fn read_project_json_file(path: String) -> Result<Value, String> {
+    let trimmed = path.trim().to_string();
     if trimmed.is_empty() {
         return Err("工程文件路径不能为空".to_string());
     }
-    read_validated_project_json(Path::new(trimmed))
+    tauri::async_runtime::spawn_blocking(move || read_validated_project_json(Path::new(&trimmed)))
+        .await
+        .map_err(|error| format!("读取工程文件失败: {error}"))?
 }
 
 #[tauri::command]
-fn read_xml_file(path: String) -> Result<String, String> {
-    let trimmed = path.trim();
+async fn read_xml_file(path: String) -> Result<String, String> {
+    let trimmed = path.trim().to_string();
     if trimmed.is_empty() {
         return Err("XML 文件路径不能为空".to_string());
     }
-    fs::read_to_string(Path::new(trimmed))
-        .map_err(|error| format!("无法读取 XML 文件 {}: {error}", trimmed))
+    tauri::async_runtime::spawn_blocking(move || {
+        read_text_file_bounded(Path::new(&trimmed), MAX_IMPORT_TEXT_BYTES, "XML 文件")
+    })
+    .await
+    .map_err(|error| format!("读取 XML 文件失败: {error}"))?
 }
 
 #[cfg(windows)]
@@ -2012,9 +2771,16 @@ fn move_path_to_recycle_bin(path: &std::path::Path) -> Result<(), String> {
     let abs_path = std::fs::canonicalize(path).map_err(|e| format!("路径无效: {e}"))?;
 
     let path_str = abs_path.to_string_lossy();
-    let clean_path = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
+    let clean_path = if let Some(unc) = path_str.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else {
+        path_str
+            .strip_prefix(r"\\?\")
+            .unwrap_or(&path_str)
+            .to_string()
+    };
 
-    let mut from: Vec<u16> = std::ffi::OsStr::new(clean_path)
+    let mut from: Vec<u16> = std::ffi::OsStr::new(&clean_path)
         .encode_wide()
         .chain([0, 0])
         .collect();
@@ -2028,7 +2794,7 @@ fn move_path_to_recycle_bin(path: &std::path::Path) -> Result<(), String> {
 
     let result = unsafe { SHFileOperationW(&mut operation) };
 
-    if result != 0 {
+    if result != 0 || operation.fAnyOperationsAborted.as_bool() {
         return Err(format!("删除失败，错误码: {result}"));
     }
 
@@ -2107,6 +2873,21 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+fn is_valid_uuid_v4_like(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    bytes.iter().enumerate().all(|(index, &byte)| match index {
+        8 | 13 | 18 | 23 => byte == b'-',
+        _ => byte.is_ascii_hexdigit(),
+    })
+}
+
+fn is_frame_capture_job(job: &Value) -> bool {
+    job.get("frameCapture").and_then(Value::as_object).is_some()
+}
+
 #[tauri::command]
 async fn create_video_export_render_window(
     app: AppHandle,
@@ -2116,13 +2897,13 @@ async fn create_video_export_render_window(
     width: u32,
     height: u32,
 ) -> Result<(), String> {
-    if job_id.len() != 36 || !job_id.chars().all(|character| character.is_ascii_hexdigit() || character == '-') {
+    if !is_valid_uuid_v4_like(&job_id) {
         return Err("视频导出任务标识无效".to_string());
     }
     if width < 16 || width > 7680 || height < 16 || height > 4320 || width % 2 != 0 || height % 2 != 0 {
         return Err("独立渲染窗口尺寸无效".to_string());
     }
-    let is_frame_capture = job.get("frameCapture").and_then(Value::as_object).is_some();
+    let is_frame_capture = is_frame_capture_job(&job);
     let (window_label, query_parameter, already_running_message) = if is_frame_capture {
         (
             VIDEO_FRAME_RENDER_WINDOW_LABEL,
@@ -2140,11 +2921,15 @@ async fn create_video_export_render_window(
         return Err(already_running_message.to_string());
     }
 
-    runtime
-        .render_jobs
-        .lock()
-        .map_err(|_| "视频导出任务状态不可用".to_string())?
-        .insert(job_id.clone(), job);
+    {
+        let mut jobs = runtime
+            .render_jobs
+            .lock()
+            .map_err(|_| "视频导出任务状态不可用".to_string())?;
+        // Prune stale jobs for this window type since the window is guaranteed not open.
+        jobs.retain(|_, existing| is_frame_capture_job(existing) != is_frame_capture);
+        jobs.insert(job_id.clone(), job);
+    }
 
     let url = format!("index.html?{query_parameter}={job_id}");
     let window = WebviewWindowBuilder::new(
@@ -2175,15 +2960,25 @@ async fn create_video_export_render_window(
         return Err(format!("无法创建独立视频渲染窗口: {error}"));
     }
 
-    if cfg!(target_os = "macos") {
-        if let Some(window) = app.get_webview_window(window_label) {
-            // `visible(true)` is applied while building the native window, but
-            // explicitly showing it here also covers macOS versions that
-            // defer ordering a non-focused window until after navigation.
-            window.show().map_err(|error| format!("显示独立视频渲染窗口失败: {error}"))?;
-            window
-                .set_always_on_top(true)
-                .map_err(|error| format!("设置独立视频渲染窗口层级失败: {error}"))?;
+    #[cfg(target_os = "macos")]
+    if let Some(window) = app.get_webview_window(window_label) {
+        // `visible(true)` is applied while building the native window, but
+        // explicitly showing it here also covers macOS versions that
+        // defer ordering a non-focused window until after navigation.
+        if let Err(error) = window
+            .show()
+            .map_err(|error| format!("显示独立视频渲染窗口失败: {error}"))
+            .and_then(|_| {
+                window
+                    .set_always_on_top(true)
+                    .map_err(|error| format!("设置独立视频渲染窗口层级失败: {error}"))
+            })
+        {
+            let _ = window.close();
+            if let Ok(mut jobs) = runtime.render_jobs.lock() {
+                jobs.remove(&job_id);
+            }
+            return Err(error);
         }
     }
 
@@ -2205,7 +3000,7 @@ fn get_video_export_render_job(
 }
 
 #[tauri::command]
-fn finish_video_export_render_window(
+async fn finish_video_export_render_window(
     app: AppHandle,
     runtime: State<'_, VideoExportRuntime>,
     job_id: String,
@@ -2222,20 +3017,29 @@ fn finish_video_export_render_window(
             .as_ref()
             .and_then(|value| value.get("outputPath"))
             .and_then(Value::as_str)
+            .map(str::to_string)
         {
-            if let Ok(mut processes) = runtime.ffmpeg_processes.lock() {
-                if let Some(mut child) = processes.remove(output_path) {
-                    drop(child.stdin.take());
-                    let _ = child.kill();
-                    let _ = child.wait();
+            let key = normalized_export_key(Path::new(&output_path));
+            let session = runtime
+                .ffmpeg_processes
+                .lock()
+                .ok()
+                .and_then(|mut processes| processes.remove(&key));
+            let app_clone = app.clone();
+            let output_clone = output_path.clone();
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                if let Some(session) = session {
+                    session.terminate();
                 }
-            }
-            let _ = cancel_video_export_file_inner(&runtime, output_path.to_string());
+                let rt = app_clone.state::<VideoExportRuntime>();
+                let _ = cancel_video_export_file_inner(&rt, output_clone);
+            })
+            .await;
         }
     }
 
     if let Some(job) = job.as_ref() {
-        let window_label = if job.get("frameCapture").and_then(Value::as_object).is_some() {
+        let window_label = if is_frame_capture_job(job) {
             VIDEO_FRAME_RENDER_WINDOW_LABEL
         } else {
             VIDEO_EXPORT_RENDER_WINDOW_LABEL
@@ -2273,7 +3077,7 @@ async fn capture_webview_snapshot(window: WebviewWindow) -> Result<Response, Str
                         .controller()
                         .CoreWebView2()
                         .map_err(|error| format!("读取 WebView2 实例失败: {error}"))?;
-                        let stream = CreateStreamOnHGlobal(HGLOBAL::default(), true)
+                    let stream = CreateStreamOnHGlobal(HGLOBAL::default(), true)
                         .map_err(|error| format!("创建截图缓冲区失败: {error}"))?;
                     let callback_stream = stream.clone();
                     let handler = CapturePreviewCompletedHandler::create(Box::new(move |status| {
@@ -2327,7 +3131,8 @@ async fn capture_webview_snapshot(window: WebviewWindow) -> Result<Response, Str
                 };
                 let callback = RcBlock::new(move |image: *mut NSImage, error: *mut NSError| {
                     let result = if !error.is_null() {
-                        Err("WKWebView 快照失败".to_string())
+                        let desc = unsafe { (*error).localizedDescription().to_string() };
+                        Err(format!("WKWebView 快照失败: {desc}"))
                     } else if image.is_null() {
                         Err("WKWebView 返回了空快照".to_string())
                     } else {
@@ -2350,27 +3155,30 @@ async fn capture_webview_snapshot(window: WebviewWindow) -> Result<Response, Str
         use glib::object::ObjectType;
 
         let (sender, receiver) = mpsc::sync_channel::<Result<Vec<u8>, String>>(1);
-        let error_sender = sender.clone();
-        let sender_pointer = Box::into_raw(Box::new(sender)) as usize;
+        let callback_sender = sender;
 
-        if let Err(error) = window.with_webview(move |platform_webview| {
-            let webview = platform_webview.inner();
-            let webview_pointer = webview.as_ptr().cast::<std::ffi::c_void>();
-            unsafe {
-                webkit_web_view_get_snapshot(
-                    webview_pointer,
-                    0,
-                    0,
-                    std::ptr::null_mut(),
-                    Some(linux_snapshot_finished),
-                    sender_pointer as *mut std::ffi::c_void,
-                );
-            }
-        }) {
-            let _ = error_sender.send(Err(format!("调度 WebKitGTK 快照失败: {error}")));
-            unsafe { drop(Box::from_raw(sender_pointer as *mut mpsc::SyncSender<Result<Vec<u8>, String>>)) };
-            return Err(format!("调度 WebKitGTK 快照失败: {error}"));
-        }
+        window
+            .with_webview(move |platform_webview| {
+                let webview = platform_webview.inner();
+                let webview_pointer = webview.as_ptr().cast::<std::ffi::c_void>();
+                if webview_pointer.is_null() {
+                    let _ = callback_sender.send(Err("WebKitGTK 实例不可用".to_string()));
+                    return;
+                }
+                let sender_pointer =
+                    Box::into_raw(Box::new(callback_sender)).cast::<std::ffi::c_void>();
+                unsafe {
+                    webkit_web_view_get_snapshot(
+                        webview_pointer,
+                        0,
+                        0,
+                        std::ptr::null_mut(),
+                        Some(linux_snapshot_finished),
+                        sender_pointer,
+                    );
+                }
+            })
+            .map_err(|error| format!("调度 WebKitGTK 快照失败: {error}"))?;
 
         let bytes = await_webview_snapshot(receiver).await?;
         return Ok(Response::new(bytes));
@@ -2410,6 +3218,9 @@ unsafe fn ns_image_to_png(image: &objc2_app_kit::NSImage) -> Result<Vec<u8>, Str
         .representationUsingType_properties(NSBitmapImageFileType::PNG, &properties)
         .ok_or_else(|| "无法将 WKWebView 快照编码为 PNG".to_string())?;
     let length = png.length();
+    if length == 0 {
+        return Err("WKWebView 返回了空 PNG 数据".to_string());
+    }
     let mut bytes = vec![0_u8; length];
     let buffer = NonNull::new(bytes.as_mut_ptr().cast())
         .ok_or_else(|| "无法分配 WKWebView 快照缓冲区".to_string())?;
@@ -2478,6 +3289,8 @@ unsafe extern "C" fn linux_snapshot_finished(
     cairo_surface_destroy(surface);
     if status != 0 {
         let _ = sender.send(Err(format!("Cairo PNG 编码失败，状态码 {status}")));
+    } else if png.is_empty() {
+        let _ = sender.send(Err("WebKitGTK 返回了空 PNG 数据".to_string()));
     } else {
         let _ = sender.send(Ok(png));
     }
@@ -2489,8 +3302,13 @@ unsafe extern "C" fn write_cairo_png_bytes(
     data: *const u8,
     length: u32,
 ) -> i32 {
-    let buffer = &mut *closure.cast::<Vec<u8>>();
-    buffer.extend_from_slice(std::slice::from_raw_parts(data, length as usize));
+    if length > 0 {
+        if data.is_null() {
+            return 11; // CAIRO_STATUS_WRITE_ERROR
+        }
+        let buffer = &mut *closure.cast::<Vec<u8>>();
+        buffer.extend_from_slice(std::slice::from_raw_parts(data, length as usize));
+    }
     0
 }
 
@@ -2498,14 +3316,25 @@ unsafe extern "C" fn write_cairo_png_bytes(
 unsafe fn stream_to_bytes(
     stream: &windows::Win32::System::Com::IStream,
 ) -> Result<Vec<u8>, String> {
+    use windows::Win32::System::Com::{STATFLAG_NONAME, STATSTG};
     use windows::Win32::System::Com::StructuredStorage::GetHGlobalFromStream;
     use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 
+    let mut stat = STATSTG::default();
+    stream
+        .Stat(&mut stat, STATFLAG_NONAME)
+        .map_err(|error| format!("读取截图流大小失败: {error}"))?;
+    let stream_size = usize::try_from(stat.cbSize)
+        .map_err(|_| "WebView2 截图大小超出内存限制".to_string())?;
+    if stream_size == 0 {
+        return Err("WebView2 返回了空截图".to_string());
+    }
+
     let memory = GetHGlobalFromStream(stream)
         .map_err(|error| format!("读取截图缓冲区失败: {error}"))?;
-    let size = GlobalSize(memory);
-    if size == 0 {
-        return Err("WebView2 返回了空截图".to_string());
+    let alloc_size = GlobalSize(memory);
+    if alloc_size == 0 || stream_size > alloc_size {
+        return Err("WebView2 截图缓冲区大小无效".to_string());
     }
 
     let pointer = GlobalLock(memory);
@@ -2513,7 +3342,7 @@ unsafe fn stream_to_bytes(
         return Err("锁定截图缓冲区失败".to_string());
     }
 
-    let bytes = std::slice::from_raw_parts(pointer.cast::<u8>(), size).to_vec();
+    let bytes = std::slice::from_raw_parts(pointer.cast::<u8>(), stream_size).to_vec();
     let _ = GlobalUnlock(memory);
     Ok(bytes)
 }
@@ -2532,19 +3361,9 @@ fn normalize_video_export_default_filename(default_file_name: Option<&str>) -> S
         }
         _ => trimmed,
     };
-    let sanitized: String = stem
-        .chars()
-        .map(|character| match character {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-            character if character.is_control() => '_',
-            character => character,
-        })
-        .collect();
-    let clean_stem = sanitized.trim().trim_matches('.');
-    if clean_stem.is_empty() {
-        "m7-export.mp4".to_string()
-    } else {
-        format!("{clean_stem}.mp4")
+    match sanitize_file_name_core(stem) {
+        Some(clean_stem) => format!("{clean_stem}.mp4"),
+        None => "m7-export.mp4".to_string(),
     }
 }
 
@@ -2552,65 +3371,54 @@ fn normalize_video_export_default_filename(default_file_name: Option<&str>) -> S
 fn save_video_file_dialog(default_file_name: &str) -> Result<Option<PathBuf>, String> {
     use windows::core::{w, HSTRING};
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER,
-        COINIT_APARTMENTTHREADED,
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
     };
     use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
-    use windows::Win32::UI::Shell::{FileSaveDialog, IFileSaveDialog, SIGDN_FILESYSPATH};
+    use windows::Win32::UI::Shell::{FileSaveDialog, IFileSaveDialog};
 
     const HRESULT_FROM_WIN32_ERROR_CANCELLED: i32 = -2147023673;
+    let default_name_owned = default_file_name.to_string();
 
-    unsafe {
+    run_windows_sta_dialog(move || unsafe {
         let init_hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         if !init_hr.is_ok() {
             return Err(format!("初始化视频保存对话框失败: {init_hr:?}"));
         }
+        let _com = WinComGuard;
 
-        let result = (|| {
-            let dialog: IFileSaveDialog =
-                CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)
-                    .map_err(|error| format!("创建视频保存对话框失败: {error}"))?;
-            let filters = [COMDLG_FILTERSPEC {
-                pszName: w!("MP4 视频"),
-                pszSpec: w!("*.mp4"),
-            }];
-            let default_name = HSTRING::from(default_file_name);
-            dialog
-                .SetTitle(w!("导出视频"))
-                .map_err(|error| format!("设置保存对话框标题失败: {error}"))?;
-            dialog
-                .SetFileTypes(&filters)
-                .map_err(|error| format!("设置 MP4 文件筛选器失败: {error}"))?;
-            dialog
-                .SetDefaultExtension(w!("mp4"))
-                .map_err(|error| format!("设置 MP4 扩展名失败: {error}"))?;
-            dialog
-                .SetFileName(&default_name)
-                .map_err(|error| format!("设置默认文件名失败: {error}"))?;
+        let dialog: IFileSaveDialog =
+            CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)
+                .map_err(|error| format!("创建视频保存对话框失败: {error}"))?;
+        let filters = [COMDLG_FILTERSPEC {
+            pszName: w!("MP4 视频"),
+            pszSpec: w!("*.mp4"),
+        }];
+        let default_name = HSTRING::from(&default_name_owned);
+        dialog
+            .SetTitle(w!("导出视频"))
+            .map_err(|error| format!("设置保存对话框标题失败: {error}"))?;
+        dialog
+            .SetFileTypes(&filters)
+            .map_err(|error| format!("设置 MP4 文件筛选器失败: {error}"))?;
+        dialog
+            .SetDefaultExtension(w!("mp4"))
+            .map_err(|error| format!("设置 MP4 扩展名失败: {error}"))?;
+        dialog
+            .SetFileName(&default_name)
+            .map_err(|error| format!("设置默认文件名失败: {error}"))?;
 
-            if let Err(error) = dialog.Show(None) {
-                if error.code().0 == HRESULT_FROM_WIN32_ERROR_CANCELLED {
-                    return Ok(None);
-                }
-                return Err(format!("打开视频保存对话框失败: {error}"));
+        if let Err(error) = dialog.Show(None) {
+            if error.code().0 == HRESULT_FROM_WIN32_ERROR_CANCELLED {
+                return Ok(None);
             }
+            return Err(format!("打开视频保存对话框失败: {error}"));
+        }
 
-            let item = dialog
-                .GetResult()
-                .map_err(|error| format!("读取视频保存路径失败: {error}"))?;
-            let display_name = item
-                .GetDisplayName(SIGDN_FILESYSPATH)
-                .map_err(|error| format!("读取视频保存路径失败: {error}"))?;
-            let path_result = display_name
-                .to_string()
-                .map_err(|error| format!("转换视频保存路径失败: {error}"));
-            CoTaskMemFree(Some(display_name.0 as _));
-            Ok(Some(PathBuf::from(path_result?)))
-        })();
-
-        CoUninitialize();
-        result
-    }
+        let item = dialog
+            .GetResult()
+            .map_err(|error| format!("读取视频保存路径失败: {error}"))?;
+        read_win_shell_item_path(&item).map(Some)
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -2683,42 +3491,56 @@ async fn choose_video_export_path(
     let resolved_default_name =
         normalize_video_export_default_filename(default_file_name.as_deref());
 
-    #[cfg(target_os = "macos")]
-    let selected: Option<PathBuf> = {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        app.run_on_main_thread(move || {
-            let _ = sender.send(save_video_file_dialog(&resolved_default_name));
-        })
-        .map_err(|error| format!("调度 macOS 视频保存对话框失败: {error}"))?;
-
-        let dialog_result: Result<Option<PathBuf>, String> = tauri::async_runtime::spawn_blocking(move || {
-            receiver.recv_timeout(Duration::from_secs(300))
-        })
-        .await
-        .map_err(|error| format!("等待 macOS 视频保存对话框失败: {error}"))?
-        .map_err(|error| format!("等待 macOS 视频保存对话框超时或失败: {error}"))?;
-
-        dialog_result?
-    };
-
-    #[cfg(not(target_os = "macos"))]
-    let selected: Option<PathBuf> = {
-        let _ = app;
-        save_video_file_dialog(&resolved_default_name)?
-    };
+    let selected = run_platform_dialog(
+        &app,
+        move || save_video_file_dialog(&resolved_default_name),
+        "视频保存对话框",
+    )
+    .await?;
 
     Ok(selected.map(|path| path.to_string_lossy().into_owned()))
 }
 
 fn validate_video_export_path(path: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(path);
-    if !path.is_absolute() {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || path.contains('\0') {
+        return Err("视频导出路径不能为空或包含空字符".to_string());
+    }
+    let path_buf = PathBuf::from(path);
+    if !path_buf.is_absolute() {
         return Err("视频导出路径必须是绝对路径".to_string());
     }
-    if path.extension().and_then(|value| value.to_str()).map(|value| value.to_ascii_lowercase()) != Some("mp4".to_string()) {
+    if path_buf
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err("视频导出路径不能包含 .. 路径段".to_string());
+    }
+    if path_buf
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(is_windows_reserved_name)
+    {
+        return Err("视频导出文件名不能使用系统保留设备名".to_string());
+    }
+    if path_buf
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        != Some("mp4".to_string())
+    {
         return Err("视频导出文件必须使用 .mp4 扩展名".to_string());
     }
-    Ok(path)
+    Ok(path_buf)
+}
+
+fn normalized_export_key(path: &Path) -> PathBuf {
+    if let (Some(parent), Some(file_name)) = (path.parent(), path.file_name()) {
+        if let Ok(canonical_parent) = parent.canonicalize() {
+            return canonical_parent.join(file_name);
+        }
+    }
+    path.to_path_buf()
 }
 
 fn prepare_video_export_path_inner(path: &str) -> Result<PathBuf, String> {
@@ -2743,6 +3565,9 @@ fn prepare_video_export_path(path: String) -> Result<String, String> {
 }
 
 fn decode_hex_utf8(hex: &str) -> Result<String, String> {
+    if hex.len() > 32768 {
+        return Err("十六进制编码路径过长".to_string());
+    }
     if hex.len() % 2 != 0 {
         return Err("无效的十六进制编码长度".to_string());
     }
@@ -2768,24 +3593,54 @@ fn header_str<'a>(request: &'a Request<'_>, name: &str) -> Result<&'a str, Strin
         .map_err(|_| format!("请求头 {name} 格式无效"))
 }
 
+fn parse_json_byte_array(value: &Value, label: &str) -> Result<Vec<u8>, String> {
+    let array = value
+        .as_array()
+        .ok_or_else(|| format!("缺少{label}"))?;
+    let mut bytes = Vec::with_capacity(array.len());
+    for item in array {
+        let Some(num) = item.as_u64() else {
+            return Err(format!("{label}包含无效字节值"));
+        };
+        let byte = u8::try_from(num).map_err(|_| format!("{label}字节值超出 0..=255 范围"))?;
+        bytes.push(byte);
+    }
+    Ok(bytes)
+}
+
 #[tauri::command]
-fn start_video_export_file(
-    runtime: State<'_, VideoExportRuntime>,
-    path: String,
-) -> Result<(), String> {
-    let path = prepare_video_export_path_inner(&path)?;
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&path)
-        .map_err(|error| format!("无法创建导出文件 {}: {error}", path.display()))?;
-    let mut files = runtime
-        .export_files
-        .lock()
-        .map_err(|_| "视频导出文件状态不可用".to_string())?;
-    files.insert(path, file);
-    Ok(())
+async fn start_video_export_file(app: AppHandle, path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let runtime = app.state::<VideoExportRuntime>();
+        let path = prepare_video_export_path_inner(&path)?;
+        let key = normalized_export_key(&path);
+        {
+            let files = runtime
+                .export_files
+                .lock()
+                .map_err(|_| "视频导出文件状态不可用".to_string())?;
+            if files.contains_key(&key) {
+                return Err("该导出文件正在写入中".to_string());
+            }
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&path)
+            .map_err(|error| format!("无法创建导出文件 {}: {error}", path.display()))?;
+        let mut files = runtime
+            .export_files
+            .lock()
+            .map_err(|_| "视频导出文件状态不可用".to_string())?;
+        if files.contains_key(&key) {
+            return Err("该导出文件正在写入中".to_string());
+        }
+        files.insert(key, Arc::new(Mutex::new(file)));
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("启动导出文件写入失败: {error}"))?
 }
 
 #[tauri::command]
@@ -2812,10 +3667,10 @@ fn write_video_export_chunk(
                 .get("position")
                 .and_then(|v| v.as_u64())
                 .ok_or_else(|| "缺少写入偏移位置".to_string())?;
-            let data = value
+            let data_value = value
                 .get("data")
-                .and_then(|v| serde_json::from_value::<Vec<u8>>(v.clone()).ok())
                 .ok_or_else(|| "缺少写入字节数据".to_string())?;
+            let data = parse_json_byte_array(data_value, "写入字节数据")?;
             (path, position, Some(data))
         }
     };
@@ -2825,55 +3680,93 @@ fn write_video_export_chunk(
         (None, InvokeBody::Raw(raw)) => raw.as_slice(),
         _ => unreachable!(),
     };
+    if position.checked_add(bytes.len() as u64).is_none() {
+        return Err("导出文件写入偏移量溢出".to_string());
+    }
 
     let path = validate_video_export_path(&path_str)?;
-    let mut files = runtime
-        .export_files
+    let key = normalized_export_key(&path);
+    let file_handle: Arc<Mutex<File>> = {
+        let mut files = runtime
+            .export_files
+            .lock()
+            .map_err(|_| "视频导出文件状态不可用".to_string())?;
+        if let Some(existing) = files.get(&key) {
+            Arc::clone(existing)
+        } else {
+            let reopened = OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .map_err(|error| format!("无法打开导出文件 {}: {error}", path.display()))?;
+            let handle = Arc::new(Mutex::new(reopened));
+            files.insert(key, Arc::clone(&handle));
+            handle
+        }
+    };
+
+    let mut file = file_handle
         .lock()
-        .map_err(|_| "视频导出文件状态不可用".to_string())?;
-    if !files.contains_key(&path) {
-        let reopened = OpenOptions::new()
-            .write(true)
-            .open(&path)
-            .map_err(|error| format!("无法打开导出文件 {}: {error}", path.display()))?;
-        files.insert(path.clone(), reopened);
-    }
-    let file = files
-        .get_mut(&path)
-        .ok_or_else(|| format!("无法获取导出文件句柄 {}", path.display()))?;
+        .map_err(|_| "导出文件写入锁不可用".to_string())?;
     file.seek(SeekFrom::Start(position))
         .and_then(|_| file.write_all(bytes))
         .map_err(|error| format!("写入导出文件失败: {error}"))
 }
 
 #[tauri::command]
-fn finish_video_export_file(
-    runtime: State<'_, VideoExportRuntime>,
+async fn finish_video_export_file(
+    app: AppHandle,
     path: String,
     file_size: u64,
 ) -> Result<(), String> {
-    let path = validate_video_export_path(&path)?;
-    let cached_file = runtime
-        .export_files
-        .lock()
-        .map_err(|_| "视频导出文件状态不可用".to_string())?
-        .remove(&path);
-    let file = match cached_file {
-        Some(f) => f,
-        None => OpenOptions::new()
-            .write(true)
-            .open(&path)
-            .map_err(|error| format!("无法最终化导出文件 {}: {error}", path.display()))?,
-    };
-    file.set_len(file_size)
-        .and_then(|_| file.sync_all())
-        .map_err(|error| format!("最终化导出文件失败: {error}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        let runtime = app.state::<VideoExportRuntime>();
+        let path = validate_video_export_path(&path)?;
+        let key = normalized_export_key(&path);
+        let cached_file = runtime
+            .export_files
+            .lock()
+            .map_err(|_| "视频导出文件状态不可用".to_string())?
+            .remove(&key);
+        match cached_file {
+            Some(arc_file) => match Arc::try_unwrap(arc_file) {
+                Ok(mutex) => {
+                    let file = mutex
+                        .into_inner()
+                        .map_err(|_| "导出文件句柄状态异常".to_string())?;
+                    file.set_len(file_size)
+                        .and_then(|_| file.sync_all())
+                        .map_err(|error| format!("最终化导出文件失败: {error}"))
+                }
+                Err(arc_file) => {
+                    let file = arc_file
+                        .lock()
+                        .map_err(|_| "导出文件句柄锁定失败".to_string())?;
+                    file.set_len(file_size)
+                        .and_then(|_| file.sync_all())
+                        .map_err(|error| format!("最终化导出文件失败: {error}"))
+                }
+            },
+            None => {
+                let file = OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .map_err(|error| format!("无法最终化导出文件 {}: {error}", path.display()))?;
+                file.set_len(file_size)
+                    .and_then(|_| file.sync_all())
+                    .map_err(|error| format!("最终化导出文件失败: {error}"))
+            }
+        }
+    })
+    .await
+    .map_err(|error| format!("完成导出文件失败: {error}"))?
 }
 
 fn cancel_video_export_file_inner(runtime: &VideoExportRuntime, path: String) -> Result<(), String> {
     let path = validate_video_export_path(&path)?;
+    let key = normalized_export_key(&path);
     if let Ok(mut files) = runtime.export_files.lock() {
         // Drop the cached File handle before removing the file (required on Windows)
+        files.remove(&key);
         files.remove(&path);
     }
     match fs::remove_file(&path) {
@@ -2884,11 +3777,13 @@ fn cancel_video_export_file_inner(runtime: &VideoExportRuntime, path: String) ->
 }
 
 #[tauri::command]
-fn cancel_video_export_file(
-    runtime: State<'_, VideoExportRuntime>,
-    path: String,
-) -> Result<(), String> {
-    cancel_video_export_file_inner(&runtime, path)
+async fn cancel_video_export_file(app: AppHandle, path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let runtime = app.state::<VideoExportRuntime>();
+        cancel_video_export_file_inner(&runtime, path)
+    })
+    .await
+    .map_err(|error| format!("取消导出文件失败: {error}"))?
 }
 
 fn ffmpeg_command(app: &AppHandle) -> Command {
@@ -2923,8 +3818,10 @@ fn command_without_console(program: impl AsRef<std::ffi::OsStr>) -> Command {
 }
 
 #[tauri::command]
-fn can_use_ffmpeg_video_encoder(app: AppHandle) -> bool {
-    ffmpeg_has_encoder(&app, "libx264")
+async fn can_use_ffmpeg_video_encoder(app: AppHandle) -> bool {
+    tauri::async_runtime::spawn_blocking(move || ffmpeg_has_encoder(&app, "libx264"))
+        .await
+        .unwrap_or(false)
 }
 
 fn ffmpeg_has_encoder(app: &AppHandle, name: &str) -> bool {
@@ -2949,10 +3846,22 @@ fn ffmpeg_has_encoder(app: &AppHandle, name: &str) -> bool {
         .any(|line| line.split_whitespace().any(|part| part == name))
 }
 
+struct PendingFfmpegKeyGuard<'a> {
+    set: &'a Mutex<HashSet<PathBuf>>,
+    key: PathBuf,
+}
+
+impl Drop for PendingFfmpegKeyGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.set.lock() {
+            guard.remove(&self.key);
+        }
+    }
+}
+
 #[tauri::command]
-fn start_ffmpeg_video_export(
+async fn start_ffmpeg_video_export(
     app: AppHandle,
-    runtime: State<'_, VideoExportRuntime>,
     output_path: String,
     media_path: Option<String>,
     quality: String,
@@ -2964,124 +3873,218 @@ fn start_ffmpeg_video_export(
     height: u32,
     pixel_format: Option<String>,
 ) -> Result<(), String> {
-    let output = prepare_video_export_path_inner(&output_path)?;
-    let crf = match quality.as_str() {
-        "low" => "32",
-        "high" => "20",
-        "very-high" => "16",
-        "near-lossless" => "0",
-        _ => return Err("FFmpeg 视频质量选项无效".to_string()),
-    };
-    let media = media_path.map(PathBuf::from);
-    if let Some(media) = media.as_ref() {
-        if !media.is_absolute() || !media.is_file() {
-            return Err("FFmpeg 后备导出需要可访问的本地源视频文件".to_string());
+    tauri::async_runtime::spawn_blocking(move || {
+        let runtime = app.state::<VideoExportRuntime>();
+        let crf = match quality.as_str() {
+            "low" => "32",
+            "high" => "20",
+            "very-high" => "16",
+            "near-lossless" => "0",
+            _ => return Err("FFmpeg 视频质量选项无效".to_string()),
+        };
+        if !fps.is_finite()
+            || fps <= 0.0
+            || fps > 240.0
+            || !start_ms.is_finite()
+            || start_ms < 0.0
+            || !end_ms.is_finite()
+            || end_ms <= start_ms
+            || frame_count == 0
+            || width < 16
+            || width > 7680
+            || height < 16
+            || height > 4320
+            || width % 2 != 0
+            || height % 2 != 0
+        {
+            return Err("FFmpeg 视频导出参数无效".to_string());
         }
-        if !ffmpeg_has_encoder(&app, "aac") {
-            return Err("FFmpeg 缺少 AAC 编码器，无法封装源视频音轨".to_string());
-        }
-    }
-    if !fps.is_finite()
-        || fps <= 0.0
-        || !start_ms.is_finite()
-        || !end_ms.is_finite()
-        || end_ms <= start_ms
-        || frame_count == 0
-        || width == 0
-        || height == 0
-    {
-        return Err("FFmpeg 视频导出参数无效".to_string());
-    }
 
-    let duration_seconds = (end_ms - start_ms) / 1000.0;
-    let input_pix_fmt = pixel_format.unwrap_or_else(|| "png".to_string());
-    let mut process = ffmpeg_command(&app);
-    process
-        .arg("-hide_banner")
-        .arg("-loglevel")
-        .arg("error")
-        .arg("-y");
-    match input_pix_fmt.as_str() {
-        "rgba" => {
-            process
-                .arg("-f")
-                .arg("rawvideo")
-                .arg("-pix_fmt")
-                .arg("rgba")
-                .arg("-video_size")
-                .arg(format!("{width}x{height}"))
-                .arg("-framerate")
-                .arg(fps.to_string())
-                .arg("-i")
-                .arg("pipe:0");
+        let input_pix_fmt = pixel_format.unwrap_or_else(|| "png".to_string());
+        let expected_rgba_frame_bytes = match input_pix_fmt.as_str() {
+            "rgba" => {
+                let bytes = (width as usize)
+                    .checked_mul(height as usize)
+                    .and_then(|pixels| pixels.checked_mul(4))
+                    .ok_or_else(|| "FFmpeg 视频帧尺寸超出内存限制".to_string())?;
+                Some(bytes)
+            }
+            "png" => None,
+            _ => return Err("FFmpeg 帧像素格式无效".to_string()),
+        };
+
+        let output = prepare_video_export_path_inner(&output_path)?;
+        let key = normalized_export_key(&output);
+
+        let media = media_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from);
+        if let Some(media_path_ref) = media.as_ref() {
+            if !media_path_ref.is_absolute() || !media_path_ref.is_file() {
+                return Err("FFmpeg 后备导出需要可访问的本地源视频文件".to_string());
+            }
+            if let Ok(canonical_media) = media_path_ref.canonicalize() {
+                if canonical_media == key || paths_refer_to_same_entry(&canonical_media, &output) {
+                    return Err("导出目标文件不能与源媒体文件相同".to_string());
+                }
+            }
+            if !ffmpeg_has_encoder(&app, "aac") {
+                return Err("FFmpeg 缺少 AAC 编码器，无法封装源视频音轨".to_string());
+            }
         }
-        "png" => {
-            process
-                .arg("-f")
-                .arg("image2pipe")
-                .arg("-vcodec")
-                .arg("png")
-                .arg("-framerate")
-                .arg(fps.to_string())
-                .arg("-i")
-                .arg("pipe:0");
+
+        // Reserve key before spawning ffmpeg so concurrent calls cannot truncate an active output file.
+        {
+            let mut starting = runtime
+                .starting_ffmpeg
+                .lock()
+                .map_err(|_| "FFmpeg 导出会话状态不可用".to_string())?;
+            if starting.contains(&key) {
+                return Err("该目标文件正在启动 FFmpeg 导出".to_string());
+            }
+            let sessions = runtime
+                .ffmpeg_processes
+                .lock()
+                .map_err(|_| "FFmpeg 导出会话状态不可用".to_string())?;
+            if sessions.contains_key(&key) {
+                return Err("该目标文件已有正在运行的 FFmpeg 导出".to_string());
+            }
+            starting.insert(key.clone());
         }
-        _ => return Err("FFmpeg 帧像素格式无效".to_string()),
-    }
-    if let Some(media) = media.as_ref() {
+        let _reserve_guard = PendingFfmpegKeyGuard {
+            set: &runtime.starting_ffmpeg,
+            key: key.clone(),
+        };
+
+        let duration_seconds = (end_ms - start_ms) / 1000.0;
+        let mut process = ffmpeg_command(&app);
         process
-            .arg("-ss")
-            .arg((start_ms / 1000.0).to_string())
-            .arg("-i")
-            .arg(media);
-    }
-    process
-        .arg("-map")
-        .arg("0:v:0")
-        .arg("-c:v")
-        .arg("libx264")
-        .arg("-crf")
-        .arg(crf)
-        .arg("-preset")
-        .arg("fast")
-        .arg("-pix_fmt")
-        .arg("yuv420p")
-        .arg("-frames:v")
-        .arg(frame_count.to_string())
-        .arg("-t")
-        .arg(duration_seconds.to_string());
-    if media.is_some() {
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-y");
+        match input_pix_fmt.as_str() {
+            "rgba" => {
+                process
+                    .arg("-f")
+                    .arg("rawvideo")
+                    .arg("-pix_fmt")
+                    .arg("rgba")
+                    .arg("-video_size")
+                    .arg(format!("{width}x{height}"))
+                    .arg("-framerate")
+                    .arg(fps.to_string())
+                    .arg("-i")
+                    .arg("pipe:0");
+            }
+            "png" => {
+                process
+                    .arg("-f")
+                    .arg("image2pipe")
+                    .arg("-vcodec")
+                    .arg("png")
+                    .arg("-framerate")
+                    .arg(fps.to_string())
+                    .arg("-i")
+                    .arg("pipe:0");
+            }
+            _ => unreachable!(),
+        }
+        if let Some(media) = media.as_ref() {
+            process
+                .arg("-ss")
+                .arg((start_ms / 1000.0).to_string())
+                .arg("-i")
+                .arg(media);
+        }
         process
             .arg("-map")
-            .arg("1:a:0?")
-            .arg("-c:a")
-            .arg("aac")
-            .arg("-b:a")
-            .arg("192k");
-    }
-    process
-        .arg("-movflags")
-        .arg("+faststart")
-        .arg(output.to_string_lossy().as_ref())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+            .arg("0:v:0")
+            .arg("-c:v")
+            .arg("libx264")
+            .arg("-crf")
+            .arg(crf)
+            .arg("-preset")
+            .arg("fast")
+            .arg("-pix_fmt")
+            .arg("yuv420p")
+            .arg("-frames:v")
+            .arg(frame_count.to_string())
+            .arg("-t")
+            .arg(duration_seconds.to_string());
+        if media.is_some() {
+            process
+                .arg("-map")
+                .arg("1:a:0?")
+                .arg("-c:a")
+                .arg("aac")
+                .arg("-b:a")
+                .arg("192k");
+        }
+        process
+            .arg("-movflags")
+            .arg("+faststart")
+            .arg(output.to_string_lossy().as_ref())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
 
-    let child = process
-        .spawn()
-        .map_err(|error| format!("无法启动 FFmpeg 后备编码器: {error}"))?;
-    let mut sessions = runtime
-        .ffmpeg_processes
-        .lock()
-        .map_err(|_| "FFmpeg 导出会话状态不可用".to_string())?;
-    if sessions.contains_key(&output_path) {
-        let mut child = child;
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err("该目标文件已有正在运行的 FFmpeg 导出".to_string());
-    }
-    sessions.insert(output_path, child);
-    Ok(())
+        let mut child = process
+            .spawn()
+            .map_err(|error| format!("无法启动 FFmpeg 后备编码器: {error}"))?;
+        let stdin = child.stdin.take();
+        let stderr = child.stderr.take();
+        let stderr_tail = Arc::new(Mutex::new(String::new()));
+        let stderr_tail_clone = Arc::clone(&stderr_tail);
+        let stderr_thread = stderr.map(|mut pipe| {
+            thread::Builder::new()
+                .name("m7-ffmpeg-stderr".to_string())
+                .spawn(move || {
+                    let mut collected = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    loop {
+                        match pipe.read(&mut chunk) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                if collected.len() < MAX_FFMPEG_STDERR_BYTES {
+                                    let remain = MAX_FFMPEG_STDERR_BYTES - collected.len();
+                                    collected.extend_from_slice(&chunk[..n.min(remain)]);
+                                }
+                            }
+                        }
+                    }
+                    if !collected.is_empty() {
+                        if let Ok(mut guard) = stderr_tail_clone.lock() {
+                            *guard = String::from_utf8_lossy(&collected).trim().to_string();
+                        }
+                    }
+                })
+                .ok()
+        }).flatten();
+
+        let session = Arc::new(FfmpegSession {
+            stdin: Mutex::new(stdin),
+            child: Mutex::new(Some(child)),
+            stderr_tail,
+            stderr_thread: Mutex::new(stderr_thread),
+            expected_rgba_frame_bytes,
+        });
+
+        let mut sessions = runtime
+            .ffmpeg_processes
+            .lock()
+            .map_err(|_| "FFmpeg 导出会话状态不可用".to_string())?;
+        if sessions.contains_key(&key) {
+            session.terminate();
+            return Err("该目标文件已有正在运行的 FFmpeg 导出".to_string());
+        }
+        sessions.insert(key, session);
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("启动 FFmpeg 导出失败: {error}"))?
 }
 
 #[tauri::command]
@@ -3100,10 +4103,10 @@ fn write_ffmpeg_video_frame(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "缺少 FFmpeg 导出路径".to_string())?
                 .to_string();
-            let frame = value
+            let frame_value = value
                 .get("pngFrame")
-                .and_then(|v| serde_json::from_value::<Vec<u8>>(v.clone()).ok())
                 .ok_or_else(|| "缺少 FFmpeg 视频帧数据".to_string())?;
+            let frame = parse_json_byte_array(frame_value, "FFmpeg 视频帧数据")?;
             (output_path, Some(frame))
         }
     };
@@ -3113,16 +4116,34 @@ fn write_ffmpeg_video_frame(
         (None, InvokeBody::Raw(raw)) => raw.as_slice(),
         _ => unreachable!(),
     };
+    if bytes.is_empty() {
+        return Err("FFmpeg 视频帧数据不能为空".to_string());
+    }
 
-    let mut sessions = runtime
+    let path = validate_video_export_path(&output_path)?;
+    let key = normalized_export_key(&path);
+    let session = runtime
         .ffmpeg_processes
         .lock()
-        .map_err(|_| "FFmpeg 导出会话状态不可用".to_string())?;
-    let child = sessions
-        .get_mut(&output_path)
+        .map_err(|_| "FFmpeg 导出会话状态不可用".to_string())?
+        .get(&key)
+        .cloned()
         .ok_or_else(|| "FFmpeg 导出会话不存在".to_string())?;
-    child
+
+    if let Some(expected_len) = session.expected_rgba_frame_bytes {
+        if bytes.len() != expected_len {
+            return Err(format!(
+                "FFmpeg RGBA 视频帧字节数无效：期望 {expected_len}，实际 {}",
+                bytes.len()
+            ));
+        }
+    }
+
+    let mut stdin_guard = session
         .stdin
+        .lock()
+        .map_err(|_| "FFmpeg 帧输入锁不可用".to_string())?;
+    stdin_guard
         .as_mut()
         .ok_or_else(|| "FFmpeg 视频帧输入已关闭".to_string())?
         .write_all(bytes)
@@ -3130,49 +4151,81 @@ fn write_ffmpeg_video_frame(
 }
 
 #[tauri::command]
-fn finish_ffmpeg_video_export(
-    runtime: State<'_, VideoExportRuntime>,
-    output_path: String,
-) -> Result<(), String> {
-    let mut child = runtime
-        .ffmpeg_processes
-        .lock()
-        .map_err(|_| "FFmpeg 导出会话状态不可用".to_string())?
-        .remove(&output_path)
-        .ok_or_else(|| "FFmpeg 导出会话不存在".to_string())?;
-    drop(child.stdin.take());
-    let status = child
-        .wait()
-        .map_err(|error| format!("等待 FFmpeg 完成失败: {error}"))?;
-    if !status.success() {
-        return Err(format!("FFmpeg 编码失败，退出状态: {status}"));
-    }
+async fn finish_ffmpeg_video_export(app: AppHandle, output_path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let runtime = app.state::<VideoExportRuntime>();
+        let path = validate_video_export_path(&output_path)?;
+        let key = normalized_export_key(&path);
+        let session = runtime
+            .ffmpeg_processes
+            .lock()
+            .map_err(|_| "FFmpeg 导出会话状态不可用".to_string())?
+            .remove(&key)
+            .ok_or_else(|| "FFmpeg 导出会话不存在".to_string())?;
 
-    let path = validate_video_export_path(&output_path)?;
-    OpenOptions::new()
-        .write(true)
-        .open(&path)
-        .and_then(|file| file.sync_all())
-        .map_err(|error| format!("无法同步 FFmpeg 输出文件: {error}"))
+        if let Ok(mut stdin_guard) = session.stdin.lock() {
+            stdin_guard.take();
+        }
+        let status = {
+            let mut child_guard = session
+                .child
+                .lock()
+                .map_err(|_| "FFmpeg 进程锁不可用".to_string())?;
+            let mut child = child_guard
+                .take()
+                .ok_or_else(|| "FFmpeg 导出进程已结束".to_string())?;
+            child
+                .wait()
+                .map_err(|error| format!("等待 FFmpeg 完成失败: {error}"))?
+        };
+        if let Ok(mut stderr_guard) = session.stderr_thread.lock() {
+            if let Some(handle) = stderr_guard.take() {
+                let _ = handle.join();
+            }
+        }
+        if !status.success() {
+            let detail = session
+                .stderr_tail
+                .lock()
+                .ok()
+                .map(|guard| guard.clone())
+                .unwrap_or_default();
+            return if detail.is_empty() {
+                Err(format!("FFmpeg 编码失败，退出状态: {status}"))
+            } else {
+                Err(format!("FFmpeg 编码失败（{status}）: {detail}"))
+            };
+        }
+
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| format!("无法同步 FFmpeg 输出文件: {error}"))
+    })
+    .await
+    .map_err(|error| format!("完成 FFmpeg 导出失败: {error}"))?
 }
 
 #[tauri::command]
-fn cancel_ffmpeg_video_export(
-    runtime: State<'_, VideoExportRuntime>,
-    output_path: String,
-) -> Result<(), String> {
-    if let Some(mut child) = runtime
-        .ffmpeg_processes
-        .lock()
-        .map_err(|_| "FFmpeg 导出会话状态不可用".to_string())?
-        .remove(&output_path)
-    {
-        drop(child.stdin.take());
-        let _ = child.kill();
-        let _ = child.wait();
-    }
+async fn cancel_ffmpeg_video_export(app: AppHandle, output_path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let runtime = app.state::<VideoExportRuntime>();
+        let validated = validate_video_export_path(&output_path)?;
+        let key = normalized_export_key(&validated);
+        let session = runtime
+            .ffmpeg_processes
+            .lock()
+            .map_err(|_| "FFmpeg 导出会话状态不可用".to_string())?
+            .remove(&key);
+        if let Some(session) = session {
+            session.terminate();
+        }
 
-    cancel_video_export_file_inner(&runtime, output_path)
+        cancel_video_export_file_inner(&runtime, output_path)
+    })
+    .await
+    .map_err(|error| format!("取消 FFmpeg 导出失败: {error}"))?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -3189,6 +4242,7 @@ pub fn run() {
             let log_file = initialize_file_system(app.handle())?;
             app.manage(FileSystemRuntime {
                 log_file: Mutex::new(Some(log_file)),
+                config_lock: Mutex::new(()),
             });
             app.manage(VideoExportRuntime::default());
             let mcp_bridge = McpBridgeRuntime::start(app.handle().clone()).map_err(|error| {
@@ -3295,6 +4349,9 @@ pub fn run() {
             if let Some(bridge) = app.try_state::<McpBridgeRuntime>() {
                 bridge.shutdown();
             }
+            if let Some(export_runtime) = app.try_state::<VideoExportRuntime>() {
+                export_runtime.shutdown();
+            }
         }
 
         #[cfg(desktop)]
@@ -3319,6 +4376,18 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unique_test_dir(prefix: &str) -> PathBuf {
+        let unique = format!(
+            "{prefix}_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        std::env::temp_dir().join(unique)
+    }
 
     #[test]
     fn decode_hex_utf8_roundtrips_cjk_and_rejects_invalid() {
@@ -3352,7 +4421,7 @@ mod tests {
             .export_files
             .lock()
             .unwrap()
-            .insert(file_path.clone(), file);
+            .insert(normalized_export_key(&file_path), Arc::new(Mutex::new(file)));
 
         cancel_video_export_file_inner(&runtime, path_str).unwrap();
         assert!(!file_path.exists());
@@ -3381,23 +4450,20 @@ mod tests {
 
     #[test]
     fn prepare_video_export_path_validates_and_creates_parent() {
-        let unique = format!(
-            "m7_editor_export_path_test_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
-        let root = std::env::temp_dir().join(unique);
+        let root = unique_test_dir("m7_editor_export_path_test");
         let nested_mp4 = root.join("nested").join("output.mp4");
         let prepared = prepare_video_export_path_inner(&nested_mp4.to_string_lossy()).unwrap();
         assert_eq!(prepared, nested_mp4);
         assert!(root.join("nested").is_dir());
 
         assert!(prepare_video_export_path_inner("relative/output.mp4").is_err());
+        assert!(prepare_video_export_path_inner(&root.join("..").join("output.mp4").to_string_lossy()).is_err());
 
         let wrong_ext = root.join("output.mov");
         assert!(prepare_video_export_path_inner(&wrong_ext.to_string_lossy()).is_err());
+
+        let reserved = root.join("CON.mp4");
+        assert!(prepare_video_export_path_inner(&reserved.to_string_lossy()).is_err());
 
         let dir_named_mp4 = root.join("folder.mp4");
         std::fs::create_dir_all(&dir_named_mp4).unwrap();
@@ -3414,5 +4480,76 @@ mod tests {
         assert_eq!(normalize_video_export_default_filename(Some("demo.MP4")), "demo.mp4");
         assert_eq!(normalize_video_export_default_filename(Some("bad:name/v1")), "bad_name_v1.mp4");
         assert_eq!(normalize_video_export_default_filename(Some("...mp4")), "m7-export.mp4");
+        assert_eq!(normalize_video_export_default_filename(Some("CON.mp4")), "_CON.mp4");
+    }
+
+    #[test]
+    fn sanitize_and_single_file_validation_prevent_traversal_and_reserved_names() {
+        assert_eq!(sanitize_file_name("CON"), "_CON");
+        assert_eq!(sanitize_file_name("nul.json"), "_nul.json");
+        assert_eq!(sanitize_file_name("  ..  "), "Project");
+        assert!(sanitize_file_name_core("...").is_none());
+
+        assert!(validate_single_file_name("project.json", "工程文件").is_ok());
+        assert!(validate_single_file_name("../secret.json", "工程文件").is_err());
+        assert!(validate_single_file_name("sub/project.json", "工程文件").is_err());
+        assert!(validate_single_file_name("sub\\project.json", "工程文件").is_err());
+        assert!(validate_single_file_name("CON.json", "工程文件").is_err());
+        assert!(validate_single_file_name("..", "工程文件").is_err());
+        assert!(validate_single_file_name("", "工程文件").is_err());
+    }
+
+    #[test]
+    fn write_json_is_atomic_and_read_bounded_enforces_limit() {
+        let root = unique_test_dir("m7_editor_json_test");
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("project.json");
+        let payload = json!({ "name": "demo", "danmakus": [1, 2, 3] });
+        write_json(&target, &payload).unwrap();
+
+        let loaded: Value = read_json_bounded(&target, 1024).unwrap();
+        assert_eq!(loaded, payload);
+        assert!(read_json_bounded::<Value>(&target, 4).is_err());
+
+        // Ensure no leftover .tmp files exist next to target
+        let leftover_tmps: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftover_tmps.is_empty());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn constant_time_equal_and_uuid_and_header_end_checks() {
+        assert!(constant_time_equal("Bearer abc123", "Bearer abc123"));
+        assert!(!constant_time_equal("Bearer abc123", "Bearer abc124"));
+        assert!(!constant_time_equal("Bearer abc123", "Bearer abc"));
+
+        assert!(is_valid_uuid_v4_like("550e8400-e29b-41d4-a716-446655440000"));
+        assert!(!is_valid_uuid_v4_like("550e8400e29b-41d4-a716-446655440000"));
+        assert!(!is_valid_uuid_v4_like("not-a-uuid"));
+
+        assert_eq!(find_http_header_end(b"POST /rpc HTTP/1.1\r\n\r\n{}"), Some(18));
+        assert_eq!(find_http_header_end(b"POST /rpc HTTP/1.1\r\n"), None);
+    }
+
+    #[test]
+    fn copy_file_safely_preserves_content_when_source_equals_target() {
+        let root = unique_test_dir("m7_editor_copy_same_test");
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("video.mp4");
+        fs::write(&file, b"sample-media-bytes").unwrap();
+
+        copy_file_safely(&file, &file, "媒体文件").unwrap();
+        assert_eq!(fs::read(&file).unwrap(), b"sample-media-bytes");
+
+        let copy_dest = root.join("copy.mp4");
+        copy_file_safely(&file, &copy_dest, "媒体文件").unwrap();
+        assert_eq!(fs::read(&copy_dest).unwrap(), b"sample-media-bytes");
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

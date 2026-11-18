@@ -7,8 +7,13 @@ import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import { z } from 'zod'
 
 type BridgeDescriptor = { port: number; token: string; pid?: number }
+type CachedBridge = { descriptor: BridgeDescriptor; overridePath?: string }
 
 const APP_IDENTIFIER = 'com.jerryeee.m7-editor'
+const MAX_DANMAKU_JSON_BYTES = 900 * 1024
+const MAX_LOG_ADDITIONAL_INFO_CHARS = 16 * 1024
+
+let activeBridgeCache: CachedBridge | null = null
 
 function appMcpDescriptorDirectory(): string {
   let configDirectory: string
@@ -22,11 +27,67 @@ function appMcpDescriptorDirectory(): string {
   return join(configDirectory, APP_IDENTIFIER, 'mcp')
 }
 
-async function readBridgeDescriptors(): Promise<BridgeDescriptor[]> {
-  const override = process.env.M7_EDITOR_MCP_DESCRIPTOR
-  if (override) {
-    return [JSON.parse(await readFile(override, 'utf8')) as BridgeDescriptor]
+function parseBridgeDescriptor(rawText: string): BridgeDescriptor | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawText) as unknown
+  } catch {
+    return null
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const record = parsed as Record<string, unknown>
+  if (
+    typeof record.port !== 'number' ||
+    !Number.isInteger(record.port) ||
+    record.port <= 0 ||
+    record.port > 65535 ||
+    typeof record.token !== 'string' ||
+    record.token.length === 0
+  ) {
+    return null
+  }
+  if (record.pid !== undefined && (typeof record.pid !== 'number' || !Number.isInteger(record.pid) || record.pid <= 0)) {
+    return null
+  }
+  return {
+    port: record.port,
+    token: record.token,
+    ...(typeof record.pid === 'number' ? { pid: record.pid } : {})
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ESRCH') {
+      return false
+    }
+    return true
+  }
+}
+
+class DescriptorOverrideError extends Error {}
+
+async function readBridgeDescriptors(): Promise<BridgeDescriptor[]> {
+  const override = process.env.M7_EDITOR_MCP_DESCRIPTOR?.trim()
+  if (override) {
+    let rawText: string
+    try {
+      rawText = await readFile(override, 'utf8')
+    } catch (error) {
+      throw new DescriptorOverrideError(
+        `无法读取 M7_EDITOR_MCP_DESCRIPTOR 指定的桥接描述文件 (${override})：${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+    const descriptor = parseBridgeDescriptor(rawText)
+    if (!descriptor) {
+      throw new DescriptorOverrideError(`M7_EDITOR_MCP_DESCRIPTOR 指定的桥接描述文件格式无效 (${override})`)
+    }
+    return [descriptor]
+  }
+
   const descriptorDirectories = [...new Set([appMcpDescriptorDirectory(), tmpdir()])]
   const namesByDirectory = await Promise.all(descriptorDirectories.map(async (directory) => {
     try {
@@ -48,20 +109,14 @@ async function readBridgeDescriptors(): Promise<BridgeDescriptor[]> {
   }))
   const candidates = candidateResults.filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)
   candidates.sort((left, right) => right.modifiedAt - left.modifiedAt)
+
   const descriptors: BridgeDescriptor[] = []
   for (const candidate of candidates) {
     try {
-      const descriptor = JSON.parse(await readFile(candidate.path, 'utf8')) as BridgeDescriptor
-      if (Number.isInteger(descriptor.port) && descriptor.port > 0 && descriptor.port <= 65535 && typeof descriptor.token === 'string') {
-        if (Number.isInteger(descriptor.pid) && descriptor.pid! > 0) {
-          try {
-            process.kill(descriptor.pid!, 0)
-          } catch (error) {
-            if (error && typeof error === 'object' && 'code' in error && error.code === 'ESRCH') continue
-          }
-        }
-        descriptors.push(descriptor)
-      }
+      const descriptor = parseBridgeDescriptor(await readFile(candidate.path, 'utf8'))
+      if (!descriptor) continue
+      if (descriptor.pid !== undefined && !isProcessAlive(descriptor.pid)) continue
+      descriptors.push(descriptor)
     } catch {
       // Ignore partial or stale descriptor files and try the next recent editor session.
     }
@@ -76,82 +131,304 @@ const longBridgeMethods = new Set([
   'editor.cancelVideoExport'
 ])
 
-async function callEditor(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
-  let descriptors: BridgeDescriptor[]
+type RpcAttemptResult =
+  | { kind: 'ok'; result: unknown }
+  | { kind: 'app_error'; message: string }
+  | { kind: 'auth_failed' }
+  | { kind: 'not_ready'; message: string }
+  | { kind: 'bad_response'; message: string }
+  | { kind: 'timeout' }
+  | { kind: 'refused' }
+
+function isTimeoutError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const name = 'name' in error ? String(error.name) : ''
+  return name === 'TimeoutError' || name === 'AbortError'
+}
+
+async function dispatchRpcToDescriptor(
+  descriptor: BridgeDescriptor,
+  method: string,
+  requestBody: string
+): Promise<RpcAttemptResult> {
+  let response: Response
   try {
-    descriptors = await readBridgeDescriptors()
-  } catch {
-    throw new Error('编辑器服务离线：请先启动 m7-editor 桌面应用；MCP 已检查应用配置目录和系统临时目录')
-  }
-  if (!descriptors.length) {
-    throw new Error('编辑器服务离线：未在应用配置目录或系统临时目录找到会话描述文件；请重启 m7-editor')
+    response = await fetch('http://127.0.0.1:' + descriptor.port + '/rpc', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer ' + descriptor.token,
+        'content-type': 'application/json'
+      },
+      body: requestBody,
+      signal: AbortSignal.timeout(longBridgeMethods.has(method) ? 95_000 : 35_000)
+    })
+  } catch (error) {
+    return isTimeoutError(error) ? { kind: 'timeout' } : { kind: 'refused' }
   }
 
+  let payload: { result?: unknown; error?: string }
+  try {
+    payload = await response.json() as { result?: unknown; error?: string }
+  } catch {
+    return { kind: 'bad_response', message: '编辑器桥接返回了无效响应（HTTP ' + response.status + '）' }
+  }
+
+  if (response.status === 401) {
+    return { kind: 'auth_failed' }
+  }
+  if (response.status === 503) {
+    return {
+      kind: 'not_ready',
+      message: payload?.error || '编辑器界面尚未连接 MCP 桥，请稍后重试'
+    }
+  }
+  if (!response.ok || payload?.error) {
+    return {
+      kind: 'app_error',
+      message: payload?.error || '编辑器桥接调用失败（HTTP ' + response.status + '）'
+    }
+  }
+  return { kind: 'ok', result: payload.result }
+}
+
+async function callEditor(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
   const requestBody = JSON.stringify({ requestId: randomUUID(), method, params })
-  if (Buffer.byteLength(requestBody, 'utf8') > 900 * 1024) {
+  if (Buffer.byteLength(requestBody, 'utf8') > MAX_DANMAKU_JSON_BYTES) {
     throw new Error('MCP 桥接请求超过 900 KiB，请减少弹幕数量或缩小 JSON 文件')
   }
 
-  let reachableBridge = false
+  const currentOverride = process.env.M7_EDITOR_MCP_DESCRIPTOR?.trim() || undefined
+  let skippedCacheKey: string | null = null
+  let notReadyMessage: string | null = null
+  let badResponseMessage: string | null = null
+  let authFailedCount = 0
+
+  if (activeBridgeCache && activeBridgeCache.overridePath === currentOverride) {
+    const cachedDescriptor = activeBridgeCache.descriptor
+    const attempt = await dispatchRpcToDescriptor(cachedDescriptor, method, requestBody)
+    if (attempt.kind === 'ok') {
+      return attempt.result
+    }
+    if (attempt.kind === 'app_error') {
+      throw new Error(attempt.message)
+    }
+    if (attempt.kind === 'timeout') {
+      throw new Error('编辑器服务无响应：桥接请求超时，请检查编辑器是否阻塞或正在处理长耗时任务')
+    }
+    if (attempt.kind === 'not_ready') {
+      notReadyMessage = attempt.message
+    } else if (attempt.kind === 'auth_failed') {
+      authFailedCount++
+    } else if (attempt.kind === 'bad_response') {
+      badResponseMessage = attempt.message
+    }
+    skippedCacheKey = `${cachedDescriptor.port}:${cachedDescriptor.token}`
+    activeBridgeCache = null
+  }
+
+  let descriptors: BridgeDescriptor[]
+  try {
+    descriptors = await readBridgeDescriptors()
+  } catch (error) {
+    if (error instanceof DescriptorOverrideError) throw error
+    throw new Error('编辑器服务离线：请先启动 m7-editor 桌面应用；MCP 已检查应用配置目录和系统临时目录')
+  }
+  if (!descriptors.length) {
+    throw new Error('编辑器服务离线：未在应用配置目录或系统临时目录找到会话描述文件；请启动 m7-editor')
+  }
+
   for (const descriptor of descriptors) {
-    let response: Response
-    try {
-      response = await fetch('http://127.0.0.1:' + descriptor.port + '/rpc', {
-        method: 'POST',
-        headers: {
-          authorization: 'Bearer ' + descriptor.token,
-          'content-type': 'application/json'
-        },
-        body: requestBody,
-        signal: AbortSignal.timeout(longBridgeMethods.has(method) ? 95_000 : 35_000)
-      })
-    } catch {
+    const descriptorKey = `${descriptor.port}:${descriptor.token}`
+    if (skippedCacheKey && descriptorKey === skippedCacheKey) {
       continue
     }
-    reachableBridge = true
 
-    let payload: { result?: unknown; error?: string }
-    try {
-      payload = await response.json() as { result?: unknown; error?: string }
-    } catch {
-      throw new Error('编辑器桥接返回了无效响应（HTTP ' + response.status + '）')
+    const attempt = await dispatchRpcToDescriptor(descriptor, method, requestBody)
+    if (attempt.kind === 'ok') {
+      activeBridgeCache = { descriptor, overridePath: currentOverride }
+      return attempt.result
     }
-    if (response.status === 401) continue
-    if (!response.ok || payload.error) throw new Error(payload.error || '编辑器桥接调用失败（HTTP ' + response.status + '）')
-    return payload.result
+    if (attempt.kind === 'app_error') {
+      activeBridgeCache = { descriptor, overridePath: currentOverride }
+      throw new Error(attempt.message)
+    }
+    if (attempt.kind === 'timeout') {
+      throw new Error('编辑器服务无响应：已连接到编辑器桥接端口，但请求超时；请检查编辑器是否阻塞或正在处理长耗时任务')
+    }
+    if (attempt.kind === 'not_ready') {
+      notReadyMessage ??= attempt.message
+      continue
+    }
+    if (attempt.kind === 'auth_failed') {
+      authFailedCount++
+      continue
+    }
+    if (attempt.kind === 'bad_response') {
+      badResponseMessage ??= attempt.message
+      continue
+    }
   }
-  if (reachableBridge) {
+
+  if (notReadyMessage) {
+    throw new Error(notReadyMessage)
+  }
+  if (authFailedCount > 0) {
     throw new Error('编辑器服务离线：找到桥接描述文件，但没有可用的鉴权会话；请重启 m7-editor')
   }
-  throw new Error(`编辑器服务无响应：找到 ${descriptors.length} 个桥接描述文件，但对应的本机端口不可达；请重启 m7-editor`)
+  if (badResponseMessage) {
+    throw new Error(badResponseMessage)
+  }
+  throw new Error(
+    `编辑器服务离线：找到 ${descriptors.length} 个过期的桥接描述文件，但对应的本机端口均未监听（m7-editor 可能未运行或上次异常退出）；请启动 m7-editor`
+  )
 }
 
-const MAX_DANMAKU_JSON_BYTES = 900 * 1024
+function normalizeColorString(rawColor: string): string | null {
+  const color = rawColor.trim()
+  if (/^#[A-Fa-f0-9]{6}$/.test(color)) {
+    return color.toUpperCase()
+  }
+  const shortHex = color.match(/^#([A-Fa-f0-9])([A-Fa-f0-9])([A-Fa-f0-9])$/)
+  if (shortHex) {
+    return `#${shortHex[1]}${shortHex[1]}${shortHex[2]}${shortHex[2]}${shortHex[3]}${shortHex[3]}`.toUpperCase()
+  }
+  const rgbMatch = color.match(/^rgb\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/i)
+  if (rgbMatch) {
+    const channels = [rgbMatch[1], rgbMatch[2], rgbMatch[3]].map((part) => {
+      const value = Number.parseInt(part, 10)
+      return Math.min(255, Math.max(0, value)).toString(16).padStart(2, '0')
+    })
+    return `#${channels.join('')}`.toUpperCase()
+  }
+  return null
+}
 
-function extractDanmakuDrafts(parsed: unknown): Record<string, unknown>[] {
+function isValidColorInput(value: string): boolean {
+  return normalizeColorString(value) !== null
+}
+
+function isValidAlphaValue(value: number | string): boolean {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value >= 0 && value <= 1
+  }
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  const parsed = Number(trimmed)
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function validateAndNormalizeDanmakuDraft(raw: Record<string, unknown>, index: number): Record<string, unknown> {
+  const label = `第 ${index + 1} 条弹幕`
+  if (!isFiniteNumber(raw.startTime) || raw.startTime < 0) {
+    throw new Error(`${label}的 startTime 必须是大于等于 0 的有限数字`)
+  }
+  if (!isFiniteNumber(raw.layer) || raw.layer < 0) {
+    throw new Error(`${label}的 layer 必须是大于等于 0 的有限数字`)
+  }
+  if (!isRecord(raw.content)) {
+    throw new Error(`${label}缺少有效的 content 对象`)
+  }
+  if (typeof raw.content.text !== 'string') {
+    throw new Error(`${label}的 content.text 必须是字符串`)
+  }
+  if (typeof raw.content.font !== 'string' || !raw.content.font.trim()) {
+    throw new Error(`${label}的 content.font 必须是非空字符串`)
+  }
+  if (!isFiniteNumber(raw.content.size) || raw.content.size <= 0 || raw.content.size > 2000) {
+    throw new Error(`${label}的 content.size 必须是 0 到 2000 之间的有效数字`)
+  }
+  if (typeof raw.content.color !== 'string') {
+    throw new Error(`${label}的 content.color 必须是颜色字符串`)
+  }
+  const normalizedColor = normalizeColorString(raw.content.color)
+  if (!normalizedColor) {
+    throw new Error(`${label}的 content.color 颜色格式无效（支持 #RGB、#RRGGBB 或 rgb(r,g,b)）`)
+  }
+  if (typeof raw.content.stroke !== 'boolean') {
+    throw new Error(`${label}的 content.stroke 必须是布尔值`)
+  }
+  if (
+    !isRecord(raw.transform) ||
+    !isRecord(raw.transform.start) ||
+    !isRecord(raw.transform.end) ||
+    !isFiniteNumber(raw.transform.start.x) ||
+    !isFiniteNumber(raw.transform.start.y) ||
+    !isFiniteNumber(raw.transform.end.x) ||
+    !isFiniteNumber(raw.transform.end.y) ||
+    !isFiniteNumber(raw.transform.zRotate) ||
+    !isFiniteNumber(raw.transform.yRotate)
+  ) {
+    throw new Error(`${label}的 transform 字段结构或坐标/角度数值无效`)
+  }
+  if (
+    !isRecord(raw.opacity) ||
+    !isFiniteNumber(raw.opacity.from) ||
+    !isFiniteNumber(raw.opacity.to) ||
+    raw.opacity.from < 0 || raw.opacity.from > 1 ||
+    raw.opacity.to < 0 || raw.opacity.to > 1
+  ) {
+    throw new Error(`${label}的 opacity.from 与 opacity.to 必须是 0 到 1 之间的有限数字`)
+  }
+  if (!isRecord(raw.animation)) {
+    throw new Error(`${label}缺少有效的 animation 对象`)
+  }
+  if (raw.animation.duration !== undefined && (!isFiniteNumber(raw.animation.duration) || raw.animation.duration <= 0)) {
+    throw new Error(`${label}的 animation.duration 必须是大于 0 的有限数字`)
+  }
+  if (!isFiniteNumber(raw.animation.moveDuration) || raw.animation.moveDuration < 0) {
+    throw new Error(`${label}的 animation.moveDuration 必须是非负有限数字`)
+  }
+  if (!isFiniteNumber(raw.animation.delay) || raw.animation.delay < 0) {
+    throw new Error(`${label}的 animation.delay 必须是非负有限数字`)
+  }
+  if (raw.animation.easing !== 'speedup' && raw.animation.easing !== 'speeddown') {
+    throw new Error(`${label}的 animation.easing 必须是 speedup 或 speeddown`)
+  }
+
+  return {
+    ...raw,
+    content: {
+      ...raw.content,
+      color: normalizedColor
+    }
+  }
+}
+
+function extractDanmakuDrafts(parsed: unknown, sourceLabel: string): Record<string, unknown>[] {
   let drafts: unknown[]
   if (Array.isArray(parsed)) {
     drafts = parsed
-  } else if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-    const record = parsed as Record<string, unknown>
-    if (Array.isArray(record.danmakus)) drafts = record.danmakus
-    else drafts = [record]
+  } else if (isRecord(parsed)) {
+    if (Array.isArray(parsed.danmakus)) drafts = parsed.danmakus
+    else drafts = [parsed]
   } else {
-    throw new Error('JSON 文件必须包含弹幕对象、弹幕数组，或带 danmakus 数组的工程对象')
+    throw new Error(`${sourceLabel}必须包含弹幕对象、弹幕数组，或带 danmakus 数组的工程对象`)
   }
-  if (drafts.length === 0 || drafts.some((item) => !item || typeof item !== 'object' || Array.isArray(item))) {
-    throw new Error('JSON 文件中没有有效的弹幕对象')
+  if (drafts.length === 0 || drafts.some((item) => !isRecord(item))) {
+    throw new Error(`${sourceLabel}中没有有效的弹幕对象`)
   }
-  return drafts as Record<string, unknown>[]
+  if (drafts.length > 5000) {
+    throw new Error(`${sourceLabel}包含的弹幕数量超过单次上限（5000 条）`)
+  }
+  return (drafts as Record<string, unknown>[]).map((draft, index) => validateAndNormalizeDanmakuDraft(draft, index))
 }
 
 async function loadDanmakuDrafts(input: { danmaku?: Record<string, unknown> | Record<string, unknown>[]; jsonPath?: string }) {
   const hasObject = input.danmaku !== undefined
-  const hasPath = typeof input.jsonPath === 'string' && input.jsonPath.trim().length > 0
-  if (hasObject === hasPath) throw new Error('请在 danmaku 对象和 jsonPath 路径中二选一')
-  if (hasObject) return extractDanmakuDrafts(input.danmaku)
+  const hasPathArg = input.jsonPath !== undefined
+  if (hasObject && hasPathArg) throw new Error('请在 danmaku 对象和 jsonPath 路径中二选一，不要同时传入')
+  if (!hasObject && !hasPathArg) throw new Error('请在 danmaku 对象和 jsonPath 路径中二选一')
+  if (hasObject) return extractDanmakuDrafts(input.danmaku, 'danmaku 参数')
 
-  const path = resolve(input.jsonPath!.trim())
+  const path = resolveRequiredPath(input.jsonPath!, 'jsonPath')
   let fileStat
   try {
     fileStat = await stat(path)
@@ -162,18 +439,19 @@ async function loadDanmakuDrafts(input: { danmaku?: Record<string, unknown> | Re
   if (fileStat.size > MAX_DANMAKU_JSON_BYTES) throw new Error('JSON 文件不能超过 900 KiB')
   let parsed: unknown
   try {
-    parsed = JSON.parse(await readFile(path, 'utf8')) as unknown
+    const raw = (await readFile(path, 'utf8')).replace(/^\uFEFF/, '')
+    parsed = JSON.parse(raw) as unknown
   } catch (error) {
     throw new Error(`JSON 文件格式无效：${error instanceof Error ? error.message : String(error)}`)
   }
-  return extractDanmakuDrafts(parsed)
+  return extractDanmakuDrafts(parsed, 'JSON 文件')
 }
 
 const emptyInput = z.strictObject({})
 const scopeInput = z.enum(['S', 'E', 'B']).describe('S 仅起始坐标，E 仅结束坐标，B 两端坐标')
 
 function resultForMcp(value: unknown) {
-  const result = value as { ok?: boolean; message?: string } | null
+  const result = value as { ok?: boolean; code?: string; message?: string } | null
   const isError = result?.ok === false
   if (
     value && typeof value === 'object' &&
@@ -201,7 +479,10 @@ function resultForMcp(value: unknown) {
       structuredContent: metadata
     }
   }
-  const text = isError ? result.message || '编辑失败' : JSON.stringify(value, null, 2)
+  const errorMessage = result?.message || '编辑失败'
+  const text = isError
+    ? (result?.code ? `[${result.code}] ${errorMessage}` : errorMessage)
+    : (JSON.stringify(value, null, 2) ?? 'null')
   const structuredContent = value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined
@@ -212,7 +493,33 @@ function resultForMcp(value: unknown) {
   }
 }
 
+function sanitizeLogsResult(value: unknown): unknown {
+  if (!isRecord(value) || !Array.isArray(value.items)) return value
+  const items = value.items.map((item) => {
+    if (!isRecord(item) || item.additionalInfo === undefined) return item
+    let serialized: string
+    try {
+      serialized = JSON.stringify(item.additionalInfo) ?? ''
+    } catch {
+      serialized = String(item.additionalInfo)
+    }
+    if (serialized.length <= MAX_LOG_ADDITIONAL_INFO_CHARS) return item
+    return {
+      ...item,
+      additionalInfo: {
+        truncated: true,
+        originalChars: serialized.length,
+        preview: serialized.slice(0, 1024) + '...'
+      }
+    }
+  })
+  return { ...value, items }
+}
+
 function resolveRequiredPath(value: string, label: string): string {
+  if (value.includes('\0')) {
+    throw new Error(`${label}不能包含空字符`)
+  }
   const trimmed = value.trim()
   if (!trimmed) {
     throw new Error(`${label}不能为空`)
@@ -221,6 +528,9 @@ function resolveRequiredPath(value: string, label: string): string {
 }
 
 function resolveOptionalPath(value?: string): string | undefined {
+  if (value !== undefined && value.includes('\0')) {
+    throw new Error('路径不能包含空字符')
+  }
   const trimmed = value?.trim()
   return trimmed ? resolve(trimmed) : undefined
 }
@@ -265,10 +575,10 @@ function createMcpServer() {
     true
   )
   const measureTextEntryInput = z.strictObject({
-    text: z.string().describe('要测量的弹幕文本（支持 \\n 换行）'),
-    font: z.string().default('Microsoft YaHei').describe('字体名称，默认 Microsoft YaHei'),
-    size: z.number().positive().default(60).describe('字号（像素），默认 60'),
-    zRotate: z.number().default(0).describe('Z 轴旋转角度（度），默认 0'),
+    text: z.string().max(10_000).describe('要测量的弹幕文本（支持 \\n 换行）'),
+    font: z.string().trim().min(1, '字体名称不能为空').default('Microsoft YaHei').describe('字体名称，默认 Microsoft YaHei'),
+    size: z.number().finite().min(1, '字号 size 不能小于 1').max(2000, '字号 size 不能超过 2000').default(60).describe('字号（像素），默认 60'),
+    zRotate: z.number().finite().default(0).describe('Z 轴旋转角度（度），默认 0'),
     stroke: z.boolean().default(false).describe('是否开启描边，默认 false')
   })
   registerTool(
@@ -276,14 +586,38 @@ function createMcpServer() {
     '测量文字渲染尺寸',
     '只读测量弹幕文本在当前编辑器渲染层的实际像素宽高（rawWidth/rawHeight）、Z 轴旋转后包围盒宽高（width/height）以及居中参考坐标（centerX/centerY）。不创建或修改任何弹幕。传入 text 测单条，或传入 items 批量测量。',
     z.strictObject({
-      text: z.string().optional().describe('单条测量时的文本；与 items 二选一'),
-      font: z.string().default('Microsoft YaHei').describe('单条测量时的字体，默认 Microsoft YaHei'),
-      size: z.number().positive().default(60).describe('单条测量时的字号（像素），默认 60'),
-      zRotate: z.number().default(0).describe('单条测量时的 Z 轴旋转角度（度），默认 0'),
-      stroke: z.boolean().default(false).describe('单条测量时是否开启描边，默认 false'),
+      text: z.string().max(10_000).optional().describe('单条测量时的文本；与 items 二选一'),
+      font: z.string().trim().min(1, '字体名称不能为空').optional().describe('单条测量时的字体，默认 Microsoft YaHei'),
+      size: z.number().finite().min(1, '字号 size 不能小于 1').max(2000, '字号 size 不能超过 2000').optional().describe('单条测量时的字号（像素），默认 60'),
+      zRotate: z.number().finite().optional().describe('单条测量时的 Z 轴旋转角度（度），默认 0'),
+      stroke: z.boolean().optional().describe('单条测量时是否开启描边，默认 false'),
       items: z.array(measureTextEntryInput).min(1).max(100).optional().describe('批量测量的条目数组；与 text 二选一')
-    }).refine((input) => (input.text !== undefined) !== (input.items !== undefined), '请在 text 和 items 中二选一'),
-    (input) => callEditor('editor.measureText', input),
+    }).superRefine((input, context) => {
+      if ((input.text !== undefined) === (input.items !== undefined)) {
+        context.addIssue({ code: 'custom', message: '请在 text 和 items 中二选一' })
+      }
+      if (
+        input.items !== undefined &&
+        (input.font !== undefined || input.size !== undefined || input.zRotate !== undefined || input.stroke !== undefined)
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message: '使用 items 批量测量时，请将 font、size、zRotate、stroke 写在每个条目内，不要与顶层单条参数混用'
+        })
+      }
+    }),
+    (input) => callEditor(
+      'editor.measureText',
+      input.items !== undefined
+        ? { items: input.items }
+        : {
+          text: input.text,
+          font: input.font ?? 'Microsoft YaHei',
+          size: input.size ?? 60,
+          zRotate: input.zRotate ?? 0,
+          stroke: input.stroke ?? false
+        }
+    ),
     true
   )
   registerTool(
@@ -291,7 +625,7 @@ function createMcpServer() {
     '获取指定时间帧',
     '在指定时间渲染当前工程画面，并以 MCP 图片内容返回，供支持图片输入的模型检查。不会移动主窗口播放头或修改工程；maxDimension 默认 1280，最大 1920。',
     z.strictObject({
-      timeMs: z.number().nonnegative().describe('时间轴位置，单位毫秒'),
+      timeMs: z.number().finite().nonnegative().describe('时间轴位置，单位毫秒'),
       maxDimension: z.number().int().min(16).max(1920).default(1280).describe('输出图像最长边像素；超过工程画布尺寸时会等比缩小')
     }),
     (input) => callEditor('editor.captureFrame', input),
@@ -300,35 +634,46 @@ function createMcpServer() {
   registerTool(
     'list_danmakus',
     '读取弹幕',
-    '分页读取当前选择中的弹幕；selectedOnly=false 时读取工程中的全部弹幕。',
+    '分页读取当前选择中的弹幕；selectedOnly=false 时读取工程中的全部弹幕。传入 ids 时按 ID 白名单读取（忽略 selectedOnly）。',
     z.strictObject({
-      ids: z.array(z.string()).optional().describe('可选的弹幕 ID 白名单'),
+      ids: z.array(z.string().trim().min(1, '弹幕 ID 不能为空')).min(1).max(1000).optional().describe('可选的弹幕 ID 白名单（传入时忽略 selectedOnly）'),
       selectedOnly: z.boolean().default(true).describe('是否只读当前选择'),
-      offset: z.number().int().nonnegative().default(0),
+      offset: z.number().int().nonnegative().max(1_000_000).default(0),
       limit: z.number().int().min(1).max(500).default(100)
     }),
-    (input) => callEditor('editor.getDanmakus', input),
+    (input) => callEditor('editor.getDanmakus', {
+      ...input,
+      ...(input.ids ? { ids: [...new Set(input.ids)] } : {})
+    }),
     true
   )
+
+  const UPDATABLE_FIELD_PATHS = [
+    'layer', 'startTime', 'content.text', 'content.font', 'content.size', 'content.color', 'content.stroke',
+    'transform.start.x', 'transform.start.y', 'transform.end.x', 'transform.end.y',
+    'transform.zRotate', 'transform.yRotate', 'opacity.from', 'opacity.to',
+    'animation.duration', 'animation.moveDuration', 'animation.delay', 'animation.easing'
+  ] as const
+  const updatableFieldInput = z.enum(UPDATABLE_FIELD_PATHS)
   const upsetMethodInput = z.strictObject({
     op: z.literal('upset'),
-    seed: z.number().optional().describe('可选随机种子；传入后可复现相同的打乱顺序')
+    seed: z.number().finite().optional().describe('可选随机种子；传入后可复现相同的打乱顺序')
   }).describe('在当前选择内随机打乱该字段现有值（仅限传此对象，不能与表达式或赋值混用；避免与文本内容 "upset" 混淆）')
-  const fieldMethodInput = z.union([z.string(), z.number(), z.boolean(), upsetMethodInput])
+  const fieldMethodInput = z.union([z.string(), z.number().finite(), z.boolean(), upsetMethodInput])
 
   registerTool(
     'apply_field_update',
     '更新弹幕字段',
     '通过统一编辑 API 修改当前选择的单个字段。支持文本/颜色/字体/描边/缓动/数值赋值、相对运算、随机值、$ 数学表达式，或传入 { "op": "upset", "seed?": 数字 } 在当前选择内随机打乱该字段值（与赋值/表达式互斥；对文本字段需显式传此对象，纯字符串 "upset" 会按字面文本写入）。',
     z.strictObject({
-      field: z.string().describe('字段路径，例如 transform.start.x、content.text、opacity.from'),
+      field: updatableFieldInput.describe('字段路径，例如 transform.start.x、content.text、opacity.from'),
       method: fieldMethodInput
         .describe('字段输入值/操作方法（数字字段支持 +2、* 等规则及 $表达式），或 { "op": "upset", "seed?": 数字 }')
     }),
     (input) => callEditor('editor.applyFieldUpdate', input)
   )
   const fieldUpdateItemInput = z.strictObject({
-    field: z.string().describe('字段路径，例如 transform.start.x、content.text、opacity.from'),
+    field: updatableFieldInput.describe('字段路径，例如 transform.start.x、content.text、opacity.from'),
     method: fieldMethodInput
       .describe('赋值/运算/随机/$表达式，或 { "op": "upset", "seed?": 数字 }（与表达式互斥）')
   })
@@ -340,42 +685,69 @@ function createMcpServer() {
       steps: z.array(
         z.array(fieldUpdateItemInput).min(1).max(50).describe('同一执行步内的更新列表；同一步内共享步前原值快照，字段不可重复')
       ).min(1).max(50).describe('按顺序执行的步骤二维数组，例如 [[{field:"transform.start.x",method:"$endX"},{field:"transform.end.x",method:"$startX"}], [{field:"content.text",method:{op:"upset"}}]]')
-    }).refine(
-      (input) => input.steps.reduce((total, step) => total + step.length, 0) <= 200,
-      '所有步骤的更新条目总数不能超过 200'
-    ),
+    }).superRefine((input, context) => {
+      const totalEntries = input.steps.reduce((total, step) => total + step.length, 0)
+      if (totalEntries > 200) {
+        context.addIssue({ code: 'custom', message: '所有步骤的更新条目总数不能超过 200' })
+      }
+      input.steps.forEach((step, stepIndex) => {
+        const seen = new Set<string>()
+        for (const item of step) {
+          if (seen.has(item.field)) {
+            context.addIssue({
+              code: 'custom',
+              message: `第 ${stepIndex + 1} 步中存在重复字段：${item.field}（如需先后多次修改同一字段，请拆到不同步骤）`
+            })
+            break
+          }
+          seen.add(item.field)
+        }
+      })
+    }),
     (input) => callEditor('editor.applyFieldUpdate', { field: '@danmaku.updateFields', method: input })
   )
   const danmakuObjectInput = z.record(z.string(), z.unknown())
+  const colorStringInput = z.string().trim().min(1, '颜色不能为空').refine(
+    isValidColorInput,
+    '颜色格式无效（支持 #RGB、#RRGGBB 或 rgb(r,g,b)）'
+  )
   const numericGenerationRule = z.discriminatedUnion('mode', [
     z.strictObject({
       mode: z.literal('range'),
-      start: z.number(),
-      end: z.number(),
-      expression: z.string().optional().describe('可选数学表达式；支持 S、E、i、n、t、width、height、bezier(...)、seededRandom(seed, index?) 及其他字段路径')
+      start: z.number().finite(),
+      end: z.number().finite(),
+      expression: z.string().trim().min(1, 'expression 不能为空字符串').max(2000).optional().describe('可选数学表达式；支持 S、E、i、n、t、width、height、bezier(...)、seededRandom(seed, index?) 及其他字段路径')
     }),
     z.strictObject({
       mode: z.literal('relative'),
-      start: z.number(),
-      step: z.union([z.number(), z.string()]).describe('creationTools 相对步长，例如 +20、*1.1')
+      start: z.number().finite(),
+      step: z.union([z.number().finite(), z.string().trim().min(1, 'step 不能为空')]).describe('creationTools 相对步长，例如 +20、*1.1')
     }),
     z.strictObject({
       mode: z.literal('cycle'),
-      values: z.array(z.union([z.number(), z.string()])).min(1).max(1000)
+      values: z.array(z.union([z.number().finite(), z.string().trim().min(1, 'cycle 表达式不能为空').max(1000)])).min(1).max(1000)
     })
   ])
   const colorGenerationRule = z.discriminatedUnion('mode', [
-    z.strictObject({ mode: z.literal('range'), start: z.string(), target: z.string() }),
-    z.strictObject({ mode: z.literal('relative'), start: z.string(), target: z.string(), alpha: z.union([z.number(), z.string()]) }),
-    z.strictObject({ mode: z.literal('cycle'), values: z.array(z.string()).min(1).max(1000) })
+    z.strictObject({ mode: z.literal('range'), start: colorStringInput, target: colorStringInput }),
+    z.strictObject({
+      mode: z.literal('relative'),
+      start: colorStringInput,
+      target: colorStringInput,
+      alpha: z.union([z.number().finite(), z.string().trim().min(1)]).refine(
+        isValidAlphaValue,
+        'alpha 必须是 0 到 1 之间的数字'
+      )
+    }),
+    z.strictObject({ mode: z.literal('cycle'), values: z.array(colorStringInput).min(1).max(1000) })
   ])
   const textGenerationRule = z.discriminatedUnion('mode', [
-    z.strictObject({ mode: z.literal('assign'), value: z.string().describe('文字；可使用反引号模板，例如 `第 ${i + 1} 条`') }),
-    z.strictObject({ mode: z.literal('cycle'), values: z.array(z.string()).min(1).max(1000) })
+    z.strictObject({ mode: z.literal('assign'), value: z.string().max(10_000).describe('文字；可使用反引号模板，例如 `第 ${i + 1} 条`') }),
+    z.strictObject({ mode: z.literal('cycle'), values: z.array(z.string().max(10_000)).min(1).max(1000) })
   ])
   const fontGenerationRule = z.discriminatedUnion('mode', [
-    z.strictObject({ mode: z.literal('assign'), value: z.string() }),
-    z.strictObject({ mode: z.literal('cycle'), values: z.array(z.string()).min(1).max(1000) })
+    z.strictObject({ mode: z.literal('assign'), value: z.string().trim().min(1, '字体名称不能为空') }),
+    z.strictObject({ mode: z.literal('cycle'), values: z.array(z.string().trim().min(1, '字体名称不能为空')).min(1).max(1000) })
   ])
   const strokeGenerationRule = z.discriminatedUnion('mode', [
     z.strictObject({ mode: z.literal('assign'), value: z.boolean() }),
@@ -424,9 +796,13 @@ function createMcpServer() {
     '创建弹幕',
     '从直接传入的弹幕对象/数组或本机 JSON 文件创建弹幕。relativeToCurrentTime=true 时按 insertDanmakus 的规则把最早弹幕对齐到当前播放头并分配层级；false 时保留绝对 startTime，仅分配新 ID 后添加。输入中的 id 会被忽略。',
     z.strictObject({
-      danmaku: z.union([danmakuObjectInput, z.array(danmakuObjectInput)]).optional().describe('一个弹幕对象或弹幕对象数组'),
-      jsonPath: z.string().optional().describe('本机 JSON 文件路径；相对路径以 MCP 工作目录为基准。支持弹幕对象、弹幕数组或包含 danmakus 数组的工程 JSON'),
+      danmaku: z.union([danmakuObjectInput, z.array(danmakuObjectInput).min(1).max(5000)]).optional().describe('一个弹幕对象或弹幕对象数组'),
+      jsonPath: z.string().trim().min(1, 'jsonPath 不能为空').optional().describe('本机 JSON 文件路径；相对路径以 MCP 工作目录为基准。支持弹幕对象、弹幕数组或包含 danmakus 数组的工程 JSON'),
       relativeToCurrentTime: z.boolean().describe('是否相对当前播放头创建；必须明确传入 true 或 false')
+    }).superRefine((input, context) => {
+      if ((input.danmaku !== undefined) === (input.jsonPath !== undefined)) {
+        context.addIssue({ code: 'custom', message: '请在 danmaku 对象和 jsonPath 路径中二选一' })
+      }
     }),
     async (input) => {
       const danmakus = await loadDanmakuDrafts(input)
@@ -440,14 +816,19 @@ function createMcpServer() {
     'delete_danmakus',
     '删除弹幕',
     '删除指定 ID 的弹幕；不传 ids 时删除当前选择。若任一指定 ID 不存在，会整批拒绝且不做部分删除。',
-    z.strictObject({ ids: z.array(z.string()).min(1).optional().describe('可选的弹幕 ID 列表；省略时使用当前选择') }),
-    (input) => callEditor('editor.applyFieldUpdate', { field: '@danmaku.delete', method: input })
+    z.strictObject({
+      ids: z.array(z.string().trim().min(1, '弹幕 ID 不能为空')).min(1).max(5000).optional().describe('可选的弹幕 ID 列表；省略时使用当前选择')
+    }),
+    (input) => callEditor('editor.applyFieldUpdate', {
+      field: '@danmaku.delete',
+      method: input.ids ? { ids: [...new Set(input.ids)] } : {}
+    })
   )
   registerTool(
     'update_current_time',
     '设置当前播放时间',
     '设置当前时间轴播放头位置，单位为毫秒。',
-    z.strictObject({ currentTime: z.number().nonnegative() }),
+    z.strictObject({ currentTime: z.number().finite().nonnegative() }),
     (input) => callEditor('editor.applyFieldUpdate', { field: '@editor.currentTime', method: input.currentTime })
   )
   registerTool(
@@ -455,10 +836,13 @@ function createMcpServer() {
     '设置画布和层数',
     '更新画布屏幕宽高和/或最大层数。宽高最小为 10；最大层数决定自动分配层级的上限',
     z.strictObject({
-      screenWidth: z.number().positive().optional(),
-      screenHeight: z.number().positive().optional(),
-      maxLayers: z.number().positive().optional()
-    }),
+      screenWidth: z.number().finite().positive().max(16384).optional(),
+      screenHeight: z.number().finite().positive().max(16384).optional(),
+      maxLayers: z.number().finite().positive().max(10000).optional()
+    }).refine(
+      (input) => input.screenWidth !== undefined || input.screenHeight !== undefined || input.maxLayers !== undefined,
+      '请至少提供 screenWidth、screenHeight 或 maxLayers'
+    ),
     (input) => callEditor('editor.applyFieldUpdate', { field: '@editor.settings', method: input })
   )
   registerTool(
@@ -618,10 +1002,10 @@ function createMcpServer() {
     '读取当前运行会话中最近的界面日志，按时间倒序返回；不会读取磁盘上的旧日志文件。',
     z.strictObject({
       type: z.enum(['info', 'success', 'warn', 'error']).optional(),
-      offset: z.number().int().nonnegative().default(0),
+      offset: z.number().int().nonnegative().max(1_000_000).default(0),
       limit: z.number().int().min(1).max(500).default(100)
     }),
-    (input) => callEditor('editor.getLogs', input),
+    async (input) => sanitizeLogsResult(await callEditor('editor.getLogs', input)),
     true
   )
   registerTool(
@@ -637,8 +1021,8 @@ function createMcpServer() {
     '查询历史快照弹幕',
     '按快照 ID 查询该历史状态中的弹幕详情，支持 offset/limit 分页。先调用 list_history_snapshots 获取快照 ID。',
     z.strictObject({
-      snapshotId: z.string().min(1),
-      offset: z.number().int().nonnegative().default(0),
+      snapshotId: z.string().trim().min(1, 'snapshotId 不能为空'),
+      offset: z.number().int().nonnegative().max(1_000_000).default(0),
       limit: z.number().int().min(1).max(500).default(100)
     }),
     (input) => callEditor('editor.getHistorySnapshot', input),
@@ -648,14 +1032,19 @@ function createMcpServer() {
     'select_by_command',
     '按条件筛选弹幕',
     '使用筛选命令语法更新选择范围（MCP 调用可省略开头的 /s，也兼容带 /s 写法）。支持按 id（如 id:"\'1\',\'2\'"）、文本正则、数值范围等条件筛选。',
-    z.strictObject({ command: z.string().describe('筛选命令（可省略开头的 /s），例如 id:"\'1\',\'2\'" 或 startTime:"1000~3000"') }),
+    z.strictObject({
+      command: z.string().trim().min(1, '筛选命令不能为空').max(4000).describe('筛选命令（可省略开头的 /s），例如 id:"\'1\',\'2\'" 或 startTime:"1000~3000"')
+    }),
     (input) => callEditor('editor.applyFieldUpdate', { field: '@selection.filter', method: { command: input.command } })
   )
   registerTool(
     'apply_stroke',
     '生成描边弹幕',
     '为当前选择生成描边副本。',
-    z.strictObject({ width: z.number().min(1), color: z.string() }),
+    z.strictObject({
+      width: z.number().finite().min(1).max(1000),
+      color: colorStringInput
+    }),
     (input) => callEditor('editor.applyFieldUpdate', { field: '@toolbar.stroke', method: input })
   )
   registerTool(
@@ -671,8 +1060,10 @@ function createMcpServer() {
   registerTool(
     'copy_coordinates',
     '复制弹幕坐标',
-    '在每条当前选择的弹幕内部复制起始坐标或结束坐标。',
-    z.strictObject({ direction: z.enum(['startToEnd', 'endToStart']).optional() }),
+    '在每条当前选择的弹幕内部复制起始坐标或结束坐标（省略 direction 时默认 startToEnd）。',
+    z.strictObject({
+      direction: z.enum(['startToEnd', 'endToStart']).default('startToEnd').describe('复制方向：startToEnd（默认，起点复制到终点）或 endToStart（终点复制到起点）')
+    }),
     (input) => callEditor('editor.applyFieldUpdate', { field: '@toolbar.copy', method: input })
   )
   registerTool(
@@ -696,18 +1087,28 @@ function createMcpServer() {
     emptyInput,
     () => callEditor('editor.applyFieldUpdate', { field: '@toolbar.calculateRotation', method: {} })
   )
+  const angleInputSchema = z.string().trim().refine(
+    (value) => value === '' || /^[+-]?\d+(?:\.\d+)?$/.test(value),
+    '角度格式无效，请留空或输入数字、+数字、-数字'
+  ).default('')
   registerTool(
     'set_movement_length',
     '设置弹幕运动长度',
     '保留起点，按长度和角度设置当前选择的终点坐标。角度留空时沿用弹幕现有角度。',
-    z.strictObject({ angle: z.string().default(''), length: z.number() }),
+    z.strictObject({
+      angle: angleInputSchema,
+      length: z.number().finite().min(-100_000).max(100_000)
+    }),
     (input) => callEditor('editor.applyFieldUpdate', { field: '@toolbar.length', method: input })
   )
   registerTool(
     'lock_movement_angle',
     '锁定运动角度',
     '在指定坐标轴变化后投影另一个坐标，保持角度不变。angle 可留空沿用弹幕旋转角，也可传绝对角度或相对角度。',
-    z.strictObject({ changedAxis: z.enum(['x', 'y']), angle: z.string().default('') }),
+    z.strictObject({
+      changedAxis: z.enum(['x', 'y']),
+      angle: angleInputSchema
+    }),
     (input) => callEditor('editor.applyFieldUpdate', { field: '@toolbar.lockAngle', method: input })
   )
   registerTool(
@@ -735,7 +1136,7 @@ function createMcpServer() {
     'export_video',
     '导出视频',
     '将当前工程导出为 .mp4 视频。outputPath 必填（绝对或相对路径，必须以 .mp4 结尾，缺失父目录会自动创建）。startMs/endMs 默认为 0 到源视频时长或弹幕最晚结束时间；width/height 默认使用工程画布尺寸（仅传单边时按画布比例自动计算另一边，均须为偶数且比例一致）；fps 默认 60（可选 24/30/60/120）；quality 默认 very-high；useWebgl 默认沿用全局设置（默认开启）。waitMs 默认 15000（0~60000 毫秒）：若在 waitMs 内完成则直接返回结果，超时则在后台继续运行并返回 status=running 与 jobId 供 get_video_export_status 查询。导出锁定开始时刻的弹幕快照，期间可继续编辑或截图。',
-    z.object({
+    z.strictObject({
       outputPath: z.string().trim().min(1, 'outputPath 不能为空').refine(
         (value) => extname(value).toLowerCase() === '.mp4',
         'outputPath 必须以 .mp4 结尾'
@@ -748,7 +1149,7 @@ function createMcpServer() {
       quality: z.enum(['low', 'high', 'very-high', 'near-lossless']).optional(),
       useWebgl: z.boolean().optional(),
       waitMs: z.number().int().min(0).max(60000).optional()
-    }).strict().superRefine((value, context) => {
+    }).superRefine((value, context) => {
       if (value.endMs !== undefined && value.startMs !== undefined && value.endMs <= value.startMs) {
         context.addIssue({ code: 'custom', message: 'endMs 必须大于 startMs' })
       }
@@ -762,10 +1163,10 @@ function createMcpServer() {
     'get_video_export_status',
     '查询视频导出状态',
     '只读查询视频导出任务状态与进度。不传 jobId 时返回当前活跃任务或最近一次任务状态；可传入 waitMs（0~60000 毫秒，默认 0）在任务运行中时等待完成或超时再返回最新快照。',
-    z.object({
+    z.strictObject({
       jobId: z.string().trim().min(1, 'jobId 不能为空').optional(),
       waitMs: z.number().int().min(0).max(60000).optional()
-    }).strict(),
+    }),
     (input) => callEditor('editor.getVideoExportStatus', input),
     true
   )
@@ -773,9 +1174,9 @@ function createMcpServer() {
     'cancel_video_export',
     '取消视频导出',
     '取消正在进行的视频导出任务并等待编码器、独立渲染窗口和临时文件句柄彻底清理完成后返回。不传 jobId 时取消当前活跃任务；若目标任务已结束则安全返回当前状态。',
-    z.object({
+    z.strictObject({
       jobId: z.string().trim().min(1, 'jobId 不能为空').optional()
-    }).strict(),
+    }),
     (input) => callEditor('editor.cancelVideoExport', input)
   )
   registerTool(

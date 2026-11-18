@@ -114,7 +114,7 @@ function parseRandomRangeExpression(input: string): ParseResult | null {
     const operator = signedMatch[1]
     const rawValue = parseFloat(signedMatch[2])
 
-    if (isNaN(rawValue)) {
+    if (!Number.isFinite(rawValue)) {
       return { mode: 'set', error: '无效的随机范围数值' }
     }
 
@@ -127,7 +127,7 @@ function parseRandomRangeExpression(input: string): ParseResult | null {
   if (symmetricMatch) {
     const rawValue = parseFloat(symmetricMatch[1])
 
-    if (isNaN(rawValue)) {
+    if (!Number.isFinite(rawValue)) {
       return { mode: 'set', error: '无效的随机范围数值' }
     }
 
@@ -142,10 +142,13 @@ function parseRandomRangeExpression(input: string): ParseResult | null {
 }
 
 /**
- * 验证是否为有效的四则运算表达式
+ * 验证是否为有效的单步数值/运算符输入
  * 示例："+10", "-5", "*2", "/2", "100", "+1.5", "*0.5", "/2.5"
  */
 export function validateArithmeticExpression(input: string): { valid: boolean; error?: string } {
+  if (typeof input !== 'string') {
+    return { valid: false, error: '输入必须是字符串' }
+  }
   const trimmed = input.trim()
   
   // 空字符串不合法
@@ -153,13 +156,13 @@ export function validateArithmeticExpression(input: string): { valid: boolean; e
     return { valid: false, error: '输入不能为空' }
   }
 
-  // 检查是否只包含允许的字符：数字、操作符、小数点、负号、空格
-  if (!/^[\d+\-*/.() ]*$/.test(trimmed)) {
+  // 检查是否只包含允许的字符：数字、操作符、小数点、空格
+  if (!/^[\d+\-*/. ]*$/.test(trimmed)) {
     return { valid: false, error: '仅支持四则运算符和数字' }
   }
 
-  // 检查操作符的合法性
-  const operatorPattern = /^[+\-*/]?\d+(?:\.\d+)?(?:[+\-*/]\d+(?:\.\d+)?)*$/
+  // 仅允许一个可选前缀运算符跟随单个数值，避免 "10+20" 被 parseFloat 静默截断
+  const operatorPattern = /^[+\-*/]?\d+(?:\.\d+)?$/
   if (!operatorPattern.test(trimmed.replace(/\s+/g, ''))) {
     return { valid: false, error: '格式不正确' }
   }
@@ -169,7 +172,7 @@ export function validateArithmeticExpression(input: string): { valid: boolean; e
 
 /**
  * 解析颜色与Alpha混合格式
- * 格式：RRGGBB@ALPHA 或 #RRGGBB@ALPHA
+ * 格式：RRGGBB@ALPHA、#RRGGBB@ALPHA、RGB@ALPHA 或 #RGB@ALPHA
  * 示例：FFFFFF@0.5 表示白色半透明
  * 返回：{ color: '#FFFFFF', alpha: 0.5 } 或 null
  */
@@ -178,21 +181,48 @@ export interface ColorAlphaResult {
   alpha: number
 }
 
+function expandHexSix(rawHex: string): string {
+  const upper = rawHex.toUpperCase()
+  if (upper.length === 3) {
+    return `${upper[0]}${upper[0]}${upper[1]}${upper[1]}${upper[2]}${upper[2]}`
+  }
+  return upper
+}
+
+function parseHexRgbChannels(hexColor: string): [number, number, number] {
+  if (typeof hexColor !== 'string') {
+    return [0, 0, 0]
+  }
+  const match = hexColor.trim().match(/^#?([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/)
+  if (!match) {
+    return [0, 0, 0]
+  }
+  const hex = expandHexSix(match[1])
+  return [
+    parseInt(hex.slice(0, 2), 16),
+    parseInt(hex.slice(2, 4), 16),
+    parseInt(hex.slice(4, 6), 16)
+  ]
+}
+
 export function parseColorWithAlpha(input: string): ColorAlphaResult | null {
+  if (typeof input !== 'string') {
+    return null
+  }
   const trimmed = input.trim()
   
-  // 匹配格式：可选的#，6位十六进制，@，0-1的浮点数
-  const match = trimmed.match(/^#?([A-Fa-f0-9]{6})@([0-1](?:\.\d+)?)$/)
+  // 匹配格式：可选的#，3或6位十六进制，@，0-1的浮点数
+  const match = trimmed.match(/^#?([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})@([0-1](?:\.\d+)?)$/)
   
   if (!match) {
     return null
   }
   
-  const hex = match[1].toUpperCase()
+  const hex = expandHexSix(match[1])
   const alpha = parseFloat(match[2])
   
   // 验证alpha值
-  if (isNaN(alpha) || alpha < 0 || alpha > 1) {
+  if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) {
     return null
   }
   
@@ -207,20 +237,17 @@ export function parseColorWithAlpha(input: string): ColorAlphaResult | null {
  * 使用"源超过目标"的Alpha混合公式
  */
 export function blendColor(baseHex: string, overlayHex: string, alpha: number): string {
-  // 解析基础颜色
-  const baseR = parseInt(baseHex.slice(1, 3), 16)
-  const baseG = parseInt(baseHex.slice(3, 5), 16)
-  const baseB = parseInt(baseHex.slice(5, 7), 16)
-  
-  // 解析叠加颜色
-  const overlayR = parseInt(overlayHex.slice(1, 3), 16)
-  const overlayG = parseInt(overlayHex.slice(3, 5), 16)
-  const overlayB = parseInt(overlayHex.slice(5, 7), 16)
+  const safeAlpha = typeof alpha === 'number' && Number.isFinite(alpha)
+    ? Math.max(0, Math.min(1, alpha))
+    : 0
+  const [baseR, baseG, baseB] = parseHexRgbChannels(baseHex)
+  const [overlayR, overlayG, overlayB] = parseHexRgbChannels(overlayHex)
   
   // Alpha混合公式：result = overlay * alpha + base * (1 - alpha)
-  const r = Math.round(overlayR * alpha + baseR * (1 - alpha))
-  const g = Math.round(overlayG * alpha + baseG * (1 - alpha))
-  const b = Math.round(overlayB * alpha + baseB * (1 - alpha))
+  const clampByte = (value: number) => Math.max(0, Math.min(255, Math.round(value)))
+  const r = clampByte(overlayR * safeAlpha + baseR * (1 - safeAlpha))
+  const g = clampByte(overlayG * safeAlpha + baseG * (1 - safeAlpha))
+  const b = clampByte(overlayB * safeAlpha + baseB * (1 - safeAlpha))
   
   // 转换回十六进制
   const toHex = (n: number) => n.toString(16).padStart(2, '0').toUpperCase()
@@ -233,8 +260,12 @@ export function blendColor(baseHex: string, overlayHex: string, alpha: number): 
  */
 export function parseInput(input: string | null, isTextField = false): ParseResult {
   // 多个值不同的情况
-  if (input === null || input === '—' || input === '--') {
+  if (input == null || input === '—' || input === '--') {
     return { mode: 'multiple' }
+  }
+
+  if (typeof input !== 'string') {
+    return { mode: 'set', error: '无效的输入' }
   }
 
   const trimmed = input.trim()
@@ -258,32 +289,33 @@ export function parseInput(input: string | null, isTextField = false): ParseResu
   if (!validation.valid) {
     return { mode: 'set', error: validation.error }
   }
-  
+
+  const compact = trimmed.replace(/\s+/g, '')
 
   // 检查操作符
-  if (trimmed.startsWith('+')) {
-    const num = parseFloat(trimmed.slice(1))
-    return isNaN(num) ? { mode: 'set', error: '无效的数值' } : { mode: 'add', value: num }
+  if (compact.startsWith('+')) {
+    const num = parseFloat(compact.slice(1))
+    return !Number.isFinite(num) ? { mode: 'set', error: '无效的数值' } : { mode: 'add', value: num }
   }
 
-  if (trimmed.startsWith('-')) {
-    const num = parseFloat(trimmed)
-    return isNaN(num) ? { mode: 'set', error: '无效的数值' } : { mode: 'add', value: num }
+  if (compact.startsWith('-')) {
+    const num = parseFloat(compact)
+    return !Number.isFinite(num) ? { mode: 'set', error: '无效的数值' } : { mode: 'add', value: num }
   }
 
-  if (trimmed.startsWith('*')) {
-    const num = parseFloat(trimmed.slice(1))
-    return isNaN(num) || num <= 0 ? { mode: 'set', error: '倍率必须是正数' } : { mode: 'mul', value: num }
+  if (compact.startsWith('*')) {
+    const num = parseFloat(compact.slice(1))
+    return !Number.isFinite(num) || num <= 0 ? { mode: 'set', error: '倍率必须是正数' } : { mode: 'mul', value: num }
   }
 
-  if (trimmed.startsWith('/')) {
-    const num = parseFloat(trimmed.slice(1))
-    return isNaN(num) || num <= 0 ? { mode: 'set', error: '除数必须是正数' } : { mode: 'div', value: num }
+  if (compact.startsWith('/')) {
+    const num = parseFloat(compact.slice(1))
+    return !Number.isFinite(num) || num <= 0 ? { mode: 'set', error: '除数必须是正数' } : { mode: 'div', value: num }
   }
 
   // 直接赋值
-  const num = parseFloat(trimmed)
-  return isNaN(num) ? { mode: 'set', error: '无效的数值' } : { mode: 'set', value: num }
+  const num = parseFloat(compact)
+  return !Number.isFinite(num) ? { mode: 'set', error: '无效的数值' } : { mode: 'set', value: num }
 }
 
 /**
@@ -294,38 +326,53 @@ export function applyOperation(originalValue: number, parseResult: ParseResult):
     return originalValue
   }
 
+  const safeOriginal = Number.isFinite(originalValue) ? originalValue : 0
+
   switch (parseResult.mode) {
-    case 'set':
-      if (parseResult.value === undefined) {
+    case 'set': {
+      if (parseResult.value === undefined || !Number.isFinite(parseResult.value)) {
         return originalValue
       }
       return parseResult.value
-    case 'add':
-      if (parseResult.value === undefined) {
+    }
+    case 'add': {
+      if (parseResult.value === undefined || !Number.isFinite(parseResult.value)) {
         return originalValue
       }
-      return originalValue + parseResult.value
-    case 'mul':
-      if (parseResult.value === undefined) {
+      const next = safeOriginal + parseResult.value
+      return Number.isFinite(next) ? next : originalValue
+    }
+    case 'mul': {
+      if (parseResult.value === undefined || !Number.isFinite(parseResult.value)) {
         return originalValue
       }
-      return originalValue * parseResult.value
-    case 'div':
-      if (parseResult.value === undefined) {
+      const next = safeOriginal * parseResult.value
+      return Number.isFinite(next) ? next : originalValue
+    }
+    case 'div': {
+      if (parseResult.value === undefined || !Number.isFinite(parseResult.value) || parseResult.value === 0) {
         return originalValue
       }
-      return originalValue / parseResult.value
+      const next = safeOriginal / parseResult.value
+      return Number.isFinite(next) ? next : originalValue
+    }
     case 'random': {
-      if (parseResult.randomMinOffset === undefined || parseResult.randomMaxOffset === undefined) {
+      if (
+        parseResult.randomMinOffset === undefined ||
+        parseResult.randomMaxOffset === undefined ||
+        !Number.isFinite(parseResult.randomMinOffset) ||
+        !Number.isFinite(parseResult.randomMaxOffset)
+      ) {
         return originalValue
       }
 
-      const minValue = originalValue + parseResult.randomMinOffset
-      const maxValue = originalValue + parseResult.randomMaxOffset
+      const minValue = safeOriginal + parseResult.randomMinOffset
+      const maxValue = safeOriginal + parseResult.randomMaxOffset
       const lowerBound = Math.min(minValue, maxValue)
       const upperBound = Math.max(minValue, maxValue)
+      const next = lowerBound + Math.random() * (upperBound - lowerBound)
 
-      return lowerBound + Math.random() * (upperBound - lowerBound)
+      return Number.isFinite(next) ? next : originalValue
     }
     default:
       return originalValue
@@ -337,10 +384,11 @@ export function applyOperation(originalValue: number, parseResult: ParseResult):
  * 当多个值不同时显示 '--'
  */
 export function formatInputDisplay(values: number[]): string {
-  if (values.length === 0) return ''
+  if (!Array.isArray(values) || values.length === 0) return ''
 
   // 判断是否所有值都相同
   const firstValue = values[0]
+  if (typeof firstValue !== 'number' || !Number.isFinite(firstValue)) return '--'
   const allSame = values.every(v => v === firstValue)
 
   return allSame ? String(firstValue) : '--'

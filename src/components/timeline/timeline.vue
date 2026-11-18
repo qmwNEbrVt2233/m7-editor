@@ -25,6 +25,13 @@
       :style="{ left: playheadX + 'px' }"
     ></div>
 
+    <!-- 吸附参考线 -->
+    <div
+      v-if="snappedGuideTime !== null && dragMode !== null"
+      class="snap-guide"
+      :style="{ left: (snappedGuideTime - offset) * scale + 'px' }"
+    ></div>
+
     <canvas 
       class="spectrogram" 
       ref="spectrogramCanvasRef"
@@ -48,8 +55,8 @@
           v-for="d in (visibleDanmakusByLayer[layer - 1] || [])"
           :key="d.id"
           class="block"
-          :class="{ selected: store.selectedIds.includes(d.id) }"
-          :style="getBlockStyle(d, store.danmakuColorForBlock, store.selectedIds.includes(d.id))"
+          :class="{ selected: selectedIdSet.has(d.id) }"
+          :style="getBlockStyle(d, store.danmakuColorForBlock, selectedIdSet.has(d.id))"
           @mousedown.stop="onBlockMouseDown($event, d)"
           @click.stop="onSelect($event, d)"
           @mouseenter="onBlockMouseEnter(d.id)"
@@ -57,7 +64,7 @@
         >
           <!-- 宽度过小时隐藏文字 -->
           <span
-            v-if="d.animation.duration * scale >= 10"
+            v-if="(Number(d.animation?.duration) || 0) * scale >= 10"
             class="block-text"
             :style="getBlockTextStyle(d)"
           >
@@ -86,7 +93,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useEditorStore } from '@/store/editor'
 import { useNoticeStore } from '@/store/notice'
 import { historyManager } from '@/core/history'
@@ -102,6 +109,23 @@ const help = useHelpStore()
 const timelineRef = ref<HTMLElement | null>(null)
 const tracksRef = ref<HTMLElement | null>(null)
 
+const MIN_SCALE = 0.01
+const MAX_SCALE = 3
+
+function sanitizeScale(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0.1
+  }
+  return Math.max(MIN_SCALE, Math.min(MAX_SCALE, value))
+}
+
+function sanitizeOffset(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0
+  }
+  return Math.max(0, value)
+}
+
 // tracks样式控制
 const tracksOpacityLevels = [0.7, 0.8, 0.9, 1]
 const tracksOpacityIndex = ref(3)
@@ -109,9 +133,11 @@ const tracksOpacity = computed(() => tracksOpacityLevels[tracksOpacityIndex.valu
 const tracksHidden = ref(false)
 const useOriginalColorWhenSelect = ref(false)
 
+const selectedIdSet = computed(() => new Set(store.selectedIds))
+
 // 时间轴核心参数
-const scale = ref(store.timelineScale) // 1ms = 0.1px
-const offset = ref(store.timelineOffset)
+const scale = ref(sanitizeScale(store.timelineScale)) // 1ms = 0.1px
+const offset = ref(sanitizeOffset(store.timelineOffset))
 
 const spectrogramCanvasRef = ref<HTMLCanvasElement | null>(null)
 // 可视宽度（从容器动态获取）
@@ -206,8 +232,10 @@ watch(
 watch(
   () => containerWidth.value,
   () => {
-    // 容器大小改变（比如拉伸浏览器窗口），重新渲染
-    renderSpectrogram()
+    // 容器大小改变（比如拉伸浏览器窗口），在 DOM width 属性刷新后重新渲染
+    void nextTick().then(() => {
+      renderSpectrogram()
+    })
   }
 )
 
@@ -323,6 +351,14 @@ function initSpectrogram() {
       resetSpectrogramData()
     }
   })
+
+  ws.on('error', (error) => {
+    if (spectrogramWaveSurfer !== ws) {
+      return
+    }
+    notice.log('[频谱] 音频解码失败，无法显示频谱图', 'warn', error)
+    resetSpectrogramData()
+  })
 }
 
 function getCachedMapValue<K, V>(map: Map<K, V>, key: K) {
@@ -352,6 +388,9 @@ function setBoundedMapValue<K, V>(map: Map<K, V>, key: K, value: V, maxSize: num
 }
 
 function createAudioBufferSlice(source: AudioBuffer, startMs: number, endMs: number): AudioBufferLike | null {
+  if (source.numberOfChannels <= 0) {
+    return null
+  }
   const sampleRate = source.sampleRate
   const startSample = Math.max(0, Math.floor(startMs / 1000 * sampleRate))
   const endSample = Math.min(source.length, Math.ceil(endMs / 1000 * sampleRate))
@@ -361,21 +400,18 @@ function createAudioBufferSlice(source: AudioBuffer, startMs: number, endMs: num
     return null
   }
 
-  const channels = Array.from({ length: source.numberOfChannels }, (_, channelIndex) => {
-    return source.getChannelData(channelIndex).slice(startSample, endSample)
-  })
+  const channel0 = source.getChannelData(0).subarray(startSample, endSample)
 
   return {
     duration: length / sampleRate,
     length,
     sampleRate,
-    numberOfChannels: source.numberOfChannels,
+    numberOfChannels: 1,
     getChannelData(channelIndex: number) {
-      const channelData = channels[channelIndex]
-      if (!channelData) {
+      if (channelIndex !== 0) {
         throw new Error(`Channel ${channelIndex} not found`)
       }
-      return channelData
+      return channel0
     }
   }
 }
@@ -471,28 +507,54 @@ async function getFrequenciesChunk(level: PrecisionLevel, chunkIndex: number) {
   return request
 }
 
-// 根据当前配色方案生成频谱颜色
-function getSpectrogramColor(magnitude: number): string {
+function expandHexToSixDigits(hexColor: string): string | null {
+  const normalized = normalizeColor(hexColor)
+  if (!normalized || !isValidHex(normalized)) {
+    return null
+  }
+  if (normalized.length === 4) {
+    const r = normalized[1]
+    const g = normalized[2]
+    const b = normalized[3]
+    return `#${r}${r}${g}${g}${b}${b}`
+  }
+  return normalized
+}
+
+let cachedLutKey = ''
+let cachedColorLut: string[] = []
+
+function getSpectrogramColorLut(): string[] {
   const scheme = store.spectrogramColorScheme
   const customColor = store.spectrogramCustomColor
-  
+  const lutKey = `${scheme}|${customColor}`
+  if (lutKey === cachedLutKey && cachedColorLut.length === 256) {
+    return cachedColorLut
+  }
+
+  const lut = new Array<string>(256)
   if (scheme === 'customize' && customColor) {
-    // 使用自定义颜色
-    const normalized = normalizeColor(customColor)
-    if (normalized && isValidHex(normalized)) {
-      // 将十六进制颜色转换为 RGB
-      const hex = normalized.slice(1)
+    const hex6 = expandHexToSixDigits(customColor)
+    if (hex6) {
+      const hex = hex6.slice(1)
       const r = parseInt(hex.substring(0, 2), 16)
       const g = parseInt(hex.substring(2, 4), 16)
       const b = parseInt(hex.substring(4, 6), 16)
-      // 根据 magnitude 调整透明度
-      const alpha = magnitude / 255
-      return `rgba(${r}, ${g}, ${b}, ${alpha})`
+      for (let mag = 0; mag < 256; mag++) {
+        lut[mag] = `rgba(${r}, ${g}, ${b}, ${mag / 255})`
+      }
+      cachedLutKey = lutKey
+      cachedColorLut = lut
+      return lut
     }
   }
-  
-  // 默认使用热力图配色方案
-  return getHeatmapColor(magnitude)
+
+  for (let mag = 0; mag < 256; mag++) {
+    lut[mag] = getHeatmapColor(mag)
+  }
+  cachedLutKey = lutKey
+  cachedColorLut = lut
+  return lut
 }
 
 // 热力图颜色生成函数：根据magnitude生成热力图颜色
@@ -556,6 +618,8 @@ function drawFrequenciesChunkToTile(
   const endFrame = Math.min(chunk.data.length, Math.ceil((drawEndMs - chunk.startMs) / chunk.msPerFrame))
   const fftBins = chunk.data[startFrame]?.length || chunk.data[0]?.length || 1
   const lineWidth = chunk.msPerFrame * renderScale + 0.5
+  const colorLut = getSpectrogramColorLut()
+  const isCustomScheme = store.spectrogramColorScheme === 'customize' && Boolean(expandHexToSixDigits(store.spectrogramCustomColor))
 
   for (let frameIndex = startFrame; frameIndex < endFrame; frameIndex++) {
     const frameData = chunk.data[frameIndex]
@@ -566,12 +630,15 @@ function drawFrequenciesChunkToTile(
 
     for (let y = 0; y < fftBins; y++) {
       const magnitude = frameData[y]
+      if (isCustomScheme && magnitude === 0) {
+        continue
+      }
       const percent = y / fftBins
       const nextPercent = (y + 1) / fftBins
       const yTop = SPECTROGRAM_HEIGHT - (nextPercent * SPECTROGRAM_HEIGHT)
       const yHeight = (nextPercent - percent) * SPECTROGRAM_HEIGHT
 
-      ctx.fillStyle = getSpectrogramColor(magnitude)
+      ctx.fillStyle = colorLut[magnitude] ?? colorLut[0]
       ctx.fillRect(xInTile, yTop, lineWidth, yHeight)
     }
   }
@@ -601,7 +668,7 @@ async function getTileCanvas(
   offscreenCanvas.height = SPECTROGRAM_HEIGHT
   const ctx = offscreenCanvas.getContext('2d')!
 
-  if (!decodedAudioBuffer || totalDurationMs <= 0) return offscreenCanvas
+  if (!decodedAudioBuffer || totalDurationMs <= 0 || tileEndMs <= tileStartMs) return offscreenCanvas
 
   const startChunkIndex = Math.floor(tileStartMs / CHUNK_DURATION_MS)
   const endChunkIndex = Math.floor((tileEndMs - 1) / CHUNK_DURATION_MS)
@@ -615,17 +682,12 @@ async function getTileCanvas(
     drawFrequenciesChunkToTile(ctx, chunk, tileStartMs, tileEndMs, renderScale)
   }
 
-  // 塞入 Map 缓存，下次直接复用
-  if (cacheGeneration === tileCacheGeneration) {
-    setBoundedMapValue(tileCache, tileCacheKey, offscreenCanvas, MAX_TILE_CANVASES)
-  }
-
-  // 如果已经过期，不返回这个错误的画布
+  // 如果已经过期，不缓存也不返回错误画布
   if (cacheGeneration !== tileCacheGeneration) {
-    return document.createElement('canvas');
+    return document.createElement('canvas')
   }
 
-  tileCache.set(tileCacheKey, offscreenCanvas)
+  setBoundedMapValue(tileCache, tileCacheKey, offscreenCanvas, MAX_TILE_CANVASES)
   return offscreenCanvas
 }
 
@@ -634,19 +696,31 @@ async function renderSpectrogram() {
   const requestId = ++renderSpectrogramRequestId
   const canvas = spectrogramCanvasRef.value
   if (!canvas) return
-  const ctx = canvas.getContext('2d')!
-  
-  // 清空主画布
-  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
 
-  if (!decodedAudioBuffer || totalDurationMs <= 0) return
+  const renderScale = scale.value
+  if (
+    !decodedAudioBuffer ||
+    totalDurationMs <= 0 ||
+    containerWidth.value <= 0 ||
+    !Number.isFinite(renderScale) ||
+    renderScale <= 0
+  ) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    return
+  }
 
   // 1. 算出当前屏幕可视区对应的毫秒范围
   const viewStartMs = Math.max(0, offset.value)
-  const renderScale = scale.value
   const level = currentLevel.value
   const cacheGeneration = tileCacheGeneration
   const viewEndMs = Math.min(totalDurationMs, viewStartMs + (containerWidth.value / renderScale))
+
+  if (viewStartMs >= totalDurationMs || viewEndMs <= viewStartMs) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    return
+  }
 
   // 2. 算出当前需要哪些瓦片块（Index）
   const startTileIdx = Math.floor(viewStartMs / TILE_DURATION_MS)
@@ -657,6 +731,7 @@ async function renderSpectrogram() {
   for (let idx = startTileIdx; idx <= endTileIdx; idx++) {
     const tileStartMs = idx * TILE_DURATION_MS
     const tileEndMs = Math.min(totalDurationMs, tileStartMs + TILE_DURATION_MS)
+    if (tileEndMs <= tileStartMs) continue
     const startChunkIndex = Math.floor(tileStartMs / CHUNK_DURATION_MS)
     const endChunkIndex = Math.floor((tileEndMs - 1) / CHUNK_DURATION_MS)
     for (let chunkIndex = startChunkIndex; chunkIndex <= endChunkIndex; chunkIndex++) {
@@ -677,9 +752,9 @@ async function renderSpectrogram() {
   // 4. 并行生成所有需要的瓦片
   const tilePromises: Array<Promise<{ idx: number; canvas: HTMLCanvasElement }>> = []
   for (let idx = startTileIdx; idx <= endTileIdx; idx++) {
-    const promise = getTileCanvas(idx, level, renderScale, cacheGeneration).then(canvas => ({
+    const promise = getTileCanvas(idx, level, renderScale, cacheGeneration).then(tileCanvas => ({
       idx,
-      canvas
+      canvas: tileCanvas
     }))
     tilePromises.push(promise)
   }
@@ -689,7 +764,8 @@ async function renderSpectrogram() {
     return
   }
 
-  // 5. 统一渲染所有瓦片到主画布
+  // 5. 清空并统一渲染所有瓦片到主画布（避免等待异步解算期间闪烁）
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
   for (const { idx, canvas: tileCanvas } of tiles) {
     const tileStartMs = idx * TILE_DURATION_MS
     const xInMainCanvas = (tileStartMs - viewStartMs) * renderScale
@@ -698,7 +774,6 @@ async function renderSpectrogram() {
 }
 
 const rowHeight = 30
-const RULER_HEIGHT = 20
 
 // ---------- 纵向虚拟滚动相关 ----------
 const tracksScrollTop = ref(0)
@@ -762,8 +837,8 @@ function syncTracksScrollTop(nextTop: number) {
   }
 
   const maxScrollTop = Math.max(0, tracksRef.value.scrollHeight - tracksRef.value.clientHeight)
-  const clampedTop = Math.max(0, Math.min(maxScrollTop, nextTop))
-  tracksRef.value.scrollTop = clampedTop
+  const clampedTop = Math.max(0, Math.min(maxScrollTop, Number.isFinite(nextTop) ? nextTop : 0))
+  tracksRef.value.scrollTo({ top: clampedTop, behavior: 'instant' as ScrollBehavior })
   tracksScrollTop.value = clampedTop
 }
 
@@ -776,15 +851,18 @@ function nudgeTracksScroll(delta: number) {
 }
 
 function ensurePlayheadVisible() {
+  if (!Number.isFinite(scale.value) || scale.value <= 0 || containerWidth.value <= 0) {
+    return
+  }
   const visibleDuration = containerWidth.value / scale.value
   if (!Number.isFinite(visibleDuration) || visibleDuration <= 0) {
     return
   }
 
-  const currentTime = store.currentTime
+  const currentTime = Number.isFinite(store.currentTime) ? Math.max(0, store.currentTime) : 0
   const visibleStart = offset.value
   const visibleEnd = visibleStart + visibleDuration
-  const edgePaddingPx = Math.min(containerWidth.value * 1)
+  const edgePaddingPx = Math.min(100, containerWidth.value * 0.15)
   const edgePaddingTime = edgePaddingPx / scale.value
 
   if (currentTime < visibleStart) {
@@ -799,12 +877,46 @@ function ensurePlayheadVisible() {
 
 // ===== 缩放功能 =====
 function setScaleAt(newScale: number, anchorTime: number, anchorX: number) {
-  const minScale = 0.01 // 最小缩放 1ms = 0.01px
-  const maxScale = 3 // 最大缩放 1ms = 3px
-  newScale = Math.max(minScale, Math.min(maxScale, newScale))
+  if (!Number.isFinite(newScale) || !Number.isFinite(anchorTime) || !Number.isFinite(anchorX)) {
+    return
+  }
+  const clampedScale = sanitizeScale(newScale)
+  scale.value = clampedScale
+  offset.value = Math.max(0, anchorTime - anchorX / clampedScale)
+}
 
-  scale.value = newScale
-  offset.value = Math.max(0, anchorTime - anchorX / newScale)
+function getDefaultZoomAnchor(): { anchorTime: number; anchorX: number } {
+  const playheadTime = Number.isFinite(store.currentTime) ? Math.max(0, store.currentTime) : 0
+  const currentPlayheadX = (playheadTime - offset.value) * scale.value
+  if (currentPlayheadX >= 0 && currentPlayheadX <= containerWidth.value) {
+    return { anchorTime: playheadTime, anchorX: currentPlayheadX }
+  }
+  const centerX = containerWidth.value / 2
+  return { anchorTime: offset.value + centerX / scale.value, anchorX: centerX }
+}
+
+function isTimelineModalOpen(): boolean {
+  return (
+    store.showCreationTools ||
+    store.showTemplateManager ||
+    store.screenRecordingMode ||
+    notice.isVisible ||
+    help.isVisible ||
+    store.showProjectManager
+  )
+}
+
+function isTextEditingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false
+  }
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    target.isContentEditable ||
+    Boolean(target.closest('[contenteditable="true"], [contenteditable=""]'))
+  )
 }
 
 function handleZoom(e: KeyboardEvent) {
@@ -821,42 +933,67 @@ function handleZoom(e: KeyboardEvent) {
     return
   }
 
-  // 以播放头位置缩放（保持播放头位置不变）
-  const playheadTime = store.currentTime
-  const oldPlayheadX = (playheadTime - offset.value) * scale.value
-  setScaleAt(newScale, playheadTime, oldPlayheadX)
+  const { anchorTime, anchorX } = getDefaultZoomAnchor()
+  setScaleAt(newScale, anchorTime, anchorX)
 }
 
 function handleWheelZoom(e: WheelEvent) {
-  if (!e.altKey) {
+  if (isTimelineModalOpen()) {
     return
   }
 
-  e.preventDefault()
-  if (e.deltaY === 0) {
+  if (e.altKey) {
+    e.preventDefault()
+    if (e.deltaY === 0) {
+      return
+    }
+
+    const zoomStep = e.deltaY < 0 ? 1.2 : 1 / 1.2
+    const rect = timelineRef.value?.getBoundingClientRect()
+    const isOverTimeline =
+      rect !== undefined &&
+      e.clientX >= rect.left &&
+      e.clientX <= rect.right &&
+      e.clientY >= rect.top &&
+      e.clientY <= rect.bottom
+
+    if (isOverTimeline && rect) {
+      const cursorX = e.clientX - rect.left
+      const cursorTime = offset.value + cursorX / scale.value
+      setScaleAt(scale.value * zoomStep, cursorTime, cursorX)
+    } else {
+      const { anchorTime, anchorX } = getDefaultZoomAnchor()
+      setScaleAt(scale.value * zoomStep, anchorTime, anchorX)
+    }
     return
   }
 
-  const playheadTime = store.currentTime
-  const playheadX = (playheadTime - offset.value) * scale.value
-  const zoomStep = e.deltaY < 0 ? 1.2 : 1 / 1.2
-
-  setScaleAt(scale.value * zoomStep, playheadTime, playheadX)
+  if (
+    e.shiftKey &&
+    !e.ctrlKey &&
+    !e.metaKey &&
+    e.deltaY !== 0 &&
+    timelineRef.value &&
+    timelineRef.value.contains(e.target as Node)
+  ) {
+    e.preventDefault()
+    offset.value = Math.max(0, offset.value + e.deltaY / scale.value)
+  }
 }
 
 // ===== 平移功能 =====
 function handlePan(e: KeyboardEvent) {
   const isCtrl = e.ctrlKey || e.metaKey
   const isAlt = e.altKey
-  
-  // 避免在输入框中触发快捷键
-  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-    return
-  }
-  
+  const stepMs = Number.isFinite(store.playheadStepMs) && store.playheadStepMs > 0
+    ? store.playheadStepMs
+    : 16.666667
+
+  const quantizeTime = (t: number, step: number) => Math.round(t / step) * step
+
   // 计算移动的距离
   let panDistance = 0 // 0表示不移动
-  
+
   if (isCtrl && isAlt && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
     // Ctrl+Alt: 移动30000ms (30秒)
     panDistance = 30000
@@ -865,92 +1002,78 @@ function handlePan(e: KeyboardEvent) {
     panDistance = containerWidth.value * 0.5 / scale.value
   } else if (!isCtrl && !isAlt && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
     // 普通方向键: 移动播放头到最近的stepMs的整数倍位置（排除当前位置）
-    const stepMs = store.playheadStepMs
-    
-    const current = store.currentTime
+    const current = Number.isFinite(store.currentTime) ? Math.max(0, store.currentTime) : 0
     const ratio = current / stepMs
-    
-    function quantizeTime(t: number, step: number) {
-      return Math.round(t / step) * step
-    }
+    const snapEpsilon = Math.min(0.5, stepMs * 0.25)
 
     let newTime: number
-    
+
     if (e.key === 'ArrowLeft') {
-      // 向左
       let base = Math.floor(ratio) * stepMs
-      
-      // 如果currentTime和base Math.round后一致，则再往前一个step
-      if (Math.round(current) === Math.round(base)) {
+      if (Math.abs(current - base) < snapEpsilon) {
         base -= stepMs
       }
-      
       newTime = Math.max(0, base)
     } else {
-      // 向右
       let base = Math.ceil(ratio) * stepMs
-      
-      // 如果currentTime和base Math.round后一致，则再往后一个step
-      if (Math.round(current) === Math.round(base)) {
+      if (Math.abs(current - base) < snapEpsilon) {
         base += stepMs
       }
-      
       newTime = base
     }
 
-    newTime = quantizeTime(newTime, stepMs)
-    
+    newTime = Math.max(0, quantizeTime(newTime, stepMs))
     store.setTime(newTime)
     e.preventDefault()
     return
   }
-  
+
   // 如果需要平移视图
-  if (panDistance > 0) {
+  if (panDistance > 0 && Number.isFinite(panDistance)) {
     e.preventDefault()
-    
+
     // 平移视图
     if (e.key === 'ArrowLeft') {
       offset.value = Math.max(0, offset.value - panDistance)
     } else if (e.key === 'ArrowRight') {
       offset.value = offset.value + panDistance
     }
-    
+
     // 同时平移播放头（Ctrl+方向键和Ctrl+Alt+方向键都平移播放头）
-    const stepMs = store.playheadStepMs
-    
-    function quantizeTime(t: number, step: number) {
-      return Math.round(t / step) * step
-    }
     let newTime = e.key === 'ArrowLeft'
       ? Math.max(0, store.currentTime - panDistance)
       : store.currentTime + panDistance
-    
-    newTime = quantizeTime(newTime, stepMs)
+
+    newTime = Math.max(0, quantizeTime(newTime, stepMs))
     store.setTime(newTime)
   }
 }
 
 function handleKeyboardShortcuts(e: KeyboardEvent) {
-  handleZoom(e)
-  handlePan(e)
-  
+  if (e.isComposing || e.keyCode === 229) {
+    return
+  }
+
   const isCtrl = e.ctrlKey || e.metaKey
   const isAlt = e.altKey
   const isShift = e.shiftKey
-  
-  if (store.showCreationTools || store.showTemplateManager || store.screenRecordingMode || notice.isVisible || help.isVisible || store.showProjectManager || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-    if ((e.code === 'KeyR' && (isCtrl || isShift) && !isAlt) || (e.key === 'F5' && isCtrl && !isAlt && !isShift)) {
+  const lowerKey = e.key.toLowerCase()
+
+  if (isTimelineModalOpen() || isTextEditingTarget(e.target)) {
+    if ((e.code === 'KeyR' && isCtrl && !isAlt) || (e.key === 'F5' && isCtrl && !isAlt && !isShift)) {
       e.preventDefault()
       return
     }
     return
   }
 
+  handleZoom(e)
+  handlePan(e)
+
   // ====== tracks样式操作 ======
   
   // `o` 切换tracks透明度
-  if (e.key === 'o' && !isCtrl && !isAlt && !isShift) {
+  if (lowerKey === 'o' && !isCtrl && !isAlt && !isShift) {
     e.preventDefault()
     tracksOpacityIndex.value = (tracksOpacityIndex.value + 1) % tracksOpacityLevels.length
     const currentOpacity = tracksOpacity.value
@@ -959,17 +1082,19 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   }
   
   // `p` 按住隐藏tracks，松开恢复
-  if (e.key === 'p' && !isCtrl && !isAlt && !isShift && !e.repeat) {
+  if (lowerKey === 'p' && !isCtrl && !isAlt && !isShift && !e.repeat) {
     e.preventDefault()
     tracksHidden.value = true
     console.log(`[快捷键] 隐藏tracks`)
+    return
   }
 
   // `i` 切换选中弹幕块时是否高亮
-  if (e.key === 'i' && !isCtrl && !isAlt && !isShift) {
+  if (lowerKey === 'i' && !isCtrl && !isAlt && !isShift) {
     e.preventDefault()
     useOriginalColorWhenSelect.value = !useOriginalColorWhenSelect.value
     console.log(`[快捷键] 切换选中弹幕块时是否高亮`)
+    return
   }
 
   // 操作视图上下或弹幕层级
@@ -1007,7 +1132,7 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   }
   
   // `ctrl+alt+c` 复制当前帧弹幕
-  if (e.key === 'c' && isCtrl && !isShift && isAlt) {
+  if (lowerKey === 'c' && isCtrl && !isShift && isAlt) {
     e.preventDefault()
     store.copyCurrentFrameDanmakus()
     console.log('[快捷键] 复制当前帧弹幕')
@@ -1015,7 +1140,7 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   }
   
   // `ctrl+c` 复制
-  if (e.key === 'c' && isCtrl && !isAlt && !isShift) {
+  if (lowerKey === 'c' && isCtrl && !isAlt && !isShift) {
     e.preventDefault()
     store.copySelectedDanmakus()
     console.log('[快捷键] 复制弹幕')
@@ -1023,7 +1148,7 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   }
   
   // `ctrl+v` 粘贴
-  if (e.key === 'v' && isCtrl && !isAlt && !isShift) {
+  if (lowerKey === 'v' && isCtrl && !isAlt && !isShift) {
     e.preventDefault()
     store.pasteDanmakus().catch((err) => {
       console.error('[快捷键] 粘贴失败:', err)
@@ -1035,7 +1160,7 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   // ====== 弹幕选中相关操作 ======
   
   // `ctrl+a` 全选弹幕
-  if (e.key === 'a' && isCtrl && !isAlt && !isShift) {
+  if (lowerKey === 'a' && isCtrl && !isAlt && !isShift) {
     e.preventDefault()
     const allIds = store.danmakus.map((d: any) => d.id)
     store.selectedIds = allIds
@@ -1044,7 +1169,7 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   }
   
   // `ctrl+r` 反选弹幕
-  if (e.key === 'r' && isCtrl && !isAlt && !isShift) {
+  if (lowerKey === 'r' && isCtrl && !isAlt && !isShift) {
     e.preventDefault()
     const allIds = store.danmakus.map((d: any) => d.id)
     const selectedSet = new Set(store.selectedIds)
@@ -1065,12 +1190,13 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   if (e.key === `Backspace` && isCtrl && !isAlt && !isShift) {
     e.preventDefault()
     store.clearSelection()
+    return
   }
   
   // ====== 回滚/重做 ======
   
   // `ctrl+z` 撤销
-  if (e.key === 'z' && isCtrl && !isAlt && !isShift) {
+  if (lowerKey === 'z' && isCtrl && !isAlt && !isShift) {
     e.preventDefault()
     store.undo()
     window.dispatchEvent(new CustomEvent('danmaku-update-buffer', { detail: { time: store.currentTime } }))
@@ -1078,8 +1204,8 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
     return
   }
   
-  // `ctrl+y` 重做
-  if (e.key === 'y' && isCtrl && !isAlt && !isShift) {
+  // `ctrl+y` / `ctrl+shift+z` 重做
+  if ((lowerKey === 'y' && isCtrl && !isAlt && !isShift) || (lowerKey === 'z' && isCtrl && !isAlt && isShift)) {
     e.preventDefault()
     store.redo()
     window.dispatchEvent(new CustomEvent('danmaku-update-buffer', { detail: { time: store.currentTime } }))
@@ -1092,18 +1218,12 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   // `[` 移动播放头到当前操作弹幕的起始位置
   if (e.key === '[' && !isCtrl && !isAlt && !isShift) {
     e.preventDefault()
-    if (activeBlockId.value) {
-      const danmaku = store.danmakus.find((d: any) => d.id === activeBlockId.value)
-      if (danmaku) {
-        store.setTime(danmaku.startTime)
+    const targetId = activeBlockId.value || store.selectedIds[0]
+    if (targetId) {
+      const danmaku = store.danmakus.find((d: any) => d.id === targetId)
+      if (danmaku && Number.isFinite(danmaku.startTime)) {
+        store.setTime(Math.max(0, Math.round(danmaku.startTime)))
         console.log('[快捷键] 移动播放头到弹幕起始位置:', danmaku.startTime)
-      }
-    } else if (store.selectedIds.length > 0) {
-      // 如果没有activeBlockId但有选中的弹幕，使用第一个选中的
-      const firstSelected = store.danmakus.find((d: any) => d.id === store.selectedIds[0])
-      if (firstSelected) {
-        store.setTime(firstSelected.startTime)
-        console.log('[快捷键] 移动播放头到弹幕起始位置:', firstSelected.startTime)
       }
     }
     return
@@ -1112,20 +1232,15 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
   // `]` 移动播放头到当前操作弹幕的结束位置
   if (e.key === ']' && !isCtrl && !isAlt && !isShift) {
     e.preventDefault()
-    if (activeBlockId.value) {
-      const danmaku = store.danmakus.find((d: any) => d.id === activeBlockId.value)
+    const targetId = activeBlockId.value || store.selectedIds[0]
+    if (targetId) {
+      const danmaku = store.danmakus.find((d: any) => d.id === targetId)
       if (danmaku) {
-        const endTime = danmaku.startTime + danmaku.animation.duration
-        store.setTime(endTime)
-        console.log('[快捷键] 移动播放头到弹幕结束位置:', endTime)
-      }
-    } else if (store.selectedIds.length > 0) {
-      // 如果没有activeBlockId但有选中的弹幕，使用第一个选中的
-      const firstSelected = store.danmakus.find((d: any) => d.id === store.selectedIds[0])
-      if (firstSelected) {
-        const endTime = firstSelected.startTime + firstSelected.animation.duration
-        store.setTime(endTime)
-        console.log('[快捷键] 移动播放头到弹幕结束位置:', endTime)
+        const endTime = Number(danmaku.startTime) + (Number(danmaku.animation?.duration) || 0)
+        if (Number.isFinite(endTime)) {
+          store.setTime(Math.max(0, Math.round(endTime)))
+          console.log('[快捷键] 移动播放头到弹幕结束位置:', endTime)
+        }
       }
     }
     return
@@ -1134,10 +1249,19 @@ function handleKeyboardShortcuts(e: KeyboardEvent) {
 
 function handleKeyboardUp(e: KeyboardEvent) {
   // `p` 松开恢复tracks
-  if (e.key === 'p') {
-    tracksHidden.value = false
-    console.log(`[快捷键] 恢复tracks`)
+  if (e.key.toLowerCase() === 'p') {
+    if (tracksHidden.value) {
+      tracksHidden.value = false
+      console.log(`[快捷键] 恢复tracks`)
+    }
   }
+}
+
+function onWindowBlur() {
+  if (tracksHidden.value) {
+    tracksHidden.value = false
+  }
+  onMouseUp()
 }
 
 onMounted(() => {
@@ -1146,6 +1270,7 @@ onMounted(() => {
   initSpectrogram()
   window.addEventListener('mousemove', onMouseMove)
   window.addEventListener('mouseup', onMouseUp)
+  window.addEventListener('blur', onWindowBlur)
   window.addEventListener('keydown', handleKeyboardShortcuts)
   window.addEventListener('keyup', handleKeyboardUp)
   window.addEventListener('wheel', handleWheelZoom, { passive: false })
@@ -1157,25 +1282,37 @@ onMounted(() => {
       syncTracksScrollTop(store.timelineScrollTop)
     })
   }
-  if (tracksRef.value) {
+  if (tracksRef.value || timelineRef.value) {
     tracksResizeObserver = new ResizeObserver(() => {
+      initContainerWidth()
       updateTracksViewHeight()
     })
-    tracksResizeObserver.observe(tracksRef.value)
+    if (tracksRef.value) {
+      tracksResizeObserver.observe(tracksRef.value)
+    }
+    if (timelineRef.value) {
+      tracksResizeObserver.observe(timelineRef.value)
+    }
   }
 })
 
 onUnmounted(() => {
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup', onMouseUp)
+  window.removeEventListener('blur', onWindowBlur)
   window.removeEventListener('keydown', handleKeyboardShortcuts)
   window.removeEventListener('keyup', handleKeyboardUp)
   window.removeEventListener('wheel', handleWheelZoom)
   window.removeEventListener('resize', handleWindowResize)
   destroySpectrogramWaveSurfer()
   resetSpectrogramData()
+  clearSuppressClick()
+  draggingDanmakusMap.clear()
+  dragInitialStates.value.clear()
+  cachedSnapTargets = []
   if (offsetAnimationFrame !== null) {
     cancelAnimationFrame(offsetAnimationFrame)
+    offsetAnimationFrame = null
   }
   if (tracksResizeObserver) {
     tracksResizeObserver.disconnect()
@@ -1213,16 +1350,19 @@ watch(
 watch(
   () => [store.timelineScale, store.timelineOffset, store.timelineScrollTop] as const,
   ([nextScale, nextOffset, nextScrollTop]) => {
-    if (scale.value !== nextScale) {
-      scale.value = nextScale
+    const safeScale = sanitizeScale(nextScale)
+    const safeOffset = sanitizeOffset(nextOffset)
+    const safeScrollTop = Math.max(0, Number.isFinite(nextScrollTop) ? nextScrollTop : 0)
+    if (scale.value !== safeScale) {
+      scale.value = safeScale
     }
-    if (offset.value !== nextOffset) {
-      offset.value = nextOffset
+    if (offset.value !== safeOffset) {
+      offset.value = safeOffset
     }
-    if (tracksScrollTop.value !== nextScrollTop) {
-      syncTracksScrollTop(nextScrollTop)
+    if (tracksScrollTop.value !== safeScrollTop) {
+      syncTracksScrollTop(safeScrollTop)
       requestAnimationFrame(() => {
-        syncTracksScrollTop(nextScrollTop)
+        syncTracksScrollTop(safeScrollTop)
       })
     }
   }
@@ -1234,26 +1374,31 @@ const TIME_STEPS = [100, 500, 1000, 2000, 5000, 10000]
 
 const ticks = computed(() => {
   const list = []
-  
+  const currentScale = scale.value
+  if (!Number.isFinite(currentScale) || currentScale <= 0 || containerWidth.value <= 0) {
+    return list
+  }
+
   // 目标：主刻度之间的物理间距保持在 80px - 160px 左右
   const targetPx = 100
-  const idealStep = targetPx / scale.value
-  
+  const idealStep = targetPx / currentScale
+
   // 找到最合适的步长
   const step = TIME_STEPS.find(s => s >= idealStep) || 20000
   // 子刻度：固定将主刻度五等分
   const subStep = step / 5
 
   const start = Math.floor(offset.value / subStep) * subStep
-  const end = offset.value + containerWidth.value / scale.value
+  const end = offset.value + containerWidth.value / currentScale
 
   for (let t = start; t < end; t += subStep) {
     const currentTime = Math.round(t * 1000) / 1000 // 防止浮点误差
-    const isMajor = Math.abs(currentTime % step) < 0.001
+    const rem = Math.abs(currentTime % step)
+    const isMajor = rem < 0.001 || Math.abs(rem - step) < 0.001
 
     list.push({
       time: currentTime,
-      x: (currentTime - offset.value) * scale.value,
+      x: (currentTime - offset.value) * currentScale,
       isMajor,
       // 只有主刻度返回格式化后的数字串，子刻度不返回内容
       label: isMajor ? formatTime(currentTime) : ''
@@ -1279,38 +1424,42 @@ const scrollbarSpacerHeight = computed(() => {
 })
 
 // ===== 弹幕块 =====
+function toSafeHexColor(rawColor: unknown, fallback = '#4CAF50'): string {
+  if (typeof rawColor !== 'string') return fallback
+  return expandHexToSixDigits(rawColor) ?? fallback
+}
+
 function getBlockStyle(d: any, danmakuColorForBlock: boolean, selected: boolean) {
-  let backgroundcolor = danmakuColorForBlock ? d.content.color : '#4caf50'
+  let backgroundcolor = danmakuColorForBlock ? toSafeHexColor(d.content?.color, '#4CAF50') : '#4CAF50'
   if (selected && !useOriginalColorWhenSelect.value) {
     backgroundcolor = blendColor(backgroundcolor, '#FFFFFF', 0.2)
   }
+  const duration = Math.max(0, Number(d.animation?.duration) || 0)
+  const startTime = Number(d.startTime) || 0
+  const layer = Math.max(0, Math.min(store.maxLayers - 1, Number(d.layer) || 0))
   return {
     position: 'absolute' as const,
     background: backgroundcolor,
-    left: (d.startTime - offset.value) * scale.value + 'px',
-    width: d.animation.duration * scale.value + 'px',
-    top: d.layer * rowHeight + 'px'
+    left: (startTime - offset.value) * scale.value + 'px',
+    width: Math.max(2, duration * scale.value) + 'px',
+    top: layer * rowHeight + 'px'
   }
 }
 
 function isLightColor(hexColor: string): boolean {
-  let color = hexColor.replace('#', '');
-  
-  if (color.length === 3) {
-    color = color.split('').map(char => char + char).join('');
-  }
+  const safeHex = toSafeHexColor(hexColor, '#4CAF50')
+  const color = safeHex.slice(1)
+  const r = parseInt(color.substring(0, 2), 16)
+  const g = parseInt(color.substring(2, 4), 16)
+  const b = parseInt(color.substring(4, 6), 16)
 
-  const r = parseInt(color.substring(0, 2), 16);
-  const g = parseInt(color.substring(2, 4), 16);
-  const b = parseInt(color.substring(4, 6), 16);
-
-  const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
-  return luminance > 192; 
+  const luminance = 0.299 * r + 0.587 * g + 0.114 * b
+  return luminance > 192
 }
 
 function getBlockTextStyle(d: any) {
-  const blockLeft = (d.startTime - offset.value) * scale.value
-  let backgroundcolor = store.danmakuColorForBlock ? d.content.color : '#4caf50'
+  const blockLeft = ((Number(d.startTime) || 0) - offset.value) * scale.value
+  const backgroundcolor = store.danmakuColorForBlock ? toSafeHexColor(d.content?.color, '#4CAF50') : '#4CAF50'
 
   return {
     left: Math.max(0, -blockLeft) + 'px',
@@ -1321,16 +1470,18 @@ function getBlockTextStyle(d: any) {
 // ---------- 横向虚拟滚动 ----------
 const visibleDanmakusByLayer = computed(() => {
   const map: Record<number, any[]> = {}
-  if (!Array.isArray(store.danmakus)) return map
+  if (!Array.isArray(store.danmakus) || !Number.isFinite(scale.value) || scale.value <= 0) return map
   const visStart = offset.value
   const visEnd = offset.value + containerWidth.value / scale.value
   for (const d of store.danmakus) {
     if (!d || typeof d !== 'object') continue
-    const blockStart = d.startTime
-    const blockEnd = d.startTime + d.animation.duration
+    const blockStart = Number(d.startTime)
+    const duration = Math.max(0, Number(d.animation?.duration) || 0)
+    if (!Number.isFinite(blockStart)) continue
+    const blockEnd = blockStart + duration
     // 相交即渲染
     if (blockEnd >= visStart && blockStart <= visEnd) {
-      const layer = d.layer
+      const layer = Math.max(0, Math.min(store.maxLayers - 1, Math.trunc(Number(d.layer) || 0)))
       if (!map[layer]) map[layer] = []
       map[layer].push(d)
     }
@@ -1342,10 +1493,16 @@ const visibleDanmakusByLayer = computed(() => {
 const dragging = ref(false)
 
 function onMouseDown(e: MouseEvent) {
+  if (e.button !== 0) {
+    return
+  }
+  clearSuppressClick()
+
+  const targetEl = e.target instanceof Element ? e.target : null
   // 检测是否在空白处点击（用于框选和取消选择）
-  const isOnBlock = (e.target as HTMLElement).closest('.block')
-  const isOnHandle = (e.target as HTMLElement).closest('.handle')
-  const isOnRuler = (e.target as HTMLElement).closest('.ruler')
+  const isOnBlock = targetEl?.closest('.block')
+  const isOnHandle = targetEl?.closest('.handle')
+  const isOnRuler = targetEl?.closest('.ruler')
   const isCtrlPressed = e.ctrlKey || e.metaKey
   
   // 点击空白处取消所有选择
@@ -1378,21 +1535,19 @@ function onMouseDown(e: MouseEvent) {
 
 function updateTime(e: MouseEvent) {
   const rect = timelineRef.value?.getBoundingClientRect()
-  if (!rect) {
+  if (!rect || !Number.isFinite(scale.value) || scale.value <= 0) {
     return
   }
 
   const x = e.clientX - rect.left
-
-  const time = roundTime(x / scale.value + offset.value)
-
+  const time = roundTime(Math.max(0, x / scale.value + offset.value))
   store.setTime(time)
 }
 
 const draggingBlock = ref<null | any>(null)
-const dragOffsetX = ref(0)
-const dragOffsetY = ref(0)
+const dragOffsetMs = ref(0)
 const dragInteractionChanged = ref(false)
+const snappedGuideTime = ref<number | null>(null)
 
 // 记录拖动时所有选中弹幕的初始状态
 interface DragState {
@@ -1401,6 +1556,11 @@ interface DragState {
   duration: number
 }
 const dragInitialStates = ref<Map<string, DragState>>(new Map())
+const draggingDanmakusMap = new Map<string, any>()
+let cachedSnapTargets: number[] = []
+let dragMinInitialStartTime = 0
+let dragMinInitialLayer = 0
+let dragMaxInitialLayer = 0
 const dragStartPageX = ref(0)
 const dragStartPageY = ref(0)
 
@@ -1409,8 +1569,28 @@ const activeBlockId = ref<string | null>(null)
 
 let hasRecordedSnapshotDuringDrag = false
 let hasRecordedSnapshotDuringResize = false
+let suppressNextBlockClick = false
+let suppressClickTimer: ReturnType<typeof setTimeout> | null = null
 let lastAutoScrollAt = 0
 let offsetAnimationFrame: number | null = null
+
+function clearSuppressClick() {
+  suppressNextBlockClick = false
+  if (suppressClickTimer !== null) {
+    clearTimeout(suppressClickTimer)
+    suppressClickTimer = null
+  }
+}
+
+function scheduleSuppressClickReset() {
+  if (suppressClickTimer !== null) {
+    clearTimeout(suppressClickTimer)
+  }
+  suppressClickTimer = setTimeout(() => {
+    suppressNextBlockClick = false
+    suppressClickTimer = null
+  }, 0)
+}
 
 const AUTO_SCROLL_X_TRIGGER_PX = 50
 const AUTO_SCROLL_Y_TRIGGER_PX = 20
@@ -1497,46 +1677,93 @@ function maybeAutoScrollDuringDrag(e: MouseEvent) {
   }
 }
 
+function prepareDragCaches(selectedIds: string[]) {
+  dragInitialStates.value.clear()
+  draggingDanmakusMap.clear()
+  const draggingSet = new Set(selectedIds)
+  const snapPoints: number[] = []
+  let minStart = Infinity
+  let minLayer = Infinity
+  let maxLayer = -Infinity
+
+  for (const item of store.danmakus as any[]) {
+    if (!item || typeof item !== 'object') continue
+    if (draggingSet.has(item.id)) {
+      const startTime = Number.isFinite(item.startTime) ? item.startTime : 0
+      const layer = Math.max(0, Math.min(store.maxLayers - 1, Number(item.layer) || 0))
+      const duration = Math.max(0, Number(item.animation?.duration) || 0)
+      draggingDanmakusMap.set(item.id, item)
+      dragInitialStates.value.set(item.id, { startTime, layer, duration })
+      if (startTime < minStart) minStart = startTime
+      if (layer < minLayer) minLayer = layer
+      if (layer > maxLayer) maxLayer = layer
+    } else if (Number.isFinite(item.startTime)) {
+      const dur = Math.max(0, Number(item.animation?.duration) || 0)
+      snapPoints.push(item.startTime, item.startTime + dur)
+    }
+  }
+
+  dragMinInitialStartTime = Number.isFinite(minStart) ? minStart : 0
+  dragMinInitialLayer = Number.isFinite(minLayer) ? minLayer : 0
+  dragMaxInitialLayer = Number.isFinite(maxLayer) ? maxLayer : 0
+
+  snapPoints.sort((a, b) => a - b)
+  const deduped: number[] = []
+  for (let i = 0; i < snapPoints.length; i++) {
+    if (i === 0 || snapPoints[i] !== snapPoints[i - 1]) {
+      deduped.push(snapPoints[i])
+    }
+  }
+  cachedSnapTargets = deduped
+}
+
 function onBlockMouseDown(e: MouseEvent, d: any) {
+  if (e.button !== 0) {
+    return
+  }
+  clearSuppressClick()
+
   const isCtrlPressed = e.ctrlKey || e.metaKey
   // Ctrl按下时不进入拖动模式，让onSelect处理多选
   if (isCtrlPressed) {
     return
   }
-  
+
+  const timelineRect = timelineRef.value?.getBoundingClientRect()
+  const tracksElement = tracksRef.value
+  if (!timelineRect || !tracksElement || !Number.isFinite(scale.value) || scale.value <= 0) {
+    return
+  }
+
+  if (!selectedIdSet.value.has(d.id)) {
+    store.selectDanmaku(d.id)
+  }
+
+  const selectedList = [...store.selectedIds]
+  prepareDragCaches(selectedList)
+  const activeDanmaku = draggingDanmakusMap.get(d.id)
+  if (!activeDanmaku) {
+    draggingDanmakusMap.clear()
+    dragInitialStates.value.clear()
+    cachedSnapTargets = []
+    return
+  }
+
   draggingBlock.value = d
   dragMode.value = 'move'
   hasRecordedSnapshotDuringDrag = false
   dragInteractionChanged.value = false
+  snappedGuideTime.value = null
   lastAutoScrollAt = 0
 
-  if (!store.selectedIds.includes(d.id)) {
-    store.selectDanmaku(d.id)
-  }
-
-  draggingIds.value = [...store.selectedIds]
+  draggingIds.value = selectedList
   activeBlockId.value = d.id // 标记当前操作的弹幕块
-  
-  // 记录所有选中弹幕的初始状态
-  recordDragInitialStates()
-  
-  // 根据activeBlockId（被点击的弹幕块）计算基准点
-  const activeDanmaku = store.danmakus.find((d: any) => d.id === activeBlockId.value)
-  if (activeDanmaku) {
-    const activeStartTimeX = (activeDanmaku.startTime - offset.value) * scale.value
-    
-    const timelineRect = timelineRef.value?.getBoundingClientRect()
-    const tracksElement = tracksRef.value
-    if (!timelineRect || !tracksElement) return
-    const scrollTop = tracksElement.scrollTop
-    
-    dragOffsetX.value = e.clientX - timelineRect.left - activeStartTimeX
-    dragOffsetY.value = e.clientY - timelineRect.top
-    
-    // dragStartLayer应该考虑ruler高度和scrollTop
-    dragStartLayer.value = Math.floor((e.clientY - timelineRect.top - RULER_HEIGHT + scrollTop) / rowHeight)
-  }
-  
+
+  const tracksRect = tracksElement.getBoundingClientRect()
+  const pointerTime = (e.clientX - timelineRect.left) / scale.value + offset.value
+  dragOffsetMs.value = pointerTime - (Number(activeDanmaku.startTime) || 0)
+  dragStartLayer.value = clampLayer(Math.floor((e.clientY - tracksRect.top + tracksElement.scrollTop) / rowHeight))
+
   // 记录全局鼠标位置（用于计算多选拖动的delta）
   dragStartPageX.value = e.pageX
   dragStartPageY.value = e.pageY
@@ -1544,19 +1771,31 @@ function onBlockMouseDown(e: MouseEvent, d: any) {
 
 function finishBlockInteraction() {
   const completedMode = dragMode.value
+  const hadChanges = dragInteractionChanged.value
 
-  if (dragInteractionChanged.value && completedMode) {
+  if (hadChanges && completedMode) {
     historyManager.recordSnapshot(
       store.danmakus,
       completedMode === 'move' ? '拖动弹幕' : '调整弹幕时长'
     )
+    suppressNextBlockClick = true
+    scheduleSuppressClickReset()
+  }
+
+  if (offsetAnimationFrame !== null) {
+    cancelAnimationFrame(offsetAnimationFrame)
+    offsetAnimationFrame = null
   }
 
   dragMode.value = null
   draggingBlock.value = null
   activeBlockId.value = null
   draggingIds.value = []
+  draggingDanmakusMap.clear()
+  dragInitialStates.value.clear()
+  cachedSnapTargets = []
   dragInteractionChanged.value = false
+  snappedGuideTime.value = null
   hasRecordedSnapshotDuringDrag = false
   hasRecordedSnapshotDuringResize = false
 }
@@ -1597,7 +1836,7 @@ function clampLayer(layer: number) {
 
 function getTimeFromClientX(clientX: number) {
   const rect = timelineRef.value?.getBoundingClientRect()
-  if (!rect) {
+  if (!rect || !Number.isFinite(scale.value) || scale.value <= 0) {
     return 0
   }
 
@@ -1656,50 +1895,48 @@ function resetSelectionBox() {
   }
 }
 
-function recordDragInitialStates() {
-  dragInitialStates.value.clear()
-  draggingIds.value.forEach(id => {
-    const d = store.danmakus.find((d: any) => d.id === id)
-    if (d) {
-      dragInitialStates.value.set(id, {
-        startTime: d.startTime,
-        layer: d.layer,
-        duration: d.animation.duration
-      })
-    }
-  })
-}
-
 function onSelect(e: MouseEvent, d: any) {
+  if (suppressNextBlockClick) {
+    clearSuppressClick()
+    return
+  }
   const multi = e.ctrlKey || e.metaKey
   store.selectDanmaku(d.id, multi)
 }
 
 function onResizeStart(e: MouseEvent, d: any, side: 'left' | 'right') {
-  dragMode.value = side === 'left' ? 'resize-left' : 'resize-right'
-  dragInteractionChanged.value = false
-  hasRecordedSnapshotDuringResize = false
-  lastAutoScrollAt = 0
+  if (e.button !== 0) {
+    return
+  }
+  clearSuppressClick()
 
-  if (!store.selectedIds.includes(d.id)) {
+  const timelineRect = timelineRef.value?.getBoundingClientRect()
+  if (!timelineRect || !Number.isFinite(scale.value) || scale.value <= 0) {
+    return
+  }
+
+  if (!selectedIdSet.value.has(d.id)) {
     store.selectDanmaku(d.id)
   }
 
-  draggingIds.value = [...store.selectedIds]
-  activeBlockId.value = d.id // 标记当前操作的弹幕块
-  
-  // 记录所有选中弹幕的初始状态
-  recordDragInitialStates()
-  
-  // 根据activeBlockId（被点击的弹幕块）计算基准点
-  const activeDanmaku = store.danmakus.find((d: any) => d.id === activeBlockId.value)
-  if (activeDanmaku) {
-    const activeStartTimeX = (activeDanmaku.startTime - offset.value) * scale.value
-    const timelineRect = timelineRef.value?.getBoundingClientRect()
-    if (!timelineRect) return
-    dragOffsetX.value = e.clientX - timelineRect.left - activeStartTimeX
+  const selectedList = [...store.selectedIds]
+  prepareDragCaches(selectedList)
+  if (!draggingDanmakusMap.has(d.id)) {
+    draggingDanmakusMap.clear()
+    dragInitialStates.value.clear()
+    cachedSnapTargets = []
+    return
   }
-  
+
+  dragMode.value = side === 'left' ? 'resize-left' : 'resize-right'
+  dragInteractionChanged.value = false
+  hasRecordedSnapshotDuringResize = false
+  snappedGuideTime.value = null
+  lastAutoScrollAt = 0
+
+  draggingIds.value = selectedList
+  activeBlockId.value = d.id // 标记当前操作的弹幕块
+
   // 记录鼠标位置（用于计算resize的delta）
   dragStartPageX.value = e.pageX
   dragStartPageY.value = e.pageY
@@ -1714,75 +1951,105 @@ const SNAP_DISTANCE_PX = 5
 const MIN_BLOCK_DURATION = 10
 
 function getSnapThresholdMs() {
-  return SNAP_DISTANCE_PX / scale.value
+  return SNAP_DISTANCE_PX / Math.max(MIN_SCALE, scale.value)
 }
 
-function getSnapTargets() {
-  const targets: number[] = [store.currentTime]
-
-  // 所有弹幕起点和结束点（排除正在被拖动的对象）
-  store.danmakus.forEach((d: any) => {
-    if (!draggingIds.value.includes(d.id)) {
-      targets.push(d.startTime)
-      targets.push(d.startTime + d.animation.duration)
-    }
-  })
-
-  return targets
-}
-
-function snapTime(time: number) {
-  const threshold = getSnapThresholdMs()
-  const targets = getSnapTargets()
-
-  let closestTarget: number | null = null
+function findNearestSnapTarget(query: number): { target: number; dist: number } | null {
+  const targets = cachedSnapTargets
+  let bestTarget: number | null = null
   let minDistance = Infinity
 
-  for (const target of targets) {
-    const distance = Math.abs(target - time)
-    if (distance < minDistance) {
-      minDistance = distance
-      closestTarget = target
+  if (targets.length > 0) {
+    let lo = 0
+    let hi = targets.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1
+      if (targets[mid] < query) {
+        lo = mid + 1
+      } else {
+        hi = mid
+      }
+    }
+    bestTarget = targets[lo]
+    minDistance = Math.abs(bestTarget - query)
+    if (lo > 0) {
+      const prev = targets[lo - 1]
+      const prevDist = Math.abs(prev - query)
+      if (prevDist < minDistance) {
+        bestTarget = prev
+        minDistance = prevDist
+      }
     }
   }
 
-  if (closestTarget !== null && minDistance <= threshold) {
-    return roundTime(closestTarget)
+  if (Number.isFinite(store.currentTime)) {
+    const playheadDist = Math.abs(store.currentTime - query)
+    if (playheadDist < minDistance) {
+      minDistance = playheadDist
+      bestTarget = store.currentTime
+    }
   }
 
-  return roundTime(time)
+  if (bestTarget === null) {
+    return null
+  }
+  return { target: bestTarget, dist: minDistance }
 }
 
-function snapMoveStartTime(startTime: number, duration: number) {
+function snapTime(time: number): { time: number; guide: number | null } {
   const threshold = getSnapThresholdMs()
-  const targets = getSnapTargets()
+  const nearest = findNearestSnapTarget(time)
+
+  if (nearest && nearest.dist <= threshold) {
+    const snapped = roundTime(nearest.target)
+    return { time: snapped, guide: snapped }
+  }
+
+  return { time: roundTime(time), guide: null }
+}
+
+function snapMoveStartTime(startTime: number, duration: number): { startTime: number; guide: number | null } {
+  const threshold = getSnapThresholdMs()
   const endTime = startTime + duration
+
+  const startNearest = findNearestSnapTarget(startTime)
+  const endNearest = findNearestSnapTarget(endTime)
 
   let snappedStartTime = startTime
   let minDistance = Infinity
+  let matchedGuide: number | null = null
 
-  for (const target of targets) {
-    const startDistance = Math.abs(target - startTime)
-    if (startDistance < minDistance) {
-      minDistance = startDistance
-      snappedStartTime = target
-    }
+  if (startNearest && startNearest.dist < minDistance) {
+    minDistance = startNearest.dist
+    snappedStartTime = startNearest.target
+    matchedGuide = startNearest.target
+  }
 
-    const endDistance = Math.abs(target - endTime)
-    if (endDistance < minDistance) {
-      minDistance = endDistance
-      snappedStartTime = target - duration
+  if (endNearest && endNearest.dist < minDistance) {
+    minDistance = endNearest.dist
+    snappedStartTime = endNearest.target - duration
+    matchedGuide = endNearest.target
+  }
+
+  if (minDistance <= threshold && matchedGuide !== null) {
+    return {
+      startTime: roundTime(Math.max(0, snappedStartTime)),
+      guide: roundTime(matchedGuide)
     }
   }
 
-  if (minDistance <= threshold) {
-    return roundTime(Math.max(0, snappedStartTime))
+  return {
+    startTime: roundTime(Math.max(0, startTime)),
+    guide: null
   }
-
-  return roundTime(Math.max(0, startTime))
 }
 
 function onMouseMove(e: MouseEvent) {
+  if ((isBoxSelectingMode.value || dragging.value || dragMode.value) && (e.buttons & 1) === 0) {
+    onMouseUp(e)
+    return
+  }
+
   // 框选模式
   if (isBoxSelectingMode.value) {
     selectionBox.value.pointerClientX = e.clientX
@@ -1814,47 +2081,44 @@ function onMouseMove(e: MouseEvent) {
     dragInteractionChanged.value = true
   }
 
-  // 问题3修复：从.tracks获取scrollTop，而不是e.currentTarget（timeline）
+  if (!dragInteractionChanged.value) {
+    return
+  }
+
   const tracksElement = tracksRef.value
   const currentTimeline = timelineRef.value
-  if (!tracksElement || !currentTimeline) return
-  const scrollTop = tracksElement.scrollTop
+  if (!tracksElement || !currentTimeline || !Number.isFinite(scale.value) || scale.value <= 0) return
+  const tracksRect = tracksElement.getBoundingClientRect()
   const timelineRect = currentTimeline.getBoundingClientRect()
-  
+
   const x = e.clientX - timelineRect.left
-  const y = e.clientY - timelineRect.top - RULER_HEIGHT + scrollTop // ruler高度补偿
+  const y = e.clientY - tracksRect.top + tracksElement.scrollTop
 
   const rawTime = x / scale.value + offset.value
   const layer = clampLayer(Math.floor(y / rowHeight))
 
   if (dragMode.value === 'move') {
-    // 批量拖动：基于activeBlockId计算delta，然后应用到所有选中弹幕
     const activeInitial = dragInitialStates.value.get(activeBlockId.value!)
-    
+
     if (activeInitial) {
-      // 计算activeBlockId弹幕应该移动到的位置
-      const rawStartTime = Math.max(0, rawTime - dragOffsetX.value / scale.value)
-      const snappedStartTime = snapMoveStartTime(rawStartTime, activeInitial.duration)
-      const deltaTime = snappedStartTime - activeInitial.startTime
-      
-      // 使用dragStartLayer计算deltaLayer
-      const initialLayers = draggingIds.value
-        .map((id) => dragInitialStates.value.get(id)?.layer)
-        .filter((value): value is number => value !== undefined)
-      const minInitialLayer = initialLayers.length > 0 ? Math.min(...initialLayers) : 0
-      const maxInitialLayer = initialLayers.length > 0 ? Math.max(...initialLayers) : 0
+      const rawStartTime = Math.max(0, rawTime - dragOffsetMs.value)
+      const snapped = snapMoveStartTime(rawStartTime, activeInitial.duration)
+      const proposedDeltaTime = snapped.startTime - activeInitial.startTime
+      const deltaTime = Math.max(-dragMinInitialStartTime, proposedDeltaTime)
+      snappedGuideTime.value = deltaTime === proposedDeltaTime ? snapped.guide : null
+
       const proposedDeltaLayer = layer - dragStartLayer.value
       const deltaLayer = Math.min(
-        (store.maxLayers - 1) - maxInitialLayer,
-        Math.max(-minInitialLayer, proposedDeltaLayer)
+        (store.maxLayers - 1) - dragMaxInitialLayer,
+        Math.max(-dragMinInitialLayer, proposedDeltaLayer)
       )
-      
+
       // 应用delta给所有选中弹幕
       draggingIds.value.forEach(id => {
-        const d = store.danmakus.find((d: any) => d.id === id)
+        const d = draggingDanmakusMap.get(id)
         const initial = dragInitialStates.value.get(id)
         if (!d || !initial) return
-        
+
         d.startTime = Math.max(0, initial.startTime + deltaTime)
         d.layer = Math.max(0, Math.min(store.maxLayers - 1, initial.layer + deltaLayer))
       })
@@ -1862,50 +2126,47 @@ function onMouseMove(e: MouseEvent) {
   }
 
   if (dragMode.value === 'resize-left') {
-    // 批量左边缩放：基于activeBlockId计算delta，应用到所有选中弹幕
-    let leftTime = snapTime(rawTime)
-    
+    const snapped = snapTime(Math.max(0, rawTime))
+    const leftTime = Math.max(0, snapped.time)
     const activeInitial = dragInitialStates.value.get(activeBlockId.value!)
-    
+
     if (activeInitial) {
-      // 计算activeBlockId弹幕的startTime改变量
       const end = activeInitial.startTime + activeInitial.duration
       const newStartTime = Math.min(leftTime, end - MIN_BLOCK_DURATION)
       const deltaStartTime = newStartTime - activeInitial.startTime
-      
+      snappedGuideTime.value = newStartTime === leftTime ? snapped.guide : null
+
       // 将delta应用到所有选中弹幕
       draggingIds.value.forEach(id => {
-        const d = store.danmakus.find((d: any) => d.id === id)
+        const d = draggingDanmakusMap.get(id)
         const initial = dragInitialStates.value.get(id)
         if (!d || !initial) return
-        
+
         const initialEnd = initial.startTime + initial.duration
         const newStart = Math.max(0, initial.startTime + deltaStartTime)
         d.startTime = Math.min(newStart, initialEnd - MIN_BLOCK_DURATION)
-        d.animation.duration = Math.round(initialEnd - d.startTime)
+        d.animation.duration = Math.max(MIN_BLOCK_DURATION, Math.round(initialEnd - d.startTime))
       })
     }
   }
 
   if (dragMode.value === 'resize-right') {
-    // 批量右边缩放：基于activeBlockId计算delta，应用到所有选中弹幕
-    let rightTime = snapTime(rawTime)
-    
+    const snapped = snapTime(Math.max(0, rawTime))
+    const rightTime = Math.max(0, snapped.time)
     const activeInitial = dragInitialStates.value.get(activeBlockId.value!)
-    
+
     if (activeInitial) {
-      // 计算activeBlockId弹幕的duration改变量
       const activeEnd = activeInitial.startTime + activeInitial.duration
       const deltaDuration = rightTime - activeEnd
-      
+      snappedGuideTime.value = activeInitial.duration + deltaDuration >= MIN_BLOCK_DURATION ? snapped.guide : null
+
       // 将delta应用到所有选中弹幕
       draggingIds.value.forEach(id => {
-        const d = store.danmakus.find((d: any) => d.id === id)
+        const d = draggingDanmakusMap.get(id)
         const initial = dragInitialStates.value.get(id)
         if (!d || !initial) return
-        
-        const newDuration = Math.max(MIN_BLOCK_DURATION, initial.duration + deltaDuration)
-        d.animation.duration = newDuration
+
+        d.animation.duration = Math.max(MIN_BLOCK_DURATION, roundTime(initial.duration + deltaDuration))
       })
     }
   }
@@ -1955,6 +2216,10 @@ function onMouseUp(e?: MouseEvent) {
     }
     
     resetSelectionBox()
+    if (offsetAnimationFrame !== null) {
+      cancelAnimationFrame(offsetAnimationFrame)
+      offsetAnimationFrame = null
+    }
     return
   }
   
@@ -2034,6 +2299,16 @@ function onMouseUp(e?: MouseEvent) {
   pointer-events: none;
 }
 
+.snap-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed #4fc3f7;
+  z-index: 10;
+  pointer-events: none;
+}
+
 /* 轨道 */
 .tracks {
   position: relative;
@@ -2041,7 +2316,6 @@ function onMouseUp(e?: MouseEvent) {
   overflow-y: scroll;
   overflow-x: hidden;
   scrollbar-gutter: stable;
-  scroll-behavior: smooth;
   z-index: 2;
 }
 

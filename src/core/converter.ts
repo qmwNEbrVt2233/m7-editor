@@ -89,6 +89,15 @@ export interface XmlParseResult {
  * 若转换失败则回退到 fallback
  */
 function toSafeNumber(value: unknown, fallback = 0): number {
+  if (value === null || value === undefined) {
+    return fallback
+  }
+  if (typeof value === 'string' && value.trim() === '') {
+    return fallback
+  }
+  if (typeof value !== 'number' && typeof value !== 'string' && typeof value !== 'boolean') {
+    return fallback
+  }
   const numeric = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(numeric) ? numeric : fallback
 }
@@ -140,11 +149,16 @@ function parseOpacity(value: unknown): { from: number; to: number } {
  * 若转换结果为 0，则修正为 1
  */
 function colorToDecimal(color: string): number {
-  const normalized = /^#?[0-9a-fA-F]{6}$/.test(color)
-    ? color.replace('#', '')
-    : DEFAULT_COLOR.replace('#', '')
+  const raw = typeof color === 'string' ? color.trim() : ''
+  let hex = DEFAULT_COLOR.replace('#', '')
+  if (/^#?[0-9a-fA-F]{6}$/.test(raw)) {
+    hex = raw.replace('#', '')
+  } else if (/^#?[0-9a-fA-F]{3}$/.test(raw)) {
+    const short = raw.replace('#', '')
+    hex = `${short[0]}${short[0]}${short[1]}${short[1]}${short[2]}${short[2]}`
+  }
 
-  const decimal = parseInt(normalized, 16)
+  const decimal = parseInt(hex, 16)
   return decimal === 0 ? 1 : decimal
 }
 
@@ -237,34 +251,6 @@ function convertCoordinateToXml(
   return { value: finalRatio, exceeded }
 }
 
-/**
- * 判断指定 layer 上是否与已有弹幕发生时间冲突
- */
-function hasLayerConflict(
-  danmakus: DanmakuItem[],
-  startTime: number,
-  duration: number,
-  layer: number
-): boolean {
-  return danmakus.some((danmaku) => {
-    if (danmaku.layer !== layer) {
-      return false
-    }
-
-    return startTime < danmaku.startTime + danmaku.animation.duration &&
-      danmaku.startTime < startTime + duration
-  })
-}
-
-/**
- * 导入 XML 后重新分配 layer
- *
- * 规则：
- * 1. 先按 startTime 排序
- * 2. startTime 相同则按 sendTime/date 排序
- * 3. 同一时刻内，sendTime 越大，layer 越靠上
- * 4. 同时做时间冲突避让，避免重叠弹幕挤在同一层
- */
 function assignLayersForImportedDanmakus(entries: ParsedXmlDanmaku[], maxLayers: number): DanmakuItem[] {
   const sortedEntries = [...entries].sort((a, b) => {
     return a.item.startTime - b.item.startTime ||
@@ -273,6 +259,8 @@ function assignLayersForImportedDanmakus(entries: ParsedXmlDanmaku[], maxLayers:
   })
 
   const assignedDanmakus: DanmakuItem[] = []
+  // 各层级当前已占用弹幕的最大结束时间；由于按 startTime 升序遍历且 duration >= 1，O(1) 即可判定冲突
+  const layerEndTimes: number[] = []
   let nextId = 1
   let index = 0
 
@@ -286,22 +274,29 @@ function assignLayersForImportedDanmakus(entries: ParsedXmlDanmaku[], maxLayers:
 
       while (
         targetLayer < maxLayers &&
-        hasLayerConflict(
-          assignedDanmakus,
-          currentEntry.item.startTime,
-          currentEntry.item.animation.duration,
-          targetLayer
-        )
+        targetLayer < layerEndTimes.length &&
+        currentStartTime < layerEndTimes[targetLayer]
       ) {
         targetLayer++
       }
 
-      currentEntry.item.layer = Math.min(targetLayer, maxLayers - 1)
+      const assignedLayer = Math.min(targetLayer, maxLayers - 1)
+      currentEntry.item.layer = assignedLayer
       currentEntry.item.id = String(nextId)
       nextId++
 
+      const endTime = currentStartTime + currentEntry.item.animation.duration
+      if (assignedLayer >= layerEndTimes.length) {
+        while (layerEndTimes.length < assignedLayer) {
+          layerEndTimes.push(-Infinity)
+        }
+        layerEndTimes.push(endTime)
+      } else if (endTime > layerEndTimes[assignedLayer]) {
+        layerEndTimes[assignedLayer] = endTime
+      }
+
       assignedDanmakus.push(currentEntry.item)
-      minimumLayerForCurrentStartTime = currentEntry.item.layer + 1
+      minimumLayerForCurrentStartTime = assignedLayer + 1
       index++
     }
   }
@@ -443,7 +438,7 @@ function createDanmakuFromXmlNode(
       font: normalizeFontFromXml(body[12]),
       size: Math.max(MIN_SIZE, Math.round(toSafeNumber(p[2], DEFAULT_SIZE))),
       color: decimalToColor(p[3]),
-      stroke: toSafeNumber(body[11], 0) !== 0
+      stroke: body[11] === true || toSafeNumber(body[11], 0) !== 0
     },
     transform: {
       start: { x: startX, y: startY },
@@ -479,15 +474,16 @@ function buildXmlDanmakuTag(
   sendTime: number,
   options: Required<XmlExportOptions>
 ): { tag: string; exceeded: boolean } {
+  const safeStartTime = Math.max(0, toSafeNumber(danmaku.startTime, 0))
   const durationMs = Math.max(
     1,
-    Math.round(toSafeNumber(danmaku.animation.duration, DEFAULT_DURATION_MS) + options.durationOffsetMs)
+    Math.round(toSafeNumber(danmaku.animation?.duration, DEFAULT_DURATION_MS) + options.durationOffsetMs)
   )
   const p = [
-    (danmaku.startTime / 1000).toFixed(5),
+    (safeStartTime / 1000).toFixed(5),
     7,
-    Math.max(MIN_SIZE, Math.round(toSafeNumber(danmaku.content.size, DEFAULT_SIZE))),
-    colorToDecimal(danmaku.content.color),
+    Math.max(MIN_SIZE, Math.round(toSafeNumber(danmaku.content?.size, DEFAULT_SIZE))),
+    colorToDecimal(danmaku.content?.color ?? DEFAULT_COLOR),
     sendTime,
     0,
     '0',
@@ -498,28 +494,28 @@ function buildXmlDanmakuTag(
   let exceeded = false
 
   const startXCoord = convertCoordinateToXml(
-    danmaku.transform.start.x,
+    danmaku.transform?.start?.x ?? 0,
     options.screenWidth,
     options.useRatioPosition
   )
   if (startXCoord.exceeded) exceeded = true
 
   const startYCoord = convertCoordinateToXml(
-    danmaku.transform.start.y,
+    danmaku.transform?.start?.y ?? 0,
     options.screenHeight,
     options.useRatioPosition
   )
   if (startYCoord.exceeded) exceeded = true
 
   const endXCoord = convertCoordinateToXml(
-    danmaku.transform.end.x,
+    danmaku.transform?.end?.x ?? 0,
     options.screenWidth,
     options.useRatioPosition
   )
   if (endXCoord.exceeded) exceeded = true
 
   const endYCoord = convertCoordinateToXml(
-    danmaku.transform.end.y,
+    danmaku.transform?.end?.y ?? 0,
     options.screenHeight,
     options.useRatioPosition
   )
@@ -528,18 +524,18 @@ function buildXmlDanmakuTag(
   const body = JSON.stringify([
     startXCoord.value,
     startYCoord.value,
-    `${clampOpacity(danmaku.opacity.from)}-${clampOpacity(danmaku.opacity.to)}`,
+    `${clampOpacity(danmaku.opacity?.from)}-${clampOpacity(danmaku.opacity?.to)}`,
     Number((durationMs / 1000).toFixed(3)),
-    danmaku.content.text,
-    toSafeNumber(danmaku.transform.zRotate, 0),
-    toSafeNumber(danmaku.transform.yRotate, 0),
+    String(danmaku.content?.text ?? ''),
+    toSafeNumber(danmaku.transform?.zRotate, 0),
+    toSafeNumber(danmaku.transform?.yRotate, 0),
     endXCoord.value,
     endYCoord.value,
-    Math.max(0, Math.round(toSafeNumber(danmaku.animation.moveDuration, DEFAULT_MOVE_DURATION_MS))),
-    Math.max(0, Math.round(toSafeNumber(danmaku.animation.delay, 0))),
-    danmaku.content.stroke ? 1 : 0,
-    formatFontForXml(danmaku.content.font),
-    danmaku.animation.easing === 'speedup' ? 1 : 0
+    Math.max(0, Math.round(toSafeNumber(danmaku.animation?.moveDuration, DEFAULT_MOVE_DURATION_MS))),
+    Math.max(0, Math.round(toSafeNumber(danmaku.animation?.delay, 0))),
+    danmaku.content?.stroke ? 1 : 0,
+    formatFontForXml(String(danmaku.content?.font ?? DEFAULT_FONT)),
+    danmaku.animation?.easing === 'speedup' ? 1 : 0
   ])
 
   const tag = `  <d p="${p}">${escapeXmlText(body)}</d>`
@@ -557,7 +553,6 @@ function buildXmlDanmakuTag(
  * 5. 若比例导出时有坐标超过屏幕，则修正为 0.999 并弹出一次性提示
  */
 export function toXML(list: DanmakuItem[], options: XmlExportOptions = {}): string {
-  const notice = useNoticeStore()
   const normalizedOptions: Required<XmlExportOptions> = {
     useRatioPosition: options.useRatioPosition ?? false,
     screenWidth: normalizeScreenWidth(options.screenWidth),
@@ -565,10 +560,10 @@ export function toXML(list: DanmakuItem[], options: XmlExportOptions = {}): stri
     durationOffsetMs: Math.round(toSafeNumber(options.durationOffsetMs, 0))
   }
 
-  const sortedDanmakus = [...list].sort((a, b) => {
-    return a.startTime - b.startTime ||
-      a.layer - b.layer ||
-      toSafeNumber(a.id, 0) - toSafeNumber(b.id, 0)
+  const sortedDanmakus = [...(Array.isArray(list) ? list : [])].sort((a, b) => {
+    return toSafeNumber(a?.startTime, 0) - toSafeNumber(b?.startTime, 0) ||
+      toSafeNumber(a?.layer, 0) - toSafeNumber(b?.layer, 0) ||
+      toSafeNumber(a?.id, 0) - toSafeNumber(b?.id, 0)
   })
 
   const baseSendTime = Math.floor(Date.now() / 1000)
@@ -581,7 +576,12 @@ export function toXML(list: DanmakuItem[], options: XmlExportOptions = {}): stri
   }).join('\n')
 
   if (anyExceeded) {
-    notice.alert('您的工程内有超过屏幕大小的弹幕，导出后坐标会被修正至0.999，这会导致您的弹幕导出后显示与预期不符', 'warn')
+    try {
+      const notice = useNoticeStore()
+      notice.alert('您的工程内有超过屏幕大小的弹幕，导出后坐标会被修正至0.999，这会导致您的弹幕导出后显示与预期不符', 'warn')
+    } catch {
+      console.warn('[XML 导出] 工程内有超过屏幕大小的弹幕，坐标已修正至 0.999')
+    }
   }
 
   const xmlParts = [
@@ -614,6 +614,9 @@ export function toXML(list: DanmakuItem[], options: XmlExportOptions = {}): stri
  * 4. 坐标会根据 screen 宽高进行比例转像素
  */
 export function parseXML(xml: string, options: XmlImportOptions = {}): XmlParseResult {
+  if (typeof xml !== 'string' || !xml.trim()) {
+    throw new Error('XML 文件内容为空，无法解析')
+  }
   const parser = new DOMParser()
   const document = parser.parseFromString(xml, 'application/xml')
   const parserError = document.querySelector('parsererror')

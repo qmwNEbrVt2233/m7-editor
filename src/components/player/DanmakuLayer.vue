@@ -7,10 +7,7 @@
         class="danmaku"
         :style="getPausedStyle(d, +index)"
       >
-        <div
-          class="danmaku-content"
-          v-html="formatText(d.content.text)"
-        ></div>
+        <div class="danmaku-content">{{ d.content.text }}</div>
       </div>
     </template>
 
@@ -30,10 +27,7 @@
       class="danmaku"
       :style="getGhostStyle(request.danmaku, index)"
     >
-      <div
-        class="danmaku-content"
-        v-html="formatText(request.danmaku.content.text)"
-      ></div>
+      <div class="danmaku-content">{{ request.danmaku.content.text }}</div>
     </div>
   </div>
 </template>
@@ -55,9 +49,54 @@ const props = defineProps<{
 const BUFFER_WINDOW = 10000 // 缓存窗口：10秒
 const PRELOAD_THRESHOLD = 1000 // 预加载阈值：1秒
 const JITTER_TOLERANCE = 500 // 抖动容差：500ms（解决视频时间微小倒退导致的频繁重算）
+const MAX_PLAYBACK_NODE_POOL = 500
 const DANMAKU_VISIBILITY_EVENT = 'danmaku-selection-visibility'
 
 type DanmakuVisibilityMode = 'hide' | 'only'
+
+const GENERIC_FONT_FAMILIES = new Set([
+  'serif',
+  'sans-serif',
+  'monospace',
+  'cursive',
+  'fantasy',
+  'system-ui',
+  'ui-serif',
+  'ui-sans-serif',
+  'ui-monospace',
+  'ui-rounded',
+  'emoji',
+  'math',
+  'fangsong'
+])
+
+function formatFontFamilyForCss(font: string): string {
+  const raw = String(font || '').trim()
+  if (!raw) {
+    return 'Arial, Helvetica, sans-serif'
+  }
+  const parts = raw
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      if (
+        (part.startsWith('"') && part.endsWith('"')) ||
+        (part.startsWith("'") && part.endsWith("'")) ||
+        GENERIC_FONT_FAMILIES.has(part.toLowerCase())
+      ) {
+        return part
+      }
+      if (/^[a-zA-Z_-][a-zA-Z0-9_-]*$/.test(part)) {
+        return part
+      }
+      return `'${part.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
+    })
+  if (parts.length === 0) {
+    return 'Arial, Helvetica, sans-serif'
+  }
+  return `${parts.join(', ')}, Arial, Helvetica, sans-serif`
+}
 
 // 使用 shallowRef 拒绝深度 Proxy 劫持
 const activeBuffer = shallowRef<DanmakuItem[]>([])
@@ -74,12 +113,14 @@ let playbackVisibleDanmakus: DanmakuItem[] = []
 let playbackNextStartIndex = 0
 let playbackLastTime = 0
 let playbackResyncRequested = false
+let measureQueue: Promise<void> = Promise.resolve()
+// 对编辑器修改引发的全量重算进行防抖（Debounce）
+let editTimeout: ReturnType<typeof setTimeout> | null = null
+
 const playbackActiveNodes = new Map<string, HTMLDivElement>()
 const playbackNodePool: HTMLDivElement[] = []
 
-const danmakuBufferSignature = computed(() => {
-  return JSON.stringify(props.renderDanmakus ?? store.danmakus)
-})
+const selectedIdSet = computed(() => new Set(store.selectedIds))
 
 const isSnapshotRender = computed(() => props.renderTimeMs !== undefined && props.renderTimeMs !== null)
 const isAggressivePlaybackActive = computed(() => {
@@ -103,28 +144,58 @@ function sortDanmakus(danmakus: DanmakuItem[]) {
   })
 }
 
-function getDanmakuEndTime(d: DanmakuItem) {
-  return d.startTime + d.animation.duration
+function getDanmakuDuration(d: DanmakuItem): number {
+  const duration = Number(d.animation?.duration)
+  return Number.isFinite(duration) && duration > 0 ? duration : 0
 }
 
 function isVisibleAtTime(d: DanmakuItem, time: number) {
-  return time >= d.startTime && time <= getDanmakuEndTime(d)
+  const startTime = Number(d.startTime)
+  if (!Number.isFinite(startTime) || !Number.isFinite(time)) {
+    return false
+  }
+  return time >= startTime && time <= startTime + getDanmakuDuration(d)
+}
+
+function hasVisibleAppearance(d: DanmakuItem): boolean {
+  if (!d.content?.text) {
+    return false
+  }
+  const opacityFrom = Number(d.opacity?.from ?? 1)
+  const opacityTo = Number(d.opacity?.to ?? 1)
+  return !(opacityFrom <= 0 && opacityTo <= 0)
 }
 
 function shouldRenderDanmaku(d: DanmakuItem) {
+  if (!hasVisibleAppearance(d)) return false
   if (isSnapshotRender.value) return true
   if (selectionVisibilityMode.value === 'hide') {
-    return !store.selectedIds.includes(d.id)
+    return !selectedIdSet.value.has(d.id)
   }
   if (selectionVisibilityMode.value === 'only') {
-    return store.selectedIds.includes(d.id)
+    return selectedIdSet.value.has(d.id)
   }
   return true
 }
 
 function syncStandardRenderList(time: number) {
-  const source = isSnapshotRender.value ? renderSource.value : activeBuffer.value
-  standardDanmakus.value = source.filter((d: DanmakuItem) => {
+  if (isSnapshotRender.value) {
+    const sorted = renderSource.value
+    const nextVisible: DanmakuItem[] = []
+    for (let i = 0; i < sorted.length; i += 1) {
+      const d = sorted[i]
+      if ((Number(d.startTime) || 0) > time) {
+        break
+      }
+      if (isVisibleAtTime(d, time) && shouldRenderDanmaku(d)) {
+        nextVisible.push(d)
+      }
+    }
+    standardDanmakus.value = nextVisible
+    return
+  }
+
+  standardDanmakus.value = activeBuffer.value.filter((d: DanmakuItem) => {
     return isVisibleAtTime(d, time) && shouldRenderDanmaku(d)
   })
 }
@@ -135,23 +206,29 @@ function requestPlaybackResync() {
 
 // 低频刷新核心
 function updateBuffer(time: number) {
-  console.log(`[Buffer] 正在重构缓冲池，当前时间: ${time}`)
-  currentBufferStart = time - PRELOAD_THRESHOLD
-  currentBufferEnd = time + BUFFER_WINDOW
+  if (editTimeout) {
+    clearTimeout(editTimeout)
+    editTimeout = null
+  }
+  const safeTime = Number.isFinite(time) ? time : 0
+  currentBufferStart = safeTime - PRELOAD_THRESHOLD
+  currentBufferEnd = safeTime + BUFFER_WINDOW
+  const includeStart = currentBufferStart - JITTER_TOLERANCE
 
   const nextBuffer = renderSource.value.filter((d: DanmakuItem) => {
-    const dEnd = d.startTime + d.animation.duration
-    return dEnd >= currentBufferStart && d.startTime <= currentBufferEnd
+    const startTime = Number(d.startTime)
+    if (!Number.isFinite(startTime)) return false
+    const dEnd = startTime + getDanmakuDuration(d)
+    return dEnd >= includeStart && startTime <= currentBufferEnd
   })
   activeBuffer.value = sortDanmakus(nextBuffer)
-  console.log(`缓存池大小：${activeBuffer.value.length}条弹幕`)
 
   if (isAggressivePlaybackActive.value) {
     requestPlaybackResync()
     return
   }
 
-  syncStandardRenderList(time)
+  syncStandardRenderList(safeTime)
 }
 
 // 监听时间轴：加入容差判断
@@ -198,16 +275,18 @@ watch(() => store.selectedIds.join('\0'), () => {
   }
   syncStandardRenderList(renderTime.value)
 })
-
-// 对编辑器修改引发的全量重算进行防抖（Debounce）
-let editTimeout: ReturnType<typeof setTimeout> | null = null
-watch(danmakuBufferSignature, () => {
-  // 播放期间如果 store 发生莫名其妙的微小变动，防抖可以阻止其引发高频重算
+function scheduleBufferRebuild() {
   if (editTimeout) clearTimeout(editTimeout)
   editTimeout = setTimeout(() => {
+    editTimeout = null
     updateBuffer(renderTime.value)
-  }, 200) // 延迟 200ms 重建
-})
+  }, 200)
+}
+
+watch(() => store.danmakus, () => {
+  if (isSnapshotRender.value) return
+  scheduleBufferRebuild()
+}, { deep: true })
 
 // 监听 XML/JSON 导入完成标志，立即重构缓冲池
 watch(() => store.importTimestamp, (newTimestamp) => {
@@ -234,8 +313,12 @@ function clamp(value: number, min: number, max: number) {
 }
 
 function getRenderState(d: DanmakuItem, currentTime: number) {
-  const t = currentTime - d.startTime
-  const { delay, moveDuration, easing } = d.animation
+  const startTime = Number(d.startTime) || 0
+  const duration = getDanmakuDuration(d)
+  const t = currentTime - startTime
+  const moveDuration = Number(d.animation?.moveDuration) || 0
+  const delay = Number(d.animation?.delay) || 0
+  const easing = d.animation?.easing === 'speedup' ? 'speedup' : 'speeddown'
 
   let progress = 0
 
@@ -247,54 +330,57 @@ function getRenderState(d: DanmakuItem, currentTime: number) {
     progress = (t - delay) / moveDuration
   }
 
-  progress = clamp(progress, 0, 1)
+  progress = clamp(Number.isFinite(progress) ? progress : 0, 0, 1)
   progress = applyEasing(progress, easing)
 
-  const x =
-    d.transform.start.x +
-    (d.transform.end.x - d.transform.start.x) * progress
+  const startX = Number(d.transform?.start?.x) || 0
+  const startY = Number(d.transform?.start?.y) || 0
+  const endX = Number(d.transform?.end?.x) || 0
+  const endY = Number(d.transform?.end?.y) || 0
 
-  const y =
-    d.transform.start.y +
-    (d.transform.end.y - d.transform.start.y) * progress
+  const x = startX + (endX - startX) * progress
+  const y = startY + (endY - startY) * progress
 
-  const lifeProgress = clamp(
-    (currentTime - d.startTime) / d.animation.duration,
-    0,
-    1
-  )
+  const lifeProgress = duration > 0
+    ? clamp(t / duration, 0, 1)
+    : 1
 
-  const opacity =
-    d.opacity.from +
-    (d.opacity.to - d.opacity.from) * lifeProgress
+  const opacityFrom = Number(d.opacity?.from ?? 1)
+  const opacityTo = Number(d.opacity?.to ?? 1)
+  const rawOpacity = opacityFrom + (opacityTo - opacityFrom) * lifeProgress
+  const opacity = clamp(Number.isFinite(rawOpacity) ? rawOpacity : 1, 0, 1)
 
   return { x, y, opacity }
 }
 
 function buildTransform(d: DanmakuItem, x: number, y: number) {
   const transformParts = [`translate3d(${x}px, ${y}px, 0)`]
+  const zRotate = Number(d.transform?.zRotate) || 0
+  const yRotate = Number(d.transform?.yRotate) || 0
 
-  if (d.transform.zRotate !== 0) {
-    transformParts.push(`rotateZ(${d.transform.zRotate}deg)`)
+  if (zRotate !== 0) {
+    transformParts.push(`rotateZ(${zRotate}deg)`)
   }
 
-  if (d.transform.yRotate !== 0) {
-    transformParts.push(`rotateY(${360 - d.transform.yRotate}deg)`)
+  if (yRotate !== 0) {
+    transformParts.push(`rotateY(${360 - yRotate}deg)`)
   }
 
   return transformParts.join(' ')
 }
 
 function buildBaseStyle(d: DanmakuItem, index: number) {
+  const fontSize = Number(d.content?.size)
+  const safeSize = Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 24
   return {
     position: 'absolute' as const,
     zIndex: index,
-    color: d.content.color,
-    fontSize: `${d.content.size}px`,
-    fontFamily: `${d.content.font}, Arial, Helvetica, sans-serif`,
+    color: d.content?.color || '#ffffff',
+    fontSize: `${safeSize}px`,
+    fontFamily: formatFontFamilyForCss(d.content?.font ?? ''),
     fontWeight: 'bold' as const,
     lineHeight: 1,
-    textShadow: d.content.stroke ? `
+    textShadow: d.content?.stroke ? `
       1px 1px 1px #000,
       -1px -1px 1px #000,
       -1px 1px 1px #000,
@@ -352,10 +438,6 @@ function getGhostStyle(d: DanmakuItem, index: number) {
   }
 }
 
-function formatText(text: string) {
-  return text.replace(/\n/g, '<br />')
-}
-
 function ensurePlaybackNode() {
   const reusedNode = playbackNodePool.pop()
   if (reusedNode) {
@@ -394,10 +476,12 @@ function recyclePlaybackNode(danmakuId: string) {
 
   playbackActiveNodes.delete(danmakuId)
   node.remove()
-  node.style.transform = 'translate3d(0px, 0px, 0)'
-  node.style.opacity = '0'
-  node.style.willChange = 'auto'
-  playbackNodePool.push(node)
+  if (playbackNodePool.length < MAX_PLAYBACK_NODE_POOL) {
+    node.style.transform = 'translate3d(0px, 0px, 0)'
+    node.style.opacity = '0'
+    node.style.willChange = 'auto'
+    playbackNodePool.push(node)
+  }
 }
 
 function mountPlaybackDanmaku(d: DanmakuItem, order: number, time: number) {
@@ -408,7 +492,7 @@ function mountPlaybackDanmaku(d: DanmakuItem, order: number, time: number) {
   const node = ensurePlaybackNode()
   const content = node.firstElementChild as HTMLDivElement | null
   if (content) {
-    content.innerHTML = formatText(d.content.text)
+    content.textContent = d.content?.text ?? ''
   }
   applyBaseStyleToElement(node, d, order, 'transform, opacity')
   playbackLayer.value.appendChild(node)
@@ -452,14 +536,14 @@ function rebuildPlaybackNodes(time: number) {
 }
 
 function syncPlaybackVisibility(time: number) {
-  if (playbackResyncRequested || time < playbackLastTime - JITTER_TOLERANCE) {
+  if (playbackResyncRequested || time < playbackLastTime) {
     rebuildPlaybackNodes(time)
     return
   }
 
   const nextVisibleDanmakus: DanmakuItem[] = []
   playbackVisibleDanmakus.forEach((d: DanmakuItem) => {
-    if (time <= getDanmakuEndTime(d) && shouldRenderDanmaku(d)) {
+    if (isVisibleAtTime(d, time) && shouldRenderDanmaku(d)) {
       nextVisibleDanmakus.push(d)
       return
     }
@@ -473,7 +557,7 @@ function syncPlaybackVisibility(time: number) {
     activeBuffer.value[playbackNextStartIndex].startTime <= time
   ) {
     const danmaku = activeBuffer.value[playbackNextStartIndex]
-    if (time <= getDanmakuEndTime(danmaku) && shouldRenderDanmaku(danmaku)) {
+    if (isVisibleAtTime(danmaku, time) && shouldRenderDanmaku(danmaku)) {
       mountPlaybackDanmaku(danmaku, playbackNextStartIndex, time)
       playbackVisibleDanmakus.push(danmaku)
     }
@@ -498,7 +582,8 @@ function applyPlaybackStyles(time: number) {
 }
 
 function playbackTick() {
-  if (!store.playing) {
+  if (!store.playing || !isAggressivePlaybackActive.value) {
+    playbackFrameId = null
     return
   }
 
@@ -539,14 +624,7 @@ watch(isAggressivePlaybackActive, (enabled) => {
   stopPlaybackMode()
 }, { immediate: true })
 
-async function handleToolbarMeasure(event: Event) {
-  const customEvent = event as CustomEvent<ToolbarMeasureEventDetail>
-  const detail = customEvent.detail
-
-  if (!detail) {
-    return
-  }
-
+async function runToolbarMeasure(detail: ToolbarMeasureEventDetail) {
   if (detail.requests.length === 0) {
     detail.resolve({})
     return
@@ -593,9 +671,30 @@ async function handleToolbarMeasure(event: Event) {
   }
 }
 
+function handleToolbarMeasure(event: Event) {
+  const customEvent = event as CustomEvent<ToolbarMeasureEventDetail>
+  const detail = customEvent.detail
+
+  if (!detail) {
+    return
+  }
+
+  measureQueue = measureQueue
+    .then(() => runToolbarMeasure(detail))
+    .catch((error) => detail.reject(error))
+}
+
 function handleTabKeyPress(event: KeyboardEvent) {
-  // 避免在输入框中触发快捷键
-  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+  if (event.isComposing || event.keyCode === 229) {
+    return
+  }
+  const target = event.target
+  if (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    (target instanceof HTMLElement && target.isContentEditable)
+  ) {
     return
   }
 
@@ -607,8 +706,9 @@ function handleTabKeyPress(event: KeyboardEvent) {
 }
 
 function handleUpdateBufferRequest(event: Event) {
-  const customEvent = event as CustomEvent<{ time: number }>
-  updateBuffer(customEvent.detail.time)
+  const customEvent = event as CustomEvent<{ time?: number }>
+  const nextTime = customEvent.detail?.time
+  updateBuffer(typeof nextTime === 'number' && Number.isFinite(nextTime) ? nextTime : renderTime.value)
 }
 
 function handleDanmakuVisibilityRequest(event: Event) {
@@ -621,18 +721,25 @@ onMounted(() => {
   window.addEventListener(DANMAKU_VISIBILITY_EVENT, handleDanmakuVisibilityRequest as EventListener)
   window.addEventListener('keydown', handleTabKeyPress)
   window.addEventListener('danmaku-update-buffer', handleUpdateBufferRequest as EventListener)
+  if (isAggressivePlaybackActive.value && playbackFrameId === null) {
+    startPlaybackMode()
+  }
 })
 
 onBeforeUnmount(() => {
   if (editTimeout) {
     clearTimeout(editTimeout)
+    editTimeout = null
   }
 
   if (playbackFrameId !== null) {
     cancelAnimationFrame(playbackFrameId)
+    playbackFrameId = null
   }
 
   clearPlaybackNodes()
+  playbackNodePool.length = 0
+  ghostElements.clear()
   window.removeEventListener(TOOLBAR_MEASURE_EVENT, handleToolbarMeasure as EventListener)
   window.removeEventListener(DANMAKU_VISIBILITY_EVENT, handleDanmakuVisibilityRequest as EventListener)
   window.removeEventListener('keydown', handleTabKeyPress)

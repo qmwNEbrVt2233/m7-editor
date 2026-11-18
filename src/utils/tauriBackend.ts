@@ -97,10 +97,12 @@ export type DanmakuTemplateRecord = {
 }
 
 function getTauriInternals(): TauriInternals | undefined {
+  if (typeof window === 'undefined') return undefined
   return (window as TauriWindow).__TAURI_INTERNALS__
 }
 
 export function isTauriRuntime(): boolean {
+  if (typeof window === 'undefined') return false
   const tauriWindow = window as TauriWindow
   return Boolean(tauriWindow.isTauri && getTauriInternals()?.invoke)
 }
@@ -122,7 +124,7 @@ export async function prepareVideoExportPath(path: string): Promise<string> {
 }
 
 export async function createVideoExportRenderWindow(jobId: string, job: unknown): Promise<void> {
-  const record = job as Record<string, unknown>
+  const record = job && typeof job === 'object' ? (job as Record<string, unknown>) : {}
   await invokeTauri<void>('create_video_export_render_window', {
     jobId,
     job,
@@ -151,6 +153,9 @@ function utf8ToHex(value: string): string {
 }
 
 function toExactUint8Array(data: Uint8Array): Uint8Array {
+  if (!(data instanceof Uint8Array)) {
+    throw new Error('导出写入数据必须是 Uint8Array')
+  }
   return data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
     ? data
     : data.slice()
@@ -161,9 +166,12 @@ export async function startVideoExportFile(path: string): Promise<void> {
 }
 
 export async function writeVideoExportChunk(path: string, position: number, data: Uint8Array): Promise<void> {
+  if (!Number.isFinite(position) || position < 0) {
+    throw new Error('写入文件位置必须是有效的非负数字')
+  }
   await invokeTauriRaw<void>('write_video_export_chunk', data, {
     'x-export-path-hex': utf8ToHex(path),
-    'x-position': String(position)
+    'x-position': String(Math.trunc(position))
   })
 }
 
@@ -231,10 +239,11 @@ async function invokeTauri<T>(command: string, payload?: Record<string, unknown>
 function toFileUrl(path: string): string {
   const normalized = path.replace(/\\/g, '/')
   const prefixed = /^[a-zA-Z]:\//.test(normalized) ? `/${normalized}` : normalized
-  return `file://${encodeURI(prefixed)}`
+  return `file://${encodeURI(prefixed).replace(/#/g, '%23').replace(/\?/g, '%3F')}`
 }
 
 export function normalizeMediaPath(value: string): string {
+  if (typeof value !== 'string') return ''
   const trimmed = value.trim()
 
   if (!trimmed) return ''
@@ -246,6 +255,9 @@ export function normalizeMediaPath(value: string): string {
   try {
     const url = new URL(trimmed)
     const pathname = decodeURIComponent(url.pathname)
+    if (url.hostname && url.hostname.toLowerCase() !== 'localhost') {
+      return `//${url.hostname}${pathname}`
+    }
     return pathname.replace(/^\/([a-zA-Z]:)/, '$1')
   } catch {
     return trimmed

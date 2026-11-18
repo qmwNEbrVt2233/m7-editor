@@ -43,7 +43,10 @@ export function applySparseWrite(
   position: number,
   bytes: Uint8Array<ArrayBuffer>
 ): SparseOutputSegment[] {
-  const start = Math.max(0, position)
+  if (!Number.isFinite(position) || position < 0) {
+    throw new Error('写入位置必须是非负有限数字')
+  }
+  const start = Math.trunc(position)
   const length = bytes.byteLength
   if (length === 0) return segments
   const end = start + length
@@ -109,7 +112,7 @@ export function assembleSparseOutputParts(
   segments: readonly SparseOutputSegment[],
   fileSize: number
 ): Uint8Array<ArrayBuffer>[] {
-  const targetSize = Math.max(0, fileSize)
+  const targetSize = Number.isFinite(fileSize) ? Math.max(0, Math.trunc(fileSize)) : 0
   if (targetSize === 0) return []
 
   const parts: Uint8Array<ArrayBuffer>[] = []
@@ -167,7 +170,12 @@ function sanitizeVideoExportFilenameStem(name?: string | null): string {
   if (!trimmed) return ''
   const withoutExtension = trimmed.replace(/\.mp4$/i, '')
   const sanitized = withoutExtension.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
-  return sanitized.replace(/^[.\s]+|[.\s]+$/g, '')
+  const cleaned = sanitized.replace(/^[.\s]+|[.\s]+$/g, '')
+  if (!cleaned) return ''
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(cleaned)) {
+    return `${cleaned}_`
+  }
+  return cleaned
 }
 
 export function resolveDefaultVideoExportFilename(
@@ -200,14 +208,24 @@ export function createFileSystemAccessOutputSink(
       if (!writable) {
         throw new Error('文件写入通道未初始化')
       }
-      await writable.write({ type: 'write', position, data: bytes })
+      if (!Number.isFinite(position) || position < 0) {
+        throw new Error('写入位置必须是非负有限数字')
+      }
+      await writable.write({ type: 'write', position: Math.trunc(position), data: bytes })
     },
     async finish(fileSize) {
       if (!writable) return
       const active = writable
-      writable = null
-      await active.truncate(fileSize)
-      await active.close()
+      const targetSize = Number.isFinite(fileSize) ? Math.max(0, Math.trunc(fileSize)) : 0
+      try {
+        await active.truncate(targetSize)
+        await active.close()
+        writable = null
+      } catch (error) {
+        writable = null
+        await active.abort().catch(() => undefined)
+        throw error
+      }
     },
     async cancel() {
       if (!writable) return
@@ -235,14 +253,28 @@ export function createBlobDownloadOutputSink(fileName: string): DirectExportOutp
       segments = []
       const blob = new Blob(parts, { type: 'video/mp4' })
       const url = URL.createObjectURL(blob)
+      const parent = document.body ?? document.documentElement
+      if (!parent) {
+        URL.revokeObjectURL(url)
+        throw new Error('无法触发浏览器文件下载')
+      }
       const anchor = document.createElement('a')
       anchor.href = url
       anchor.download = fileName
       anchor.style.display = 'none'
-      document.body.appendChild(anchor)
-      anchor.click()
-      document.body.removeChild(anchor)
-      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+      let clickTriggered = false
+      try {
+        parent.appendChild(anchor)
+        anchor.click()
+        clickTriggered = true
+      } finally {
+        anchor.remove()
+        if (clickTriggered) {
+          window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+        } else {
+          URL.revokeObjectURL(url)
+        }
+      }
     },
     async cancel() {
       segments = []
@@ -268,7 +300,9 @@ export async function chooseBrowserExportOutputSink(
         suggestedName,
         types: [{ description: 'MP4 Video', accept: { 'video/mp4': ['.mp4'] } }],
       })
-      return createFileSystemAccessOutputSink(handle, suggestedName)
+      if (handle) {
+        return createFileSystemAccessOutputSink(handle, suggestedName)
+      }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         return null

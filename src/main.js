@@ -15,6 +15,14 @@ app.mount('#app')
 
 if (!isRenderWindow) {
   window.addEventListener('contextmenu', (e) => {
+    const target = e.target
+    if (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      (target instanceof HTMLElement && target.isContentEditable)
+    ) {
+      return
+    }
     e.preventDefault()
   }, false)
 }

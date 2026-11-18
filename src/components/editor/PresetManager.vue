@@ -27,16 +27,30 @@
     <section class="preset-card">
       <div class="section-header">
         <h3>预设列表</h3>
-        <span class="section-hint">{{ presets.length }} 项</span>
+        <span class="section-hint">{{ filteredPresets.length }}/{{ presets.length }} 项</span>
+      </div>
+
+      <div v-if="presets.length > 0" class="preset-search-row">
+        <input
+          v-model="searchQuery"
+          type="text"
+          class="preset-search-input"
+          placeholder="筛选预设..."
+          aria-label="筛选预设"
+        />
       </div>
 
       <div v-if="presets.length === 0" class="empty-state">
         暂无预设
       </div>
 
+      <div v-else-if="filteredPresets.length === 0" class="empty-state">
+        未找到匹配的预设
+      </div>
+
       <div v-else class="preset-list">
         <button
-          v-for="preset in presets"
+          v-for="preset in filteredPresets"
           :key="preset.id"
           class="preset-item"
           type="button"
@@ -52,6 +66,7 @@
       <button
         class="manager-toggle"
         type="button"
+        :aria-expanded="managementExpanded"
         @click="managementExpanded = !managementExpanded"
       >
         <span>预设管理</span>
@@ -63,16 +78,20 @@
         class="manager-panel"
       >
         <div class="manager-hint">
-          单击选中管理项，再次点击重命名，`Delete` 删除当前管理选中预设
+          单击选中管理项，再次点击或点击按钮重命名，`Delete` 删除当前管理选中预设
         </div>
 
         <div v-if="presets.length === 0" class="empty-state">
           暂无可管理预设
         </div>
 
+        <div v-else-if="filteredPresets.length === 0" class="empty-state">
+          未找到匹配的预设
+        </div>
+
         <div v-else class="manager-list">
           <div
-            v-for="preset in presets"
+            v-for="preset in filteredPresets"
             :key="preset.id"
             class="manager-item"
             :class="{ active: preset.id === managedPresetId }"
@@ -84,13 +103,34 @@
               v-model="editingName"
               class="rename-input"
               type="text"
+              maxlength="100"
               @click.stop
               @keydown.enter.prevent="commitRename"
-              @keydown.escape.prevent="cancelRename"
+              @keydown.escape.prevent.stop="cancelRename"
               @blur="commitRename"
             />
             <template v-else>
-              <span class="manager-name">{{ preset.name }}</span>
+              <div class="manager-row-top">
+                <span class="manager-name">{{ preset.name }}</span>
+                <div class="manager-row-actions">
+                  <button
+                    type="button"
+                    class="row-action-btn"
+                    title="重命名"
+                    @click.stop="startRename(preset.id)"
+                  >
+                    重命名
+                  </button>
+                  <button
+                    type="button"
+                    class="row-action-btn danger"
+                    title="删除预设"
+                    @click.stop="requestDeletePreset(preset)"
+                  >
+                    删除
+                  </button>
+                </div>
+              </div>
               <span class="manager-meta">{{ formatPresetTime(preset.createdAt) }}</span>
             </template>
           </div>
@@ -105,11 +145,12 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { CreationToolPreset } from '@/utils/toolPresets'
 import { parsePresetImport, serializePresetExport } from '@/utils/toolPresets'
 import { useEditorStore } from '@/store/editor'
 import { useNoticeStore } from '@/store/notice'
+import { useHelpStore } from '@/store/help'
 
 const props = defineProps<{
   presets: CreationToolPreset[]
@@ -125,13 +166,52 @@ const emit = defineEmits<{
   (e: 'import-presets', presets: CreationToolPreset[]): void
 }>()
 
+const store = useEditorStore()
+const notice = useNoticeStore()
+const help = useHelpStore()
+
 const fileInputRef = ref<HTMLInputElement | null>(null)
-const editingInputRef = ref<HTMLInputElement | null>(null)
+const editingInputRef = ref<HTMLInputElement | HTMLInputElement[] | null>(null)
 const managementExpanded = ref(false)
 const editingPresetId = ref<string | null>(null)
 const editingName = ref('')
+const searchQuery = ref('')
 const statusMessage = ref('')
 const statusTone = ref<'info' | 'success' | 'error'>('info')
+
+const filteredPresets = computed(() => {
+  const query = searchQuery.value.trim().toLocaleLowerCase()
+  if (!query) return props.presets
+  return props.presets.filter((preset) => preset.name.toLocaleLowerCase().includes(query))
+})
+
+function setStatus(message: string, tone: 'info' | 'success' | 'error') {
+  statusMessage.value = message
+  statusTone.value = tone
+  if (message) {
+    notice.log(`[预设] ${message}`, tone)
+  }
+}
+
+function getEditingInputElement(): HTMLInputElement | null {
+  const target = editingInputRef.value
+  if (Array.isArray(target)) {
+    return target[0] ?? null
+  }
+  return target
+}
+
+function isTextEditingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false
+  }
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    target.isContentEditable
+  )
+}
 
 function openImportDialog() {
   fileInputRef.value?.click()
@@ -149,11 +229,9 @@ async function handleImportFileChange(event: Event) {
     const text = await file.text()
     const presets = parsePresetImport(text)
     emit('import-presets', presets)
-    statusMessage.value = `${presets.length} 个预设导入成功`
-    statusTone.value = 'success'
+    setStatus(`${presets.length} 个预设导入成功`, 'success')
   } catch (error) {
-    statusMessage.value = error instanceof Error ? error.message : '预设导入失败'
-    statusTone.value = 'error'
+    setStatus(error instanceof Error ? error.message : '预设导入失败', 'error')
   } finally {
     if (input) {
       input.value = ''
@@ -162,7 +240,9 @@ async function handleImportFileChange(event: Event) {
 }
 
 async function handleExport() {
-  const store = useEditorStore()
+  if (props.presets.length === 0) {
+    return
+  }
   try {
     const payload = serializePresetExport(props.presets)
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
@@ -174,11 +254,9 @@ async function handleExport() {
       }
     })
 
-    statusMessage.value = `已导出 ${props.presets.length} 个预设`
-    statusTone.value = 'success'
+    setStatus(`已导出 ${props.presets.length} 个预设`, 'success')
   } catch (error) {
-    statusMessage.value = error instanceof Error ? error.message : '预设导出失败'
-    statusTone.value = 'error'
+    setStatus(error instanceof Error ? error.message : '预设导出失败', 'error')
   }
 }
 
@@ -201,12 +279,14 @@ function startRename(presetId: string) {
     return
   }
 
+  emit('select-managed-preset', presetId)
   editingPresetId.value = presetId
   editingName.value = preset.name
 
-  nextTick(() => {
-    editingInputRef.value?.focus()
-    editingInputRef.value?.select()
+  void nextTick(() => {
+    const input = getEditingInputElement()
+    input?.focus()
+    input?.select()
   })
 }
 
@@ -215,11 +295,24 @@ function commitRename() {
     return
   }
 
-  emit('rename-preset', {
-    presetId: editingPresetId.value,
-    name: editingName.value
-  })
+  const trimmed = editingName.value.trim()
+  const targetId = editingPresetId.value
   editingPresetId.value = null
+
+  if (!trimmed) {
+    setStatus('预设名称不能为空', 'error')
+    return
+  }
+
+  const current = props.presets.find((item) => item.id === targetId)
+  if (current && current.name === trimmed) {
+    return
+  }
+
+  emit('rename-preset', {
+    presetId: targetId,
+    name: trimmed
+  })
 }
 
 function cancelRename() {
@@ -227,14 +320,45 @@ function cancelRename() {
   editingName.value = ''
 }
 
+async function requestDeletePreset(preset: CreationToolPreset) {
+  const confirmed = await notice.confirm(`确定要删除预设“${preset.name}”吗？`)
+  if (!confirmed) {
+    return
+  }
+  if (editingPresetId.value === preset.id) {
+    cancelRename()
+  }
+  emit('delete-preset', preset.id)
+}
+
 function handleWindowKeydown(event: KeyboardEvent) {
   if (!managementExpanded.value || !props.managedPresetId || editingPresetId.value) {
     return
   }
 
+  if (notice.isVisible || help.isVisible) {
+    return
+  }
+
+  if (event.repeat || event.isComposing || event.keyCode === 229) {
+    return
+  }
+
+  if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+    return
+  }
+
+  if (isTextEditingTarget(event.target)) {
+    return
+  }
+
   if (event.key === 'Delete') {
+    const targetPreset = props.presets.find((item) => item.id === props.managedPresetId)
+    if (!targetPreset) {
+      return
+    }
     event.preventDefault()
-    emit('delete-preset', props.managedPresetId)
+    void requestDeletePreset(targetPreset)
   }
 }
 
@@ -253,15 +377,21 @@ function formatPresetTime(timestamp: number): string {
   })
 }
 
-window.addEventListener('keydown', handleWindowKeydown)
-
 watch(
-  () => statusMessage.value,
-  () => {
-    const notice = useNoticeStore()
-    notice.log(`[预设] ${statusMessage.value}`, statusTone.value)
+  () => props.presets,
+  (nextPresets) => {
+    if (editingPresetId.value && !nextPresets.some((item) => item.id === editingPresetId.value)) {
+      cancelRename()
+    }
+    if (props.managedPresetId && !nextPresets.some((item) => item.id === props.managedPresetId)) {
+      emit('select-managed-preset', null)
+    }
   }
 )
+
+onMounted(() => {
+  window.addEventListener('keydown', handleWindowKeydown)
+})
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleWindowKeydown)
@@ -465,5 +595,70 @@ onBeforeUnmount(() => {
 .manager-list::-webkit-scrollbar-thumb {
   background: #48484d;
   border-radius: 4px;
+}
+
+.preset-search-row {
+  padding: 8px 10px;
+  border-bottom: 1px solid #2a2a2d;
+}
+
+.preset-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+  background: #2b2b2f;
+  color: #e8e8e8;
+  font-size: 12px;
+}
+
+.preset-search-input:focus {
+  outline: none;
+  border-color: #4ec9b0;
+}
+
+.manager-row-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.manager-row-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.row-action-btn {
+  padding: 2px 6px;
+  border: 1px solid #444;
+  border-radius: 3px;
+  background: #2f2f34;
+  color: #d6d6dc;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.row-action-btn:hover {
+  background: #3d3d43;
+}
+
+.row-action-btn.danger {
+  border-color: #7c352d;
+  background: #4b201b;
+  color: #ffb3b3;
+}
+
+.row-action-btn.danger:hover {
+  background: #682b24;
+}
+
+@media (max-width: 860px) {
+  .preset-manager {
+    width: 100%;
+    padding: 12px 0 0;
+  }
 }
 </style>

@@ -98,6 +98,31 @@ export async function runDirectVideoExportSession(
     return 'fallback'
   }
 
+  if (
+    !Number.isInteger(payload.width) ||
+    !Number.isInteger(payload.height) ||
+    payload.width < 16 ||
+    payload.width > 7680 ||
+    payload.height < 16 ||
+    payload.height > 4320 ||
+    payload.width % 2 !== 0 ||
+    payload.height % 2 !== 0 ||
+    !Number.isFinite(payload.screenWidth) ||
+    !Number.isFinite(payload.screenHeight) ||
+    payload.screenWidth <= 0 ||
+    payload.screenHeight <= 0 ||
+    !Number.isFinite(payload.fps) ||
+    payload.fps <= 0 ||
+    payload.fps > 120 ||
+    !Number.isFinite(payload.startMs) ||
+    !Number.isFinite(payload.endMs) ||
+    payload.startMs < 0 ||
+    payload.endMs <= payload.startMs
+  ) {
+    hooks.onFallback('invalid-export-parameters')
+    return 'fallback'
+  }
+
   const canvas = new OffscreenCanvas(payload.width, payload.height)
   let compositor: WebGL2DanmakuCompositor
   try {
@@ -109,6 +134,8 @@ export async function runDirectVideoExportSession(
       payload.screenHeight
     )
   } catch (error) {
+    canvas.width = 0
+    canvas.height = 0
     hooks.onFallback(error instanceof Error ? error.message : 'worker-webgl2-unavailable')
     return 'fallback'
   }
@@ -117,7 +144,11 @@ export async function runDirectVideoExportSession(
   let sampleIterator: AsyncIterator<VideoSample, void, unknown> | null = null
   let currentSample: VideoSample | null = null
   let nextSample: VideoSample | null = null
-  let videoDurationSec = Math.max(0, payload.mediaDuration)
+  let videoDurationSec = Number.isFinite(payload.mediaDuration) ? Math.max(0, payload.mediaDuration) : 0
+  let pendingSpriteBatch: {
+    endFrame: number
+    promise: Promise<DirectExportSpritePayload[]>
+  } | null = null
 
   try {
     compositor.renderFrame(null, [])
@@ -185,13 +216,27 @@ export async function runDirectVideoExportSession(
     const progressStep = Math.max(1, Math.round(payload.fps / 20))
 
     const requestedInWindow = new Set<string>()
+    const emptySpriteKeys = new Set<string>()
     const activeDrawBuffer: ActiveDanmakuDrawState[] = []
     const activeFrameKeys = new Set<string>()
     let uploadedThroughFrame = 0
-    let pendingSpriteBatch: {
-      endFrame: number
-      promise: Promise<DirectExportSpritePayload[]>
-    } | null = null
+
+    const recordEmptySprites = (
+      requested: ReadonlyArray<{ key: string }>,
+      returned: ReadonlyArray<DirectExportSpritePayload>
+    ) => {
+      if (returned.length === requested.length) return
+      const returnedKeys = new Set<string>()
+      for (let i = 0; i < returned.length; i += 1) {
+        returnedKeys.add(returned[i].key)
+      }
+      for (let i = 0; i < requested.length; i += 1) {
+        const key = requested[i].key
+        if (!returnedKeys.has(key)) {
+          emptySpriteKeys.add(key)
+        }
+      }
+    }
 
     const evaluateActiveAt = (timeMs: number) => {
       timeline.evaluateAt(timeMs, activeDrawBuffer)
@@ -220,11 +265,17 @@ export async function runDirectVideoExportSession(
         rangeEndMs,
         requestedInWindow
       )
-      const needed = candidates.filter((item) => !compositor.hasSprite(item.key))
+      const needed = candidates.filter(
+        (item) => !compositor.hasSprite(item.key) && !emptySpriteKeys.has(item.key)
+      )
       if (needed.length === 0) {
         return { endFrame: clampedEndFrame, promise: Promise.resolve([]) }
       }
-      const promise = hooks.requestSprites(compositor.maxTextureSize, needed)
+      const promise = hooks.requestSprites(compositor.maxTextureSize, needed).then((sprites) => {
+        recordEmptySprites(needed, sprites)
+        return sprites
+      })
+      promise.catch(() => undefined)
       return { endFrame: clampedEndFrame, promise }
     }
 
@@ -232,10 +283,11 @@ export async function runDirectVideoExportSession(
     const initialBatch = launchSpriteBatch(0, lookaheadFrames)
     if (initialBatch) {
       const initialSprites = await initialBatch.promise
-      if (!hooks.isAborted()) {
-        evaluateActiveAt(Math.max(payload.startMs, Math.min(payload.endMs - 0.001, payload.startMs)))
-        uploadSpritePayloads(compositor, initialSprites, activeFrameKeys)
+      if (hooks.isAborted()) {
+        return 'aborted'
       }
+      evaluateActiveAt(Math.max(payload.startMs, Math.min(payload.endMs - 0.001, payload.startMs)))
+      uploadSpritePayloads(compositor, initialSprites, activeFrameKeys)
       uploadedThroughFrame = initialBatch.endFrame
     }
     if (uploadedThroughFrame < totalFrames) {
@@ -251,7 +303,10 @@ export async function runDirectVideoExportSession(
       }
 
       const frameOffsetMs = index * frameDurationMs
-      const frameDuration = Math.min(frameDurationMs, Math.max(0, payload.endMs - payload.startMs - frameOffsetMs))
+      const frameDuration = Math.max(
+        0.001,
+        Math.min(frameDurationMs, Math.max(0, payload.endMs - payload.startMs - frameOffsetMs))
+      )
       const projectTimeMs = Math.max(
         payload.startMs,
         Math.min(payload.endMs - 0.001, payload.startMs + frameOffsetMs)
@@ -262,12 +317,13 @@ export async function runDirectVideoExportSession(
       if (index >= uploadedThroughFrame) {
         if (pendingSpriteBatch) {
           const batchSprites = await pendingSpriteBatch.promise
+          const finishedEndFrame = pendingSpriteBatch.endFrame
+          pendingSpriteBatch = null
           if (hooks.isAborted()) {
             return 'aborted'
           }
           uploadSpritePayloads(compositor, batchSprites, activeFrameKeys)
-          uploadedThroughFrame = pendingSpriteBatch.endFrame
-          pendingSpriteBatch = null
+          uploadedThroughFrame = finishedEndFrame
         }
         if (uploadedThroughFrame < totalFrames) {
           pendingSpriteBatch = launchSpriteBatch(
@@ -288,6 +344,9 @@ export async function runDirectVideoExportSession(
           currentSample = nextSample
           const iter = await sampleIterator.next()
           nextSample = iter.done ? null : iter.value
+          if (hooks.isAborted()) {
+            return 'aborted'
+          }
         }
       }
 
@@ -297,7 +356,7 @@ export async function runDirectVideoExportSession(
         let missingSeen: Set<string> | null = null
         for (let i = 0; i < activeDrawBuffer.length; i += 1) {
           const entry = activeDrawBuffer[i].entry
-          if (!compositor.hasSprite(entry.spriteKey)) {
+          if (!compositor.hasSprite(entry.spriteKey) && !emptySpriteKeys.has(entry.spriteKey)) {
             if (!missing) {
               missing = []
               missingSeen = new Set()
@@ -311,17 +370,21 @@ export async function runDirectVideoExportSession(
         if (missing) {
           if (pendingSpriteBatch) {
             const batchSprites = await pendingSpriteBatch.promise
+            const finishedEndFrame = pendingSpriteBatch.endFrame
+            pendingSpriteBatch = null
             if (hooks.isAborted()) {
               return 'aborted'
             }
             uploadSpritePayloads(compositor, batchSprites, activeFrameKeys)
-            uploadedThroughFrame = pendingSpriteBatch.endFrame
-            pendingSpriteBatch = null
+            uploadedThroughFrame = finishedEndFrame
             // Re-check after pending batch uploads
-            missing = missing.filter((item) => !compositor.hasSprite(item.key))
+            missing = missing.filter(
+              (item) => !compositor.hasSprite(item.key) && !emptySpriteKeys.has(item.key)
+            )
           }
           if (missing.length > 0) {
             const loaded = await hooks.requestSprites(compositor.maxTextureSize, missing)
+            recordEmptySprites(missing, loaded)
             if (hooks.isAborted()) {
               return 'aborted'
             }
@@ -352,6 +415,7 @@ export async function runDirectVideoExportSession(
     await hooks.encoderSink.finish()
     return 'completed'
   } finally {
+    await pendingSpriteBatch?.promise.catch(() => undefined)
     currentSample?.close()
     nextSample?.close()
     try {
@@ -365,5 +429,7 @@ export async function runDirectVideoExportSession(
       // ignore input dispose error
     }
     compositor.dispose()
+    canvas.width = 0
+    canvas.height = 0
   }
 }

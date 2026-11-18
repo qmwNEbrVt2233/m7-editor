@@ -1,5 +1,5 @@
 <template>
-  <div v-show="showAdvancedTools" class="advanced-tools no-select">
+  <div v-show="showAdvancedTools" class="advanced-tools have-scrollbar no-select">
     <div class="advanced-header">高级工具</div>
 
     <div class="advanced-tabs">
@@ -33,8 +33,10 @@
           v-model="strokeWidthInput"
           type="number"
           min="1"
+          max="500"
           step="1"
           class="advanced-input"
+          @change="normalizeStrokeWidthInput"
         />
       </div>
 
@@ -58,6 +60,7 @@
       </div>
 
       <button
+        type="button"
         class="apply-btn"
         :disabled="!hasSelection"
         @click="handleApplyStroke"
@@ -66,7 +69,7 @@
       </button>
     </div>
 
-    <div v-if="activeAdvancedPanel === `calculator`" class="advanced-panel">
+    <div v-if="activeAdvancedPanel === 'calculator'" class="advanced-panel">
       <div class="advanced-field">
         <label>角度</label>
         <input
@@ -74,6 +77,7 @@
           type="text"
           class="advanced-input"
           placeholder="留空使用自身角度，支持+/-相对调整"
+          @change="validateCalculatorAngleInput"
         />
       </div>
 
@@ -89,6 +93,7 @@
       </div>
       
       <button
+        type="button"
         class="apply-btn"
         :disabled="!hasSelection"
         @click="handleApplyLength"
@@ -101,27 +106,27 @@
           <input
             v-model="lockAngleEnabled"
             type="checkbox"
+            @change="onLockAngleToggle"
           />开启锁定角度
         </label>
       </div>
     </div>
-    <div v-if="activeAdvancedPanel === `command`" class="advanced-panel command-panel">
+    <div v-if="activeAdvancedPanel === 'command'" class="advanced-panel command-panel">
       <div class="command-log have-scrollbar">
         <div
-          v-for="(log, index) in commandLogs"
-          :key="`${index}-${log}`"
+          v-for="log in commandLogs"
+          :key="log.id"
           class="command-log-item"
         >
-          {{ log }}
+          {{ log.text }}
         </div>
       </div>
 
       <textarea
         v-model="commandInput"
-        type="text"
         class="advanced-text-input have-scrollbar"
         placeholder="输入命令后按 Enter"
-        @keydown.enter.prevent="handleCommandSubmit"
+        @keydown.enter="onCommandKeydown"
       />
     </div>
   </div>
@@ -151,10 +156,12 @@
 
       <div class="group-tools">
         <button
+          ref="pickButtonRef"
+          type="button"
           class="tool-btn"
           :class="{ active: isPicking }"
           :disabled="!hasSelection"
-          :title="isPicking ? '点击播放器画面以拾取坐标，再次点击可取消' : '拾取定位 (1)'"
+          :title="isPicking ? '点击播放器画面以拾取坐标，再次点击或按 Esc 取消' : '拾取定位 (1)'"
           @click="handlePickTool"
         >
           <img src="/src/icon/Pick_and_locate.svg" alt="拾取定位" />
@@ -282,18 +289,21 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useEditorStore } from '@/store/editor'
 import { useNoticeStore } from '@/store/notice'
 import { useHelpStore } from '@/store/help'
 import { normalizeColor, roundToInteger } from '@/utils/validation'
 
- type ScopeMode = 'S' | 'E' | 'B'
- type Axis = 'x' | 'y'
- type AdvancedPanel = 'stroke' | 'calculator' | 'command'
+type ScopeMode = 'S' | 'E' | 'B'
+type Axis = 'x' | 'y'
+type AdvancedPanel = 'stroke' | 'calculator' | 'command'
+type CommandLogItem = { id: number; text: string }
 
+const ANGLE_INPUT_REGEX = /^[+-]?\d+(?:\.\d+)?$/
 const store = useEditorStore()
 const notice = useNoticeStore()
+const help = useHelpStore()
 const scopeMode = ref<ScopeMode>('B')
 const isPicking = ref(false)
 const showAdvancedTools = ref(false)
@@ -305,21 +315,44 @@ const calculatorAngleInput = ref('')
 const calculatorLengthInput = ref('200')
 const lockAngleEnabled = ref(false)
 const commandInput = ref('')
-const commandLogs = ref<string[]>(['运算赋值命令与 /s 筛选命令已就绪'])
+let nextCommandLogId = 1
+const commandLogs = ref<CommandLogItem[]>([
+  { id: nextCommandLogId++, text: '运算赋值命令与 /s 筛选命令已就绪' }
+])
+const pickButtonRef = ref<HTMLButtonElement | null>(null)
 const selectedDanmakus = computed(() => store.getSelectedDanmakus)
 const hasSelection = computed(() => selectedDanmakus.value.length > 0)
-const selectedCoordinateSnapshot = computed(() => selectedDanmakus.value.map((danmaku) => ({
-  id: danmaku.id,
-  endX: danmaku.transform.end.x,
-  endY: danmaku.transform.end.y
-})))
+const selectedCoordinateSnapshot = computed(() => {
+  if (!lockAngleEnabled.value) return []
+  return selectedDanmakus.value.map((danmaku) => ({
+    id: danmaku.id,
+    endX: danmaku.transform.end.x,
+    endY: danmaku.transform.end.y
+  }))
+})
 let pickAbortController: AbortController | null = null
+let pickTimerId: ReturnType<typeof setTimeout> | null = null
 let applyingLockedAngle = false
 let suppressLockedAngleWatch = false
 
+function isTextEditingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false
+  }
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    target.isContentEditable
+  )
+}
+
 function appendCommandLog(message: string) {
   const timestamp = new Date().toLocaleTimeString('zh-CN', { hour12: false })
-  commandLogs.value = [`[${timestamp}] ${message}`, ...commandLogs.value].slice(0, 30)
+  commandLogs.value = [
+    { id: nextCommandLogId++, text: `[${timestamp}] ${message}` },
+    ...commandLogs.value
+  ].slice(0, 30)
 }
 
 async function applyApi(field: string, method: string | number | boolean | Record<string, unknown>) {
@@ -333,6 +366,10 @@ async function applyApi(field: string, method: string | number | boolean | Recor
 }
 
 function cancelPickMode() {
+  if (pickTimerId !== null) {
+    clearTimeout(pickTimerId)
+    pickTimerId = null
+  }
   pickAbortController?.abort()
   pickAbortController = null
   isPicking.value = false
@@ -350,19 +387,51 @@ function handleStrokeColorTextChange() {
   const normalized = normalizeColor(strokeColorText.value)
   if (!normalized) {
     notice.alert('描边颜色格式无效，请输入 #RRGGBB 或 rgb(...)', 'warn')
-    strokeColorText.value = strokeColorPicker.value
+    strokeColorText.value = strokeColorPicker.value.toUpperCase()
     return
   }
-  strokeColorText.value = normalized
-  strokeColorPicker.value = normalized
+  const fullHex = normalized.length === 4
+    ? `#${normalized[1]}${normalized[1]}${normalized[2]}${normalized[2]}${normalized[3]}${normalized[3]}`
+    : normalized
+  strokeColorText.value = fullHex
+  strokeColorPicker.value = fullHex.toLowerCase()
+}
+
+function normalizeStrokeWidthInput() {
+  const parsed = Number(strokeWidthInput.value)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    notice.alert('描边宽度必须是大于 0 的数字', 'warn')
+    strokeWidthInput.value = '2'
+    return
+  }
+  const clamped = Math.min(500, Math.max(1, Math.round(parsed)))
+  strokeWidthInput.value = String(clamped)
 }
 
 async function handleApplyStroke() {
+  const parsedWidth = Number(strokeWidthInput.value)
+  if (!Number.isFinite(parsedWidth) || parsedWidth <= 0) {
+    notice.alert('描边宽度必须是大于 0 的数字', 'warn')
+    return
+  }
+  const normalizedColor = normalizeColor(strokeColorText.value)
+  if (!normalizedColor) {
+    notice.alert('描边颜色格式无效，请输入 #RRGGBB 或 rgb(...)', 'warn')
+    return
+  }
   const result = await applyApi('@toolbar.stroke', {
-    width: strokeWidthInput.value,
-    color: strokeColorText.value
+    width: Math.min(500, Math.max(1, Math.round(parsedWidth))),
+    color: normalizedColor
   })
   if (result.ok) appendCommandLog(`描边完成：新增 ${result.createdIds.length} 条弹幕`)
+}
+
+function onCommandKeydown(event: KeyboardEvent) {
+  if (event.isComposing || event.keyCode === 229) {
+    return
+  }
+  event.preventDefault()
+  void handleCommandSubmit()
 }
 
 async function handleCommandSubmit() {
@@ -383,14 +452,36 @@ async function handleCommandSubmit() {
   }
 }
 
+function validateCalculatorAngleInput(): boolean {
+  const trimmed = calculatorAngleInput.value.trim()
+  if (!trimmed || ANGLE_INPUT_REGEX.test(trimmed)) {
+    return true
+  }
+  notice.alert('角度格式无效，请留空或输入数字、+数字、-数字', 'warn')
+  return false
+}
+
+function onLockAngleToggle() {
+  if (lockAngleEnabled.value && !validateCalculatorAngleInput()) {
+    lockAngleEnabled.value = false
+  }
+}
+
 async function handleCalculateZRotation() {
   await applyApi('@toolbar.calculateRotation', {})
 }
 
 async function handleApplyLength() {
+  if (!validateCalculatorAngleInput()) return
+  const trimmedLength = String(calculatorLengthInput.value ?? '').trim()
+  const parsedLength = Number(trimmedLength)
+  if (!trimmedLength || !Number.isFinite(parsedLength)) {
+    notice.alert('请输入有效的长度数值', 'warn')
+    return
+  }
   await applyApi('@toolbar.length', {
-    angle: calculatorAngleInput.value,
-    length: calculatorLengthInput.value
+    angle: calculatorAngleInput.value.trim(),
+    length: parsedLength
   })
 }
 
@@ -398,10 +489,15 @@ async function handleLockedAngleUpdate(changedAxis: Axis) {
   applyingLockedAngle = true
   suppressLockedAngleWatch = true
   try {
-    const result = await applyApi('@toolbar.lockAngle', { changedAxis, angle: calculatorAngleInput.value })
-    if (!result.ok || result.changedIds.length === 0) suppressLockedAngleWatch = false
+    const result = await applyApi('@toolbar.lockAngle', { changedAxis, angle: calculatorAngleInput.value.trim() })
+    await nextTick()
+    if (!result.ok || result.changedIds.length === 0) {
+      suppressLockedAngleWatch = false
+    }
   } finally {
     applyingLockedAngle = false
+    await nextTick()
+    suppressLockedAngleWatch = false
   }
 }
 
@@ -415,16 +511,32 @@ function handlePickTool() {
   const controller = new AbortController()
   pickAbortController = controller
   isPicking.value = true
-  window.setTimeout(() => {
+  pickTimerId = window.setTimeout(() => {
+    pickTimerId = null
+    if (controller.signal.aborted) return
+
     document.addEventListener('click', (event) => {
-      const screen = document.querySelector('.screen') as HTMLElement | null
       const target = event.target as Node | null
+      if (target && pickButtonRef.value?.contains(target)) {
+        event.preventDefault()
+        event.stopPropagation()
+        cancelPickMode()
+        return
+      }
+
+      const screen = document.querySelector('.screen') as HTMLElement | null
       cancelPickMode()
       if (!screen || !target || !screen.contains(target)) return
       const rect = screen.getBoundingClientRect()
-      const scale = store.screenScale / 100
-      const x = roundToInteger((event.clientX - rect.left) / scale, store.allowNegativeValues)
-      const y = roundToInteger((event.clientY - rect.top) / scale, store.allowNegativeValues)
+      const computedScale = rect.width > 0 && store.screenWidth > 0
+        ? rect.width / store.screenWidth
+        : store.screenScale / 100
+      if (!Number.isFinite(computedScale) || computedScale <= 0) {
+        notice.alert('播放器缩放比例无效，无法拾取坐标', 'warn')
+        return
+      }
+      const x = roundToInteger((event.clientX - rect.left) / computedScale, store.allowNegativeValues)
+      const y = roundToInteger((event.clientY - rect.top) / computedScale, store.allowNegativeValues)
       void applyApi('@toolbar.pickAt', { x, y, scope: scopeMode.value })
     }, { once: true, capture: true, signal: controller.signal })
   }, 0)
@@ -451,44 +563,69 @@ watch(selectedCoordinateSnapshot, (next, previous) => {
     suppressLockedAngleWatch = false
     return
   }
-  if (!lockAngleEnabled.value || applyingLockedAngle || !previous || next.length !== previous.length) return
+  if (!lockAngleEnabled.value || applyingLockedAngle || !previous || next.length === 0 || next.length !== previous.length) return
   if (!next.every((item, index) => item.id === previous[index]?.id)) return
   const xChanged = next.some((item, index) => item.endX !== previous[index]?.endX)
   const yChanged = next.some((item, index) => item.endY !== previous[index]?.endY)
   if (xChanged !== yChanged) void handleLockedAngleUpdate(xChanged ? 'x' : 'y')
 }, { deep: true })
 
+watch(
+  () => !hasSelection.value || store.showCreationTools || store.showTemplateManager || store.showProjectManager || store.screenRecordingMode,
+  (shouldCancel) => {
+    if (shouldCancel && isPicking.value) {
+      cancelPickMode()
+    }
+  }
+)
+
 function handleShortcuts(event: KeyboardEvent) {
+  if (event.key === 'Escape' && isPicking.value) {
+    event.preventDefault()
+    event.stopPropagation()
+    cancelPickMode()
+    return
+  }
+
   const isCtrl = event.ctrlKey || event.metaKey
   const isAlt = event.altKey
   const isShift = event.shiftKey
-  if (store.showCreationTools || store.showTemplateManager || store.showProjectManager || store.screenRecordingMode || notice.isVisible || useHelpStore().isVisible) return
-  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return
+  if (store.showCreationTools || store.showTemplateManager || store.showProjectManager || store.screenRecordingMode || notice.isVisible || help.isVisible) return
+  if (event.repeat || event.isComposing || event.keyCode === 229 || isTextEditingTarget(event.target)) return
 
   if (!isCtrl && !isAlt && !isShift) {
     switch (event.key) {
-      case '0': scopeMode.value = scopeMode.value === 'S' ? 'E' : scopeMode.value === 'E' ? 'B' : 'S'; break
-      case '1': handlePickTool(); break
-      case '2': handleVerticalCenter(); break
-      case '3': handleHorizontalCenter(); break
-      case '4': handleHorizontalMirror(); break
-      case '5': handleVerticalMirror(); break
-      case '6': handleSwapStartAndEnd(); break
-      case '7': handleCalculateZRotation(); break
-      case '8': handleLineSplit(); break
-      case '9': handleLetterSplit(); break
-      case '\\': handleTimeSplit(); break
-      case '/': toggleAdvancedTools(); break
+      case '0':
+        event.preventDefault()
+        scopeMode.value = scopeMode.value === 'S' ? 'E' : scopeMode.value === 'E' ? 'B' : 'S'
+        break
+      case '1': event.preventDefault(); handlePickTool(); break
+      case '2': event.preventDefault(); handleVerticalCenter(); break
+      case '3': event.preventDefault(); handleHorizontalCenter(); break
+      case '4': event.preventDefault(); void handleHorizontalMirror(); break
+      case '5': event.preventDefault(); void handleVerticalMirror(); break
+      case '6': event.preventDefault(); void handleSwapStartAndEnd(); break
+      case '7': event.preventDefault(); void handleCalculateZRotation(); break
+      case '8': event.preventDefault(); void handleLineSplit(); break
+      case '9': event.preventDefault(); void handleLetterSplit(); break
+      case '\\': event.preventDefault(); void handleTimeSplit(); break
+      case '/': event.preventDefault(); toggleAdvancedTools(); break
     }
     return
   }
-  if (event.key === 'ArrowDown' && isCtrl && !isAlt && !isShift) handleCopyStartToEnd()
-  if (event.key === 'ArrowUp' && isCtrl && !isAlt && !isShift) handleCopyEndToStart()
+  if (event.key === 'ArrowDown' && isCtrl && !isAlt && !isShift) {
+    event.preventDefault()
+    void handleCopyStartToEnd()
+  }
+  if (event.key === 'ArrowUp' && isCtrl && !isAlt && !isShift) {
+    event.preventDefault()
+    void handleCopyEndToStart()
+  }
 }
 
-onMounted(() => window.addEventListener('keydown', handleShortcuts))
+onMounted(() => window.addEventListener('keydown', handleShortcuts, { capture: true }))
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', handleShortcuts)
+  window.removeEventListener('keydown', handleShortcuts, { capture: true })
   cancelPickMode()
 })
 </script>
@@ -496,6 +633,9 @@ onBeforeUnmount(() => {
 <style scoped>
 .advanced-tools {
   width: 220px;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -585,10 +725,11 @@ onBeforeUnmount(() => {
   color: #e0e0e0;
   font-size: 13px;
   transition: border-color 0.2s;
-  height: calc(100% - 300px);
-  min-height: 70px;
+  height: 84px;
+  flex-shrink: 0;
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   resize: none;
+  box-sizing: border-box;
 }
 
 .advanced-text-input:focus {
@@ -648,12 +789,14 @@ onBeforeUnmount(() => {
 }
 
 .command-panel {
-  height: calc(100% - 70px);
+  flex: 1;
+  min-height: 0;
   gap: 10px;
 }
 
 .command-log {
-  height: 330px;
+  flex: 1;
+  min-height: 80px;
   overflow-y: auto;
   padding: 10px;
   border: 1px solid #333;

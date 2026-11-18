@@ -17,7 +17,8 @@ import {
   writeFfmpegVideoFrame,
   writeVideoExportChunk
 } from '@/utils/tauriBackend'
-import { resolveDirectVideoEncodingTarget, type ExportQuality } from './quality'
+import { clonePlainDanmakus } from './danmakuRenderer'
+import { isValidExportQuality, resolveDirectVideoEncodingTarget, type ExportQuality } from './quality'
 import { tryRunDirectVideoExport } from './directExportHost'
 import type { ExportOutputDelivery } from './outputSink'
 import {
@@ -73,6 +74,7 @@ export const VIDEO_EXPORT_RENDER_PROGRESS_EVENT = 'm7-video-export-render-progre
 export const VIDEO_EXPORT_RENDER_FINISHED_EVENT = 'm7-video-export-render-finished'
 export const VIDEO_EXPORT_RENDER_CANCEL_EVENT = 'm7-video-export-render-cancel'
 const RENDER_WINDOW_READY_TIMEOUT_MS = 60_000
+const RENDER_WINDOW_CANCEL_TIMEOUT_MS = 8_000
 const FRAME_RENDER_WINDOW_READY_TIMEOUT_MS = 45_000
 const FRAME_CAPTURE_FINISHED_TIMEOUT_MS = 35_000
 
@@ -101,9 +103,20 @@ async function runFfmpegFallback(
 ) {
   let sessionStarted = false
   let completed = false
-  const snapshotDanmakus = copySnapshot(job.danmakus)
-  const frameCanvas = new OffscreenCanvas(job.width, job.height)
-  const frameContext = frameCanvas.getContext('2d', { alpha: false, willReadFrequently: true })
+  const snapshotDanmakus = clonePlainDanmakus(job.danmakus)
+  let frameCanvas: OffscreenCanvas | HTMLCanvasElement
+  if (typeof OffscreenCanvas !== 'undefined') {
+    frameCanvas = new OffscreenCanvas(job.width, job.height)
+  } else {
+    const el = document.createElement('canvas')
+    el.width = job.width
+    el.height = job.height
+    frameCanvas = el
+  }
+  const frameContext = frameCanvas.getContext('2d', { alpha: false, willReadFrequently: true }) as
+    | OffscreenCanvasRenderingContext2D
+    | CanvasRenderingContext2D
+    | null
   if (!frameContext) throw new Error('无法创建 FFmpeg 帧画布')
 
   try {
@@ -124,14 +137,17 @@ async function runFfmpegFallback(
     for (let index = 0; index < totalFrames; index += 1) {
       if (signal.aborted) throw makeAbortError()
       const frameOffsetMs = index * 1000 / job.fps
-      const sourceTimeMs = Math.min(job.startMs + frameOffsetMs, job.endMs - 0.001)
+      const sourceTimeMs = Math.max(job.startMs, Math.min(job.startMs + frameOffsetMs, job.endMs - 0.001))
       const bounds = await stage.renderAt(sourceTimeMs, snapshotDanmakus)
       if (signal.aborted) throw makeAbortError()
       const png = await captureWebviewSnapshot()
       if (signal.aborted) throw makeAbortError()
       const bitmap = await cropExportFrame(png, bounds, job.width, job.height)
-      frameContext.drawImage(bitmap, 0, 0, job.width, job.height)
-      bitmap.close()
+      try {
+        frameContext.drawImage(bitmap, 0, 0, job.width, job.height)
+      } finally {
+        bitmap.close()
+      }
 
       const imageData = frameContext.getImageData(0, 0, job.width, job.height)
       const rgba = new Uint8Array(
@@ -145,7 +161,7 @@ async function runFfmpegFallback(
       onProgress({
         completedFrames: index + 1,
         totalFrames,
-        percent: (index + 1) / totalFrames,
+        percent: Math.min(1, (index + 1) / totalFrames),
         stage: 'rendering'
       })
     }
@@ -155,6 +171,8 @@ async function runFfmpegFallback(
     completed = true
     return { canceledByUser: false, path, totalFrames, encoder: 'ffmpeg' as const }
   } finally {
+    frameCanvas.width = 0
+    frameCanvas.height = 0
     await stage.endRenderSession().catch(() => undefined)
     if (!completed && sessionStarted) {
       await cancelFfmpegVideoExport(path).catch(() => undefined)
@@ -195,15 +213,21 @@ function raceAbort<T>(promise: Promise<T>, signal: AbortSignal) {
   })
 }
 
-function copySnapshot(danmakus: DanmakuItem[]) {
-  return JSON.parse(JSON.stringify(danmakus)) as DanmakuItem[]
-}
-
 async function cropExportFrame(png: Uint8Array, bounds: ExportBounds, width: number, height: number) {
   const image = await createImageBitmap(new Blob([png as BlobPart], { type: 'image/png' }))
   let keepOriginal = false
   try {
     if (
+      !Number.isFinite(bounds.x) ||
+      !Number.isFinite(bounds.y) ||
+      !Number.isFinite(bounds.width) ||
+      !Number.isFinite(bounds.height) ||
+      !Number.isFinite(bounds.viewportWidth) ||
+      !Number.isFinite(bounds.viewportHeight) ||
+      bounds.width <= 0 ||
+      bounds.height <= 0 ||
+      bounds.viewportWidth <= 0 ||
+      bounds.viewportHeight <= 0 ||
       bounds.x < 0 ||
       bounds.y < 0 ||
       bounds.x + bounds.width > bounds.viewportWidth + 0.5 ||
@@ -295,11 +319,12 @@ export async function captureVideoExportFrame(
   if (!isTauriRuntime()) throw new Error('帧截图需要 Tauri 桌面运行环境')
 
   let bitmap: ImageBitmap | null = null
+  let canvas: OffscreenCanvas | null = null
   try {
-    const bounds = await stage.renderAt(timeMs, copySnapshot(job.danmakus))
+    const bounds = await stage.renderAt(timeMs, clonePlainDanmakus(job.danmakus))
     const png = await captureWebviewSnapshot()
     bitmap = await cropExportFrame(png, bounds, job.width, job.height)
-    const canvas = new OffscreenCanvas(job.width, job.height)
+    canvas = new OffscreenCanvas(job.width, job.height)
     const context = canvas.getContext('2d', { alpha: false })
     if (!context) throw new Error('无法创建帧图像画布')
 
@@ -327,6 +352,10 @@ export async function captureVideoExportFrame(
     }
     throw new Error('帧图像过大，无法安全回传给 MCP；请降低 maxDimension 后重试')
   } finally {
+    if (canvas) {
+      canvas.width = 0
+      canvas.height = 0
+    }
     bitmap?.close()
     await stage.endRenderSession().catch(() => undefined)
   }
@@ -341,6 +370,7 @@ function validateExportJob(job: ExportJob): number {
     !Number.isFinite(job.screenHeight) ||
     !Number.isInteger(job.width) ||
     !Number.isInteger(job.height) ||
+    !isValidExportQuality(job.quality) ||
     job.startMs < 0 ||
     job.endMs <= job.startMs ||
     job.screenWidth <= 0 ||
@@ -386,7 +416,7 @@ export async function runVideoExport(
   }
 
   const totalFrames = validateExportJob(job)
-  onProgress({ completedFrames: 0, totalFrames: 0, percent: 0, stage: 'preparing' })
+  onProgress({ completedFrames: 0, totalFrames, percent: 0, stage: 'preparing' })
   const h264Available = await checkH264EncodeAvailable(job)
 
   const suggestedFilename = job.defaultOutputFilename || formatDefaultVideoExportFilename()
@@ -405,8 +435,9 @@ export async function runVideoExport(
 
   const path = job.outputPath ?? await chooseVideoExportPath(suggestedFilename)
   if (!path) return { canceledByUser: true }
+  if (signal.aborted) throw makeAbortError()
 
-  const snapshotDanmakus = copySnapshot(job.danmakus)
+  const snapshotDanmakus = clonePlainDanmakus(job.danmakus)
   const worker = new Worker(new URL('./videoEncoder.worker.ts', import.meta.url), { type: 'module' })
   const queue: WorkerMessage[] = []
   const waiters = new Set<{
@@ -434,16 +465,28 @@ export async function runVideoExport(
     const queuedIndex = queue.findIndex((message) => message.type === type && (index === undefined || message.index === index))
     if (queuedIndex >= 0) return Promise.resolve(queue.splice(queuedIndex, 1)[0])
 
-    return raceAbort(new Promise<WorkerMessage>((resolve, reject) => {
-      waiters.add({ type, index, resolve, reject })
-    }), signal)
+    let entry!: {
+      type: string
+      index?: number
+      resolve: (message: WorkerMessage) => void
+      reject: (error: Error) => void
+    }
+    const promise = new Promise<WorkerMessage>((resolve, reject) => {
+      entry = { type, index, resolve, reject }
+      waiters.add(entry)
+    })
+    return raceAbort(promise, signal).catch((error) => {
+      waiters.delete(entry)
+      throw error
+    })
   }
 
   worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
     const message = event.data
     if (message.type === 'chunk') {
       const write = (async () => {
-        const data = new Uint8Array(message.data ?? new ArrayBuffer(0))
+        if (!(message.data instanceof ArrayBuffer)) return
+        const data = new Uint8Array(message.data)
         const position = message.position ?? 0
         fileSize = Math.max(fileSize, position + data.byteLength)
         await writeVideoExportChunk(path, position, data)
@@ -458,6 +501,11 @@ export async function runVideoExport(
 
     if (message.type === 'error') {
       rejectWaiters(new Error(message.message || '视频编码失败'))
+      return
+    }
+
+    if (message.type === 'canceled') {
+      rejectWaiters(makeAbortError())
       return
     }
 
@@ -482,7 +530,9 @@ export async function runVideoExport(
   }
 
   worker.onerror = (event) => rejectWaiters(new Error(event.message || '视频编码 Worker 异常'))
-  const abortWorker = () => worker.postMessage({ type: 'cancel' })
+  const abortWorker = () => {
+    worker.postMessage({ type: 'cancel' })
+  }
   signal.addEventListener('abort', abortWorker, { once: true })
 
   try {
@@ -511,33 +561,43 @@ export async function runVideoExport(
       onProgress({
         completedFrames,
         totalFrames,
-        percent: completedFrames / totalFrames,
+        percent: Math.min(1, completedFrames / totalFrames),
         stage: 'rendering'
       })
     }
 
     for (let index = 0; index < totalFrames; index += 1) {
       if (signal.aborted) throw makeAbortError()
+      if (fatalError) throw fatalError
       const frameOffsetMs = index * 1000 / job.fps
-      const sourceTimeMs = Math.min(job.startMs + frameOffsetMs, job.endMs - 0.001)
-      const durationMs = Math.min(1000 / job.fps, job.endMs - job.startMs - frameOffsetMs)
+      const sourceTimeMs = Math.max(job.startMs, Math.min(job.startMs + frameOffsetMs, job.endMs - 0.001))
+      const durationMs = Math.max(0.001, Math.min(1000 / job.fps, Math.max(0, job.endMs - job.startMs - frameOffsetMs)))
       const bounds = await stage.renderAt(sourceTimeMs, snapshotDanmakus)
       if (signal.aborted) throw makeAbortError()
+      if (fatalError) throw fatalError
       const png = await captureWebviewSnapshot()
       if (signal.aborted) throw makeAbortError()
+      if (fatalError) throw fatalError
       const bitmap = await cropExportFrame(png, bounds, job.width, job.height)
-      if (signal.aborted) {
+      if (signal.aborted || fatalError) {
         bitmap.close()
-        throw makeAbortError()
+        if (signal.aborted) throw makeAbortError()
+        throw fatalError!
       }
       const frameAdded = waitFor('frame-added', index)
-      worker.postMessage({
-        type: 'frame',
-        index,
-        timestampMs: frameOffsetMs,
-        durationMs,
-        bitmap
-      }, [bitmap])
+      frameAdded.catch(() => undefined)
+      try {
+        worker.postMessage({
+          type: 'frame',
+          index,
+          timestampMs: frameOffsetMs,
+          durationMs,
+          bitmap
+        }, [bitmap])
+      } catch (error) {
+        bitmap.close()
+        throw error
+      }
       pendingFrames.push({ completion: frameAdded })
 
       // Keep capture/seek ordered, while allowing the encoder worker to
@@ -563,6 +623,7 @@ export async function runVideoExport(
     return { canceledByUser: false, path, totalFrames }
   } catch (error) {
     worker.postMessage({ type: 'cancel' })
+    await Promise.allSettled(pendingFrames.map((item) => item.completion))
     await Promise.allSettled(pendingWrites)
     throw error
   } finally {
@@ -597,7 +658,7 @@ export async function runVideoExportInRenderWindow(
   signal: AbortSignal,
   onProgress: (progress: ExportProgress) => void
 ) {
-  const jobSnapshot = { ...job, danmakus: copySnapshot(job.danmakus) }
+  const jobSnapshot = { ...job, danmakus: clonePlainDanmakus(job.danmakus) }
   validateExportJob(jobSnapshot)
   const useWebgl = jobSnapshot.useWebgl !== false
 
@@ -639,6 +700,10 @@ export async function runVideoExportInRenderWindow(
     throw formatBrowserDirectExportUnsupportedError(directResult.reason)
   }
 
+  if (!useWebgl && jobSnapshot.mediaUrl && !jobSnapshot.mediaFilePath) {
+    throw new Error('独立渲染窗口需要本地媒体文件路径，请从本地文件重新导入视频后再导出。')
+  }
+
   const outputPath = jobSnapshot.outputPath ?? await chooseVideoExportPath(suggestedFilename)
   if (!outputPath) return { canceledByUser: true as const }
   if (signal.aborted) throw makeAbortError()
@@ -678,14 +743,25 @@ export async function runVideoExportInRenderWindow(
   let cancelRequested = signal.aborted as boolean
   let keepOutput = false
   let readyTimeout: number | undefined
+  let cancelTimeout: number | undefined
   const clearReadyTimeout = () => {
     if (readyTimeout === undefined) return
     window.clearTimeout(readyTimeout)
     readyTimeout = undefined
   }
+  const clearCancelTimeout = () => {
+    if (cancelTimeout === undefined) return
+    window.clearTimeout(cancelTimeout)
+    cancelTimeout = undefined
+  }
 
   const sendCancel = () => {
     cancelRequested = true
+    if (cancelTimeout === undefined) {
+      cancelTimeout = window.setTimeout(() => {
+        resolveFinished({ jobId, result: { canceledByUser: true } })
+      }, RENDER_WINDOW_CANCEL_TIMEOUT_MS)
+    }
     if (renderWindowCreated) {
       void emitTo(VIDEO_EXPORT_RENDER_LABEL, VIDEO_EXPORT_RENDER_CANCEL_EVENT, { jobId }).catch(() => undefined)
     }
@@ -694,19 +770,22 @@ export async function runVideoExportInRenderWindow(
 
   try {
     listeners.push(await listen<RenderEventPayload>(VIDEO_EXPORT_RENDER_READY_EVENT, ({ payload }) => {
-      if (payload.jobId !== jobId) return
+      if (payload?.jobId !== jobId) return
       clearReadyTimeout()
       resolveReady()
       if (cancelRequested) sendCancel()
     }))
     listeners.push(await listen<RenderProgressPayload>(VIDEO_EXPORT_RENDER_PROGRESS_EVENT, ({ payload }) => {
-      if (payload.jobId === jobId) onProgress(payload.progress)
+      if (payload?.jobId === jobId) onProgress(payload.progress)
     }))
     listeners.push(await listen<RenderFinishedPayload>(VIDEO_EXPORT_RENDER_FINISHED_EVENT, ({ payload }) => {
-      if (payload.jobId === jobId) resolveFinished(payload)
+      if (payload?.jobId === jobId) resolveFinished(payload)
     }))
 
     signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) {
+      throw makeAbortError()
+    }
     readyTimeout = window.setTimeout(() => {
       resolveFinished({ jobId, error: '独立渲染窗口启动超时' })
     }, RENDER_WINDOW_READY_TIMEOUT_MS)
@@ -722,6 +801,10 @@ export async function runVideoExportInRenderWindow(
     await Promise.race([ready, finished.then(() => undefined)])
     clearReadyTimeout()
     const completion = await finished
+    clearCancelTimeout()
+    if (signal.aborted && (completion.error || completion.result?.canceledByUser)) {
+      throw makeAbortError()
+    }
     if (completion.error) throw new Error(completion.error)
     if (!completion.result) throw new Error('独立渲染窗口未返回导出结果')
     keepOutput = !completion.result.canceledByUser
@@ -735,6 +818,7 @@ export async function runVideoExportInRenderWindow(
     }
   } finally {
     clearReadyTimeout()
+    clearCancelTimeout()
     signal.removeEventListener('abort', onAbort)
     listeners.forEach((unlisten) => unlisten())
     if (renderWindowCreated) {
@@ -751,7 +835,7 @@ export function runVideoFrameCaptureInRenderWindow(
   timeMs: number,
   maxDimension = 1280
 ): Promise<CapturedVideoFrame> {
-  const snapshot = { ...jobInput, danmakus: copySnapshot(jobInput.danmakus) }
+  const snapshot = { ...jobInput, danmakus: clonePlainDanmakus(jobInput.danmakus) }
   const capture = frameCaptureQueue.then(() => captureVideoFrameInRenderWindow(snapshot, timeMs, maxDimension))
   frameCaptureQueue = capture.then(() => undefined, () => undefined)
   return capture
@@ -778,9 +862,15 @@ async function captureVideoFrameInRenderWindow(
     frameCapture: { timeMs }
   }
   let resolveReady!: () => void
-  let resolveFinished!: (payload: RenderFinishedPayload) => void
+  let finishedSettled = false
+  let resolveFinishedRaw!: (payload: RenderFinishedPayload) => void
   const ready = new Promise<void>((resolve) => { resolveReady = resolve })
-  const finished = new Promise<RenderFinishedPayload>((resolve) => { resolveFinished = resolve })
+  const finished = new Promise<RenderFinishedPayload>((resolve) => { resolveFinishedRaw = resolve })
+  const resolveFinished = (payload: RenderFinishedPayload) => {
+    if (finishedSettled) return
+    finishedSettled = true
+    resolveFinishedRaw(payload)
+  }
   const listeners: UnlistenFn[] = []
   let renderWindowCreated = false
   let readyTimeout: number | undefined
@@ -795,13 +885,13 @@ async function captureVideoFrameInRenderWindow(
 
   try {
     listeners.push(await listen<RenderEventPayload>(VIDEO_EXPORT_RENDER_READY_EVENT, ({ payload }) => {
-      if (payload.jobId !== jobId) return
+      if (payload?.jobId !== jobId) return
       if (readyTimeout !== undefined) window.clearTimeout(readyTimeout)
       readyTimeout = undefined
       resolveReady()
     }))
     listeners.push(await listen<RenderFinishedPayload>(VIDEO_EXPORT_RENDER_FINISHED_EVENT, ({ payload }) => {
-      if (payload.jobId === jobId) resolveFinished(payload)
+      if (payload?.jobId === jobId) resolveFinished(payload)
     }))
 
     readyTimeout = window.setTimeout(() => {
@@ -818,9 +908,11 @@ async function captureVideoFrameInRenderWindow(
     await Promise.race([ready, finished.then(() => undefined)])
     if (readyTimeout !== undefined) window.clearTimeout(readyTimeout)
     readyTimeout = undefined
-    finishedTimeout = window.setTimeout(() => {
-      resolveFinished({ jobId, error: '等待帧截图完成超时' })
-    }, FRAME_CAPTURE_FINISHED_TIMEOUT_MS)
+    if (!finishedSettled) {
+      finishedTimeout = window.setTimeout(() => {
+        resolveFinished({ jobId, error: '等待帧截图完成超时' })
+      }, FRAME_CAPTURE_FINISHED_TIMEOUT_MS)
+    }
 
     const completion = await finished
     if (completion.error) throw new Error(completion.error)

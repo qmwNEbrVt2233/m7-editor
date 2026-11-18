@@ -7,30 +7,40 @@
           <p v-if="fileSystemState">按下 h 以获取帮助，默认工程目录：{{ fileSystemState.defaultProjectsDir }}</p>
         </div>
         <div class="button-row">
-          <button class="btn" @click="importProject">导入单文件工程</button>
-          <button class="btn" @click="importXml">导入XML</button>
-          <button class="btn" @click="skipFolderProject">{{store.InitializationPhase ? '跳过' : '关闭'}}</button>
+          <button type="button" class="btn" :disabled="isExitBusy" @click="importProject">导入单文件工程</button>
+          <button type="button" class="btn" :disabled="isExitBusy" @click="importXml">导入XML</button>
+          <button type="button" class="btn" :disabled="isExitBusy" @click="skipFolderProject">{{store.InitializationPhase ? '跳过' : '关闭'}}</button>
         </div>
       </header>
 
       <main class="manager-body">
-        <section class="project-list">
+        <section class="project-list have-scrollbar">
           <div class="section-title">
             <h3>已注册工程</h3>
             <div class="button-row">
-              <button class="btn" @click="importProjectFolder">导入文件夹</button>
-              <button class="btn" @click="refreshProjects">刷新</button>
+              <button type="button" class="btn" :disabled="isBusy" @click="importProjectFolder">导入文件夹</button>
+              <button type="button" class="btn" :disabled="isBusy" @click="refreshProjects">刷新</button>
             </div>
           </div>
 
+          <input
+            v-if="projects.length > 0"
+            v-model="projectSearchQuery"
+            type="text"
+            class="dark-input wide"
+            placeholder="搜索工程名称、描述或路径..."
+            aria-label="搜索已注册工程"
+          />
+
           <div v-if="loading" class="empty-state">正在读取工程列表...</div>
           <div v-else-if="projects.length === 0" class="empty-state">暂无文件夹工程</div>
+          <div v-else-if="filteredProjects.length === 0" class="empty-state">未找到匹配的工程</div>
           <div v-else class="project-items have-scrollbar">
             <article
-              v-for="project in projects"
+              v-for="project in filteredProjects"
               :key="project.path"
               class="project-item"
-              :class="{ 'has-warning': project.config.media && !project.mediaExists }"
+              :class="{ 'has-warning': !project.projectExists || (project.config.media && !project.mediaExists) }"
             >
               <div class="project-main" @click.stop="loadProject(project.path)">
                 <h4>
@@ -38,13 +48,16 @@
                 </h4>
                 <p>{{ project.config.description || '无描述' }}</p>
                 <span>最后修改：{{ formatTime(project.config.lastChangeAt) }}<br/>路径：{{ project.path }}</span>
+                <p v-if="!project.projectExists" class="media-warning-text">
+                  ⚠️ 工程数据文件缺失：{{ project.config.projectFile }}
+                </p>
                 <p v-if="project.config.media && !project.mediaExists" class="media-warning-text">
                   ⚠️ 媒体文件缺失：{{ project.mediaPath || '未知路径' }}
                 </p>
               </div>
               <div class="project-actions">
-                <button class="btn" @click.stop="startEditing(project)" :disabled="editingProjectPath === project.path">编辑</button>
-                <button class="btn btn-danger" @click.stop="deleteProject(project.path)">删除</button>
+                <button type="button" class="btn" :disabled="isBusy || editingProjectPath === project.path" @click.stop="startEditing(project)">编辑</button>
+                <button type="button" class="btn btn-danger" :disabled="isBusy" @click.stop="deleteProject(project.path)">删除</button>
               </div>
             </article>
           </div>
@@ -63,7 +76,7 @@
               <span>移动到新路径</span>
               <div class="path-row">
                 <input v-model="editingNewParentDir" class="dark-input path-input" placeholder="留空不移动" />
-                <button class="btn" @click="chooseEditNewParentDir">选择</button>
+                <button type="button" class="btn" :disabled="editingLoading" @click="chooseEditNewParentDir">选择</button>
               </div>
             </label>
             <label class="form-row">
@@ -77,19 +90,19 @@
               <span>外部媒体路径</span>
               <div class="path-row">
                 <input v-model="editingMediaExternalPath" class="dark-input path-input" placeholder="外部媒体文件路径" />
-                <button class="btn" @click="chooseEditMediaFile">选择</button>
+                <button type="button" class="btn" :disabled="editingLoading" @click="chooseEditMediaFile">选择</button>
               </div>
             </label>
             <div class="edit-actions">
-              <button class="btn" @click="cancelEditing" :disabled="editingLoading">取消</button>
-              <button class="btn primary-btn" @click="saveEditing" :disabled="editingLoading">
+              <button type="button" class="btn" @click="cancelEditing" :disabled="editingLoading">取消</button>
+              <button type="button" class="btn primary-btn" @click="saveEditing" :disabled="editingLoading">
                 {{ editingLoading ? '保存中...' : '保存修改' }}
               </button>
             </div>
           </div>
         </section>
 
-        <section class="create-panel">
+        <section class="create-panel have-scrollbar">
           <h3>创建工程</h3>
 
           <label class="form-row">
@@ -101,7 +114,7 @@
             <span>创建路径</span>
             <div class="path-row">
               <input v-model="parentDir" class="dark-input path-input" @input="checkProjectPath" />
-              <button class="btn" @click="chooseParentDir">选择</button>
+              <button type="button" class="btn" :disabled="isBusy" @click="chooseParentDir">选择</button>
             </div>
           </label>
 
@@ -113,7 +126,7 @@
             <span>媒体文件</span>
             <div class="path-row">
               <input v-model="mediaPath" class="dark-input path-input" placeholder="可留空" />
-              <button class="btn" @click="chooseMediaFile">选择</button>
+              <button type="button" class="btn" :disabled="isBusy" @click="chooseMediaFile">选择</button>
             </div>
           </label>
 
@@ -135,7 +148,7 @@
           <div v-if="importFromFile" class="form-row">
             <div class="path-row">
               <input :value="importedProjectPath" class="dark-input path-input" readonly placeholder="未选择工程文件" />
-              <button class="btn" @click="chooseImportedProjectFile">选择工程文件</button>
+              <button type="button" class="btn" :disabled="isBusy" @click="chooseImportedProjectFile">选择工程文件</button>
             </div>
           </div>
 
@@ -145,11 +158,12 @@
           </label>
 
           <button
-            class="btn primary-btn"
-            :disabled="!canCreateProject"
+            type="button"
+            class="btn primary-btn create-submit-btn"
+            :disabled="!canCreateProject || isBusy"
             @click="createProject"
           >
-            创建并进入工程
+            {{ busyAction === 'create' ? '创建中...' : '创建并进入工程' }}
           </button>
         </section>
       </main>
@@ -172,7 +186,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useEditorStore } from '@/store/editor'
 import { useNoticeStore } from '@/store/notice'
 import {
@@ -199,6 +213,7 @@ const store = useEditorStore()
 const notice = useNoticeStore()
 
 const loading = ref(false)
+const busyAction = ref<'load' | 'create' | 'import' | 'delete' | 'edit' | 'skip' | ''>('')
 const fileSystemState = computed(() => store.fileSystemState)
 const projectName = ref('Project_1')
 const parentDir = ref('')
@@ -206,8 +221,10 @@ const mediaPath = ref('')
 const copyMedia = ref(true)
 const createFromCurrent = ref(false)
 const description = ref('')
+const projectSearchQuery = ref('')
 const pathCheck = ref<ProjectPathCheck | null>(null)
 let pathCheckTimer: ReturnType<typeof setTimeout> | null = null
+let pathCheckSeq = 0
 
 // 编辑状态
 const editingProjectPath = ref<string | null>(null)
@@ -223,9 +240,23 @@ const importFromFile = ref(false)
 const importedProjectPath = ref('')
 const importedProjectData = ref<any>(null)
 
+const isExitBusy = computed(() => busyAction.value !== '' || editingLoading.value)
+const isBusy = computed(() => isExitBusy.value || loading.value)
+
 const projects = computed<FolderProjectSummary[]>(() =>
   [...(fileSystemState.value?.projects ?? [])].sort((a, b) => b.config.lastChangeAt - a.config.lastChangeAt)
 )
+
+const filteredProjects = computed<FolderProjectSummary[]>(() => {
+  const query = projectSearchQuery.value.trim().toLocaleLowerCase()
+  if (!query) return projects.value
+  return projects.value.filter((project) =>
+    project.config.name.toLocaleLowerCase().includes(query) ||
+    (project.config.description || '').toLocaleLowerCase().includes(query) ||
+    project.path.toLocaleLowerCase().includes(query)
+  )
+})
+
 const canCreateProject = computed(() => {
   const baseValid = Boolean(projectName.value.trim() && parentDir.value.trim() && !pathCheck.value?.exists)
   if (importFromFile.value) {
@@ -241,6 +272,8 @@ watch(createFromCurrent, (val) => { if (val) { importFromFile.value = false; imp
 watch(() => props.visible, (visible) => {
   if (visible) {
     void refreshProjects()
+  } else {
+    cancelEditing()
   }
 })
 
@@ -253,11 +286,30 @@ watch(() => store.fileSystemState, (fsState) => {
   void checkProjectPathNow()
 })
 
+function handleManagerKeydown(event: KeyboardEvent) {
+  if (!props.visible || notice.isVisible) return
+  if (event.key === 'Escape' && editingProjectPath.value && !editingLoading.value) {
+    event.preventDefault()
+    event.stopPropagation()
+    cancelEditing()
+  }
+}
+
 onMounted(() => {
+  window.addEventListener('keydown', handleManagerKeydown, { capture: true })
   void refreshProjects()
 })
 
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleManagerKeydown, { capture: true })
+  if (pathCheckTimer) {
+    clearTimeout(pathCheckTimer)
+    pathCheckTimer = null
+  }
+})
+
 async function refreshProjects() {
+  if (loading.value) return
   loading.value = true
   try {
     const fsState = await store.refreshFileSystemState()
@@ -273,20 +325,29 @@ async function refreshProjects() {
 function checkProjectPath() {
   if (pathCheckTimer) clearTimeout(pathCheckTimer)
   pathCheckTimer = setTimeout(() => {
+    pathCheckTimer = null
     void checkProjectPathNow()
   }, 150)
 }
 
 async function checkProjectPathNow() {
-  if (!parentDir.value.trim() || !projectName.value.trim()) {
+  const seq = ++pathCheckSeq
+  const currentParent = parentDir.value.trim()
+  const currentName = projectName.value.trim()
+  if (!currentParent || !currentName) {
     pathCheck.value = null
     return
   }
 
   try {
-    pathCheck.value = await checkFolderProjectPath(parentDir.value, projectName.value)
+    const result = await checkFolderProjectPath(currentParent, currentName)
+    if (seq === pathCheckSeq) {
+      pathCheck.value = result
+    }
   } catch {
-    pathCheck.value = null
+    if (seq === pathCheckSeq) {
+      pathCheck.value = null
+    }
   }
 }
 
@@ -314,8 +375,9 @@ async function chooseMediaFile() {
 }
 
 async function createProject() {
-  if (!canCreateProject.value) return
+  if (!canCreateProject.value || isBusy.value) return
 
+  busyAction.value = 'create'
   try {
     const fromProject = importFromFile.value && importedProjectData.value
       ? importedProjectData.value
@@ -335,26 +397,34 @@ async function createProject() {
     emit('close')
   } catch (error) {
     notice.alert(error instanceof Error ? error.message : String(error), 'error', '创建工程失败', error)
+  } finally {
+    busyAction.value = ''
   }
 }
 
 async function loadProject(path: string) {
+  if (isBusy.value) return
   if (!store.InitializationPhase) {
     const confirmed = await notice.confirm('确定要加载工程吗？这将丢失未保存的进度')
     if (!confirmed) {
       return
     }
   }
+  busyAction.value = 'load'
   try {
     await store.loadFolderProjectFromPath(path)
     emit('loaded')
     emit('close')
   } catch (error) {
     notice.alert(error instanceof Error ? error.message : String(error), 'error', '加载工程失败', error)
+  } finally {
+    busyAction.value = ''
   }
 }
 
 async function importProjectFolder() {
+  if (isBusy.value) return
+  busyAction.value = 'import'
   try {
     const result = await store.importFolderProjectFromPath()
     if (!result) return
@@ -363,44 +433,75 @@ async function importProjectFolder() {
     emit('close')
   } catch (error) {
     notice.alert(error instanceof Error ? error.message : String(error), 'error', '导入工程失败', error)
+  } finally {
+    busyAction.value = ''
   }
 }
 
 async function deleteProject(path: string) {
-  const confirmed = await notice.confirm('确定要删除此工程吗？')
+  if (isBusy.value) return
+  const target = projects.value.find((p) => isSameFsPath(p.path, path))
+  const label = target?.config.name ? `“${target.config.name}”` : '此工程'
+  const confirmed = await notice.confirm(`确定要删除工程${label}吗？工程文件夹将被移至回收站`)
   if (!confirmed) return
 
+  busyAction.value = 'delete'
   try {
     await store.deleteFolderProjectByPath(path, false)
   } catch (error) {
     notice.alert(error instanceof Error ? error.message : String(error), 'error', '删除工程失败', error)
+  } finally {
+    busyAction.value = ''
   }
 }
 
 const projectInput = ref<HTMLInputElement | null>(null)
 const xmlInput = ref<HTMLInputElement | null>(null)
 
-function onFileChange(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0]
-  if (file) {
-    store.loadFromFile(file)
-  }
-  emit('loaded')
-  emit('close')
-}
-
-function onXmlFileChange(e: Event) {
+async function onFileChange(e: Event) {
   const input = e.target as HTMLInputElement
   const file = input.files?.[0]
-  if (file) {
-    store.loadXmlFromFile(file)
+  if (!file) return
+
+  busyAction.value = 'import'
+  try {
+    const text = await file.text()
+    const project = JSON.parse(text)
+    await store.applyImportedProject(project, {
+      closeManager: true,
+      logMessage: `[工程] 已导入单文件工程：${file.name}`
+    })
+    emit('loaded')
+    emit('close')
+  } catch (error) {
+    notice.alert(error instanceof Error ? error.message : String(error), 'error', '工程文件导入失败', error)
+  } finally {
     input.value = ''
+    busyAction.value = ''
   }
-  emit('loaded')
-  emit('close')
+}
+
+async function onXmlFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  busyAction.value = 'import'
+  try {
+    const xml = await file.text()
+    await store.applyImportedXmlText(xml, { closeManager: true })
+    emit('loaded')
+    emit('close')
+  } catch (error) {
+    notice.alert(error instanceof Error ? error.message : String(error), 'error', 'XML导入失败', error)
+  } finally {
+    input.value = ''
+    busyAction.value = ''
+  }
 }
 
 async function importProject() {
+  if (isExitBusy.value) return
   if (!store.InitializationPhase) {
     const confirmed = await notice.confirm('确定要加载工程吗？这将丢失未保存的进度')
     if (!confirmed) {
@@ -411,6 +512,7 @@ async function importProject() {
 }
 
 async function importXml() {
+  if (isExitBusy.value) return
   if (!store.InitializationPhase) {
     const confirmed = await notice.confirm('确定要加载 XML 弹幕文件吗？这将丢失未保存的进度')
     if (!confirmed) {
@@ -440,7 +542,28 @@ function cancelEditing() {
 }
 
 async function saveEditing() {
-  if (!editingProjectPath.value) return
+  if (!editingProjectPath.value || editingLoading.value) return
+
+  const trimmedName = editingName.value.trim()
+  if (!trimmedName) {
+    notice.alert('工程名称不能为空', 'warn')
+    return
+  }
+
+  const project = projects.value.find(p => isSameFsPath(p.path, editingProjectPath.value!))
+  const original = project?.config
+
+  const trimmedExternalPath = editingMediaExternalPath.value.trim()
+  const originalMode = original?.media?.useExternalLink ? 'external' : 'internal'
+  if (editingMediaMode.value === 'external' && !trimmedExternalPath) {
+    if (original?.media && originalMode === 'internal') {
+      const confirmed = await notice.confirm('未填写外部媒体路径，保存后将移除工程内的媒体配置并删除副本，是否继续？')
+      if (!confirmed) return
+    } else if (original?.media) {
+      notice.alert('请填写外部媒体文件路径', 'warn')
+      return
+    }
+  }
 
   editingLoading.value = true
   try {
@@ -448,11 +571,8 @@ async function saveEditing() {
       projectPath: editingProjectPath.value
     }
 
-    const project = projects.value.find(p => p.path === editingProjectPath.value)
-    const original = project?.config
-
-    if (editingName.value.trim() && editingName.value.trim() !== original?.name) {
-      input.name = editingName.value.trim()
+    if (trimmedName !== original?.name) {
+      input.name = trimmedName
     }
     if (editingNewParentDir.value.trim()) {
       input.newParentDir = editingNewParentDir.value.trim()
@@ -462,14 +582,13 @@ async function saveEditing() {
     }
 
     // 媒体模式变更
-    const originalMode = original?.media?.useExternalLink ? 'external' : 'internal'
     if (editingMediaMode.value !== originalMode) {
       input.mediaUseExternalLink = editingMediaMode.value === 'external'
       if (editingMediaMode.value === 'external') {
-        input.mediaExternalPath = editingMediaExternalPath.value || original?.media?.externalPath || ''
+        input.mediaExternalPath = trimmedExternalPath
       }
-    } else if (editingMediaMode.value === 'external' && editingMediaExternalPath.value !== (original?.media?.externalPath ?? '')) {
-      input.mediaExternalPath = editingMediaExternalPath.value
+    } else if (editingMediaMode.value === 'external' && trimmedExternalPath !== (original?.media?.externalPath ?? '')) {
+      input.mediaExternalPath = trimmedExternalPath
     }
 
     await store.editFolderProjectByInput(input)
@@ -508,10 +627,17 @@ async function chooseImportedProjectFile() {
   try {
     const data = await openProjectFile()
     if (data) {
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        throw new Error('工程文件格式无效（根节点必须是对象）')
+      }
+      if (data.danmakus !== undefined && !Array.isArray(data.danmakus)) {
+        throw new Error('工程文件格式无效（danmakus 必须是数组）')
+      }
       importedProjectData.value = data
       // 尝试从数据中提取名称作为默认工程名
-      if (data?.meta?.name) {
-        projectName.value = data.meta.name
+      if (typeof data?.meta?.name === 'string' && data.meta.name.trim()) {
+        projectName.value = data.meta.name.trim()
+        await checkProjectPathNow()
       }
       importedProjectPath.value = '已选择工程文件'
       notice.log('[工程] 已读取工程文件', 'success')
@@ -522,12 +648,16 @@ async function chooseImportedProjectFile() {
 }
 
 async function skipFolderProject() {
+  if (isExitBusy.value) return
+  busyAction.value = 'skip'
   try {
     await store.skipProjectManager()
     emit('loaded')
     emit('close')
   } catch (error) {
     notice.alert(error instanceof Error ? error.message : String(error), 'error', '跳过工程失败', error)
+  } finally {
+    busyAction.value = ''
   }
 }
 
@@ -592,6 +722,8 @@ function formatTime(value: number) {
   display: flex;
   flex-direction: column;
   gap: 15px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .section-title {
@@ -801,11 +933,14 @@ function formatTime(value: number) {
 }
 
 .primary-btn {
-  position: sticky;
-  margin-top: auto;
-  bottom: 16px;
   background: #245f8d;
   border-color: #3478ae;
+}
+
+.create-submit-btn {
+  position: sticky;
+  margin-top: auto;
+  bottom: 0;
 }
 
 .btn-danger {

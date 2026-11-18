@@ -10,7 +10,10 @@ export function createCoalescedChunkWritable(
   emitChunk: (position: number, bytes: Uint8Array<ArrayBuffer>) => void,
   maxBufferBytes = 1024 * 1024
 ): WritableStream<StreamTargetChunk> {
-  const staging = new Uint8Array(maxBufferBytes)
+  const bufferSize = Number.isFinite(maxBufferBytes) && maxBufferBytes >= 1024
+    ? Math.floor(maxBufferBytes)
+    : 1024 * 1024
+  const staging = new Uint8Array(bufferSize)
   let pendingPos = 0
   let pendingLen = 0
 
@@ -28,21 +31,26 @@ export function createCoalescedChunkWritable(
 
   return new WritableStream<StreamTargetChunk>({
     write(chunk) {
-      if (chunk.type !== 'write' || chunk.data.byteLength === 0) {
+      if (
+        chunk.type !== 'write' ||
+        chunk.data.byteLength === 0 ||
+        !Number.isFinite(chunk.position) ||
+        chunk.position < 0
+      ) {
         return
       }
       const data = chunk.data
-      const pos = chunk.position
+      const pos = Math.trunc(chunk.position)
 
       if (pendingLen > 0 && pos !== pendingPos + pendingLen) {
         flushPending()
       }
 
-      if (pendingLen > 0 && pendingLen + data.byteLength > maxBufferBytes) {
+      if (pendingLen > 0 && pendingLen + data.byteLength > bufferSize) {
         flushPending()
       }
 
-      if (data.byteLength >= maxBufferBytes) {
+      if (data.byteLength >= bufferSize) {
         const copy = new Uint8Array(data.byteLength)
         copy.set(data)
         emitChunk(pos, copy)

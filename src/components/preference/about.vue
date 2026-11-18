@@ -1,14 +1,26 @@
 <template>
   <div v-if="help.isVisible" class="help-modal-mask" @click.self="help.hide()">
-    <div class="help-modal-container">
+    <div class="help-modal-container" role="dialog" aria-modal="true" aria-label="使用文档">
       <!-- 关闭按钮 -->
-      <button class="help-close-btn" @click="help.hide()" title="关闭">✕</button>
+      <button type="button" class="help-close-btn" @click="help.hide()" title="关闭" aria-label="关闭">✕</button>
 
       <!-- 左侧导航 -->
       <div class="help-sidebar no-select">
         <div class="help-sidebar-title">使用文档</div>
+        <div class="help-sidebar-search">
+          <input
+            v-model="sectionSearch"
+            type="text"
+            class="help-search-input"
+            placeholder="搜索文档..."
+            aria-label="搜索文档章节"
+          />
+        </div>
         <div class="help-sidebar-option help-scrollbar">
-          <template v-for="section in visibleDocSections" :key="section.id">
+          <div v-if="filteredDocSections.length === 0" class="help-nav-empty">
+            未找到匹配章节
+          </div>
+          <template v-for="section in filteredDocSections" :key="section.id">
             <!-- 有子节点的分类 -->
             <template v-if="section.children">
               <div
@@ -63,36 +75,75 @@
       <!-- 右侧内容 -->
       <div class="help-content-wrapper">
         <div class="help-content-header no-select">{{ currentTitle }}</div>
-        <div class="help-content help-scrollbar" v-html="currentBody"></div>
+        <div ref="helpContentRef" class="help-content help-scrollbar" v-html="currentBody"></div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useHelpStore, docSections, filterVisibleDocSections } from '@/store/help'
+import { computed, nextTick, ref, watch } from 'vue'
+import { useHelpStore, docSections, filterVisibleDocSections, type DocSection } from '@/store/help'
+import { useEditorStore } from '@/store/editor'
 
 const help = useHelpStore()
+const store = useEditorStore()
+const sectionSearch = ref('')
+const helpContentRef = ref<HTMLElement | null>(null)
 const visibleDocSections = computed(() => filterVisibleDocSections(docSections))
 
-const sectionContents: Record<string, string> = {
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function filterDocSectionsByQuery(sections: DocSection[], query: string): DocSection[] {
+  if (!query) return sections
+  const matched: DocSection[] = []
+  for (const section of sections) {
+    const titleMatches = section.title.toLocaleLowerCase().includes(query)
+    if (titleMatches) {
+      matched.push(section)
+      continue
+    }
+    if (section.children) {
+      const children = filterDocSectionsByQuery(section.children, query)
+      if (children.length > 0) {
+        matched.push({ ...section, children })
+      }
+    }
+  }
+  return matched
+}
+
+const filteredDocSections = computed(() => {
+  const query = sectionSearch.value.trim().toLocaleLowerCase()
+  return filterDocSectionsByQuery(visibleDocSections.value, query)
+})
+
+const safeVersion = computed(() => escapeHtml(store.version || '1.12.0'))
+
+const sectionContents = computed<Record<string, string>>(() => ({
   'about': `
     <subtitle>关于</subtitle>
     <img src="/favicon.svg" alt="m7-editor" style="width: 150px; height: 150px;">
     <p>m7-editor是一个面向 M7 / B 站特效弹幕场景的可视化编辑器，由jerryeee开发</p>
-    <p><strong>您所在的版本：</strong><kbd>1.12.0</kbd></p>
+    <p><strong>您所在的版本：</strong><kbd>${safeVersion.value}</kbd></p>
     <h3>获取帮助</h3>
     <p>按下<code>h</code>随时唤出帮助</p>
     <p>鼠标在左上角图标处悬停以获取快捷键帮助</p>
     <h3>反馈渠道:</h3>
     <ul>
-      <li><a href="https://github.com/qmwNEbrVt2233/m7-editor/issues" target="_blank">github issues</a></li>
-      <li><a href="https://space.bilibili.com/108382388" target="_blank">bilibili profile</a></li>
+      <li><a href="https://github.com/qmwNEbrVt2233/m7-editor/issues" target="_blank" rel="noopener noreferrer">github issues</a></li>
+      <li><a href="https://space.bilibili.com/108382388" target="_blank" rel="noopener noreferrer">bilibili profile</a></li>
       <li>邮箱：1968029490@qq.com</li>
     </ul>
-    <p>下载 / 更新 应用请前往：<a href="https://github.com/qmwNEbrVt2233/m7-editor/releases" target="_blank">qmwNEbrVt2233/m7-editor/releases</a></p>
-    <p>开源地址：<a href="https://github.com/qmwNEbrVt2233/m7-editor" target="_blank">qmwNEbrVt2233/m7-editor</a></p>
+    <p>下载 / 更新 应用请前往：<a href="https://github.com/qmwNEbrVt2233/m7-editor/releases" target="_blank" rel="noopener noreferrer">qmwNEbrVt2233/m7-editor/releases</a></p>
+    <p>开源地址：<a href="https://github.com/qmwNEbrVt2233/m7-editor" target="_blank" rel="noopener noreferrer">qmwNEbrVt2233/m7-editor</a></p>
   `,
 
   'interface-project-manager': `
@@ -100,7 +151,7 @@ const sectionContents: Record<string, string> = {
     <img src="./oi2neu10df-92emusioa-2ei1jb.jpg" style="width: 100%;">
     <p style="color: #aaa; font-style: italic;">开启应用时你应该看到这个</p>
     <p>应用会在系统文档中创建一个文件夹，结构如下</p>
-    <kbd style="white-space: pre; display: block; width: 110px">└───m7-editor</br>    ├───logs</br>    ├───projects</br>    └───templates</kbd>
+    <kbd style="white-space: pre; display: block; width: fit-content; min-width: 140px; max-width: 100%; overflow-x: auto;">└───m7-editor<br>    ├───logs<br>    ├───projects<br>    └───templates</kbd>
     <ul>
       <li>logs用于实时存放日志，每次打开都会创建一个新文件用于记录</li>
       <li>projects是默认的工程创建目录</li>
@@ -537,7 +588,7 @@ const sectionContents: Record<string, string> = {
         <li>严格匹配：<code>"'匹配值'"</code></li>
       </ul>
     </ul>
-    <ul><li><strong>例：</strong><kbd>/s startTime:"1000~56000,'300'",text:"<^sample>";size:"'127'"</kbd></ul></li>
+    <ul><li><strong>例：</strong><kbd>/s startTime:"1000~56000,'300'",text:"<^sample>";size:"'127'"</kbd></li></ul>
   `,
 
   'interface-timeline': `
@@ -797,9 +848,9 @@ const sectionContents: Record<string, string> = {
       <li>在工程管理中创建一个工程</li>
       <li>在顶边栏配置所需屏幕宽高、最大 Layer 层数、XML 预处理等</li>
       <li>使用提供的任何编辑手段开始弹幕编辑与创建</li>
-      <li>使用 <kbd>Ctrl + S</kbd> 保存，使用 <kbd>Ctrl + shift + S</kbd> 保存时同时备份</li>
+      <li>使用 <kbd>Ctrl + S</kbd> 保存，使用 <kbd>Ctrl + Alt + S</kbd> 保存时同时备份</li>
       <li>完成后选择你需要的预处理选项并导出 XML</li>
-      <li>使用 <a href="https://github.com/qmwNEbrVt2233/DMsender_CLI/releases" target="_blank">DMsender_CLI</a> 或 <a href="https://github.com/MikuFan039/DMSenderAPP/releases" target="_blank">弹幕发射场</a> 或其他 XML 发送工具将弹幕上传至 Bilibili</li>
+      <li>使用 <a href="https://github.com/qmwNEbrVt2233/DMsender_CLI/releases" target="_blank" rel="noopener noreferrer">DMsender_CLI</a> 或 <a href="https://github.com/MikuFan039/DMSenderAPP/releases" target="_blank" rel="noopener noreferrer">弹幕发射场</a> 或其他 XML 发送工具将弹幕上传至 Bilibili</li>
       <li>打开录屏模式（<kbd>Ctrl + Alt + Space</kbd>）或使用导出视频功能</li>
     </ol>
   `,
@@ -840,9 +891,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.</kbd>
   `
-}
+}))
 
 const currentContent = computed(() => {
+  const contents = sectionContents.value
   const visibleSectionIds = new Set<string>()
   const collectSectionIds = (sections: typeof docSections) => {
     for (const section of sections) {
@@ -854,10 +906,10 @@ const currentContent = computed(() => {
   collectSectionIds(visibleDocSections.value)
 
   if (!visibleSectionIds.has(help.activeSection)) {
-    return sectionContents['about']
+    return contents['about']
   }
 
-  return sectionContents[help.activeSection] || sectionContents['about']
+  return contents[help.activeSection] || contents['about']
 })
 
 const currentTitle = computed(() => {
@@ -868,6 +920,17 @@ const currentTitle = computed(() => {
 const currentBody = computed(() => {
   return currentContent.value.replace(/<subtitle>.*?<\/subtitle>/, '')
 })
+
+watch(
+  () => [help.isVisible, help.activeSection],
+  async ([visible]) => {
+    if (!visible) return
+    await nextTick()
+    if (helpContentRef.value) {
+      helpContentRef.value.scrollTop = 0
+    }
+  }
+)
 </script>
 
 <style scoped>
@@ -929,6 +992,9 @@ const currentBody = computed(() => {
   background: rgb(58, 58, 58);
   border-right: 1px solid #444;
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .help-sidebar-title {
@@ -939,9 +1005,37 @@ const currentBody = computed(() => {
   border-bottom: 1px solid #444;
 }
 
+.help-sidebar-search {
+  padding: 8px 10px;
+  border-bottom: 1px solid #444;
+}
+
+.help-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid #525252;
+  border-radius: 4px;
+  background: #2f2f32;
+  color: #e6e6e6;
+  font-size: 12px;
+  outline: none;
+}
+
+.help-search-input:focus {
+  border-color: #64b5f6;
+}
+
 .help-sidebar-option {
   overflow-y: auto;
-  height: calc(80vh - 45px);
+  flex: 1;
+  min-height: 0;
+}
+
+.help-nav-empty {
+  padding: 16px 14px;
+  font-size: 12px;
+  color: #999;
 }
 
 /* 一级分类 */
@@ -983,9 +1077,9 @@ const currentBody = computed(() => {
   color: #d0d0d0;
 }
 
-.help-nav-item.active {
+.help-nav-subcategory.active {
   background: rgba(150, 150, 150, 0.12);
-  color: #ccc;
+  color: #ddd;
 }
 
 /* 叶子节点 */
@@ -1006,11 +1100,13 @@ const currentBody = computed(() => {
 
 .help-nav-item.active {
   background: rgba(150, 150, 150, 0.12);
+  color: #ccc;
 }
 
 /* ── 右侧内容 ── */
 .help-content-wrapper {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1138,5 +1234,30 @@ const currentBody = computed(() => {
 
 .help-scrollbar::-webkit-scrollbar-thumb:hover {
   background: #7c7c7c;
+}
+
+@media (max-width: 760px) {
+  .help-modal-container {
+    width: calc(100vw - 20px);
+    height: calc(100vh - 20px);
+    flex-direction: column;
+  }
+
+  .help-sidebar {
+    width: 100%;
+    min-width: 0;
+    max-height: 220px;
+    border-right: none;
+    border-bottom: 1px solid #444;
+  }
+
+  .help-content-header {
+    padding: 14px 18px;
+    font-size: 20px;
+  }
+
+  .help-content {
+    padding: 14px 18px 22px;
+  }
 }
 </style>

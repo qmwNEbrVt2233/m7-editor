@@ -20,6 +20,7 @@ import {
 import {
   computeNearLosslessBitrate,
   createVideoExportQuality,
+  isValidExportQuality,
   resolveDirectVideoEncodingTarget,
   type ExportQuality
 } from './quality'
@@ -80,6 +81,7 @@ let audioTask: Promise<void> | null = null
 let frameQueue: Promise<void> = Promise.resolve()
 let isCanceled = false
 let isFinishing = false
+let cancelPromise: Promise<void> | null = null
 let webKitRuntime = false
 let targetWidth = 0
 let targetHeight = 0
@@ -95,6 +97,42 @@ function rejectPendingSpriteRequests(reason: string) {
     waiter.reject(new Error(reason))
   }
   pendingSpriteRequests.clear()
+}
+
+function resetWorkerRefs() {
+  output = null
+  videoSampleSource = null
+  encodedVideoSource = null
+  webKitEncoder = null
+  webKitPacketQueue = Promise.resolve()
+  webKitEncoderError = null
+  input = null
+  audioConversion = null
+  audioTask = null
+  if (canvas) {
+    canvas.width = 0
+    canvas.height = 0
+  }
+  canvas = null
+  context = null
+}
+
+async function cleanupPartialSession() {
+  await audioConversion?.cancel().catch(() => undefined)
+  if (webKitEncoder && webKitEncoder.state !== 'closed') {
+    try {
+      webKitEncoder.close()
+    } catch {
+      // ignore close error
+    }
+  }
+  await output?.cancel().catch(() => undefined)
+  try {
+    input?.dispose()
+  } catch {
+    // ignore dispose error
+  }
+  resetWorkerRefs()
 }
 
 function postFinalizingStage(stage: string) {
@@ -120,10 +158,17 @@ function getWebKitBitrate(quality: ExportQuality, width: number, height: number,
     return computeNearLosslessBitrate(width, height, fps)
   }
 
-  const qualityScale = { low: 0.25, high: 0.75, 'very-high': 1 }[quality]
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : 1920
+  const safeHeight = Number.isFinite(height) && height > 0 ? height : 1080
+  const qualityScaleMap: Record<'low' | 'high' | 'very-high', number> = {
+    low: 0.25,
+    high: 0.75,
+    'very-high': 1
+  }
+  const qualityScale = qualityScaleMap[quality] ?? 0.75
   const factor = 0.3 * Math.exp(2.5538 * qualityScale)
-  const baseBitrate = 3_000_000 * Math.pow((width * height) / (1920 * 1080), 0.95)
-  return Math.ceil(baseBitrate * factor / 1000) * 1000
+  const baseBitrate = 3_000_000 * Math.pow((safeWidth * safeHeight) / (1920 * 1080), 0.95)
+  return Math.max(100_000, Math.ceil(baseBitrate * factor / 1000) * 1000)
 }
 
 async function createWebKitEncoder(configParams: {
@@ -213,8 +258,30 @@ async function initializeMuxerSession(config: {
   endMs: number
   readyMessageType: 'ready' | 'direct-ready'
 }) {
+  if (
+    !Number.isInteger(config.width) ||
+    !Number.isInteger(config.height) ||
+    config.width < 16 ||
+    config.width > 7680 ||
+    config.height < 16 ||
+    config.height > 4320 ||
+    config.width % 2 !== 0 ||
+    config.height % 2 !== 0 ||
+    !Number.isFinite(config.fps) ||
+    config.fps <= 0 ||
+    config.fps > 120 ||
+    !Number.isFinite(config.startMs) ||
+    !Number.isFinite(config.endMs) ||
+    config.startMs < 0 ||
+    config.endMs <= config.startMs ||
+    !isValidExportQuality(config.quality)
+  ) {
+    throw new Error('视频编码会话参数无效')
+  }
+
   isCanceled = false
   isFinishing = false
+  cancelPromise = null
   webKitRuntime = isWebKitRuntime()
   webKitPacketQueue = Promise.resolve()
   webKitEncoderError = null
@@ -222,69 +289,87 @@ async function initializeMuxerSession(config: {
   targetWidth = config.width
   targetHeight = config.height
 
-  const writable = createCoalescedChunkWritable(emitCoalescedChunk)
-  // WebKit can keep a chunked target in memory until the first 4 MiB block is
-  // complete, then stall while applying stream backpressure. Keeping chunked: false
-  // with coalesced IPC writes avoids both the WebKit stall and per-packet syscall storms.
-  const target = new StreamTarget(writable, webKitRuntime
-    ? { chunked: false }
-    : { chunked: true, chunkSize: 4 * 1024 * 1024 })
-  output = new Output({ format: new Mp4OutputFormat({ fastStart: false }), target })
+  try {
+    const writable = createCoalescedChunkWritable(emitCoalescedChunk)
+    // WebKit can keep a chunked target in memory until the first 4 MiB block is
+    // complete, then stall while applying stream backpressure. Keeping chunked: false
+    // with coalesced IPC writes avoids both the WebKit stall and per-packet syscall storms.
+    const target = new StreamTarget(writable, webKitRuntime
+      ? { chunked: false }
+      : { chunked: true, chunkSize: 4 * 1024 * 1024 })
+    output = new Output({ format: new Mp4OutputFormat({ fastStart: false }), target })
 
-  if (webKitRuntime) {
-    encodedVideoSource = new EncodedVideoPacketSource('avc')
-    output.addVideoTrack(encodedVideoSource, { frameRate: config.fps })
-    webKitEncoder = await createWebKitEncoder(config)
-  } else {
-    const targetConfig = await resolveDirectVideoEncodingTarget(
-      config.width,
-      config.height,
-      config.fps,
-      config.quality
-    )
-    videoSampleSource = new VideoSampleSource({
-      codec: targetConfig?.codec ?? 'avc',
-      quality: targetConfig?.quality ?? createVideoExportQuality(config.quality, config.width, config.height, config.fps),
-      hardwareAcceleration: targetConfig?.hardwareAcceleration ?? 'prefer-hardware',
-      keyFrameInterval: 2
-    })
-    output.addVideoTrack(videoSampleSource, { frameRate: config.fps })
-  }
-
-  let hasAudio = false
-  if (config.mediaUrl) {
-    input = new Input({ source: new UrlSource(config.mediaUrl), formats: ALL_FORMATS })
-    const audioTrack = await input.getPrimaryAudioTrack()
-    hasAudio = Boolean(audioTrack)
-    if (audioTrack) {
-      audioConversion = await Conversion.init({
-        input,
-        output,
-        tracks: 'primary',
-        video: { discard: true },
-        audio: {},
-        trim: { start: config.startMs / 1000, end: config.endMs / 1000 },
-        composable: true,
-        showWarnings: false
+    if (webKitRuntime) {
+      encodedVideoSource = new EncodedVideoPacketSource('avc')
+      output.addVideoTrack(encodedVideoSource, { frameRate: config.fps })
+      webKitEncoder = await createWebKitEncoder(config)
+    } else {
+      const targetConfig = await resolveDirectVideoEncodingTarget(
+        config.width,
+        config.height,
+        config.fps,
+        config.quality
+      )
+      videoSampleSource = new VideoSampleSource({
+        codec: targetConfig?.codec ?? 'avc',
+        quality: targetConfig?.quality ?? createVideoExportQuality(config.quality, config.width, config.height, config.fps),
+        hardwareAcceleration: targetConfig?.hardwareAcceleration ?? 'prefer-hardware',
+        keyFrameInterval: 2
       })
-      if (audioConversion.discardedTracks.some((track) => track.track === audioTrack)) {
-        throw new Error('源视频音轨无法加入 MP4')
+      output.addVideoTrack(videoSampleSource, { frameRate: config.fps })
+    }
+
+    let hasAudio = false
+    if (config.mediaUrl) {
+      input = new Input({ source: new UrlSource(config.mediaUrl), formats: ALL_FORMATS })
+      const audioTrack = await input.getPrimaryAudioTrack()
+      hasAudio = Boolean(audioTrack)
+      if (audioTrack) {
+        audioConversion = await Conversion.init({
+          input,
+          output,
+          tracks: 'primary',
+          video: { discard: true },
+          audio: {},
+          trim: { start: config.startMs / 1000, end: config.endMs / 1000 },
+          composable: true,
+          showWarnings: false
+        })
+        if (audioConversion.discardedTracks.some((track) => track.track === audioTrack)) {
+          throw new Error('源视频音轨无法加入 MP4')
+        }
       }
     }
-  }
 
-  // Signal ready before output.start() emits header chunks so host queues startVideoExportFile first
-  workerScope.postMessage({ type: config.readyMessageType, hasAudio })
-  await output.start()
-  if (audioConversion) {
-    audioTask = audioConversion.execute()
-    audioTask.catch((error) => {
-      if (!isCanceled) workerScope.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) })
-    })
+    if (isCanceled) {
+      await cleanupPartialSession()
+      return
+    }
+
+    // Signal ready before output.start() emits header chunks so host queues startVideoExportFile first
+    workerScope.postMessage({ type: config.readyMessageType, hasAudio })
+    await output.start()
+    if (audioConversion) {
+      audioTask = audioConversion.execute()
+      audioTask.catch((error) => {
+        if (!isCanceled) workerScope.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+      })
+    }
+  } catch (error) {
+    await cleanupPartialSession()
+    throw error
   }
 }
 
 async function startExport(message: StartMessage) {
+  if (
+    !Number.isInteger(message.width) ||
+    !Number.isInteger(message.height) ||
+    message.width < 16 ||
+    message.height < 16
+  ) {
+    throw new Error('视频导出分辨率无效')
+  }
   canvas = new OffscreenCanvas(message.width, message.height)
   context = canvas.getContext('2d', { alpha: false })
   if (!context) throw new Error('无法创建视频帧画布')
@@ -293,8 +378,13 @@ async function startExport(message: StartMessage) {
 
 async function encodeWebKitVideoFrame(frame: VideoFrame, index: number) {
   try {
+    if (isCanceled) return
+    if (webKitEncoderError) throw webKitEncoderError
+    if (!webKitEncoder || webKitEncoder.state !== 'configured') {
+      throw new Error('视频编码器未就绪或已关闭')
+    }
     const keyFrameInterval = Math.max(1, Math.round(webKitFrameRate * 2))
-    webKitEncoder!.encode(frame, {
+    webKitEncoder.encode(frame, {
       keyFrame: index === 0 || index % keyFrameInterval === 0
     })
   } finally {
@@ -312,14 +402,14 @@ async function encodeWebKitVideoFrame(frame: VideoFrame, index: number) {
 }
 
 async function addEncodedSample(sample: VideoSample, index: number) {
-  const addPromise = videoSampleSource!.add(sample)
-  const addOutcome = addPromise.then(
-    () => ({ ok: true as const }),
-    (error: unknown) => ({ ok: false as const, error })
-  )
-  const outcome = await addOutcome
-  sample.close()
-  if (!outcome.ok) throw outcome.error
+  try {
+    if (!videoSampleSource || isCanceled) {
+      return
+    }
+    await videoSampleSource.add(sample)
+  } finally {
+    sample.close()
+  }
   void index
 }
 
@@ -347,9 +437,7 @@ async function addFrame(message: FrameMessage) {
     return
   }
 
-  workerScope.postMessage({ type: 'frame-stage', index: message.index, stage: 'received' })
-
-  let frame: VideoFrame
+  let frame: VideoFrame | null = null
   try {
     if (message.frame) {
       frame = message.frame
@@ -358,22 +446,29 @@ async function addFrame(message: FrameMessage) {
     } else {
       return
     }
+  } catch (error) {
+    message.frame?.close()
+    throw error
   } finally {
     message.bitmap?.close()
   }
 
   if (webKitRuntime) {
     await encodeWebKitVideoFrame(frame, message.index)
-    workerScope.postMessage({ type: 'frame-stage', index: message.index, stage: 'submitted' })
     workerScope.postMessage({ type: 'frame-added', index: message.index })
     return
   }
 
-  const sample = new VideoSample(frame, {
-    timestamp: message.timestampMs / 1000,
-    duration: Math.max(0, message.durationMs / 1000)
-  })
-  workerScope.postMessage({ type: 'frame-stage', index: message.index, stage: 'submitted' })
+  let sample: VideoSample
+  try {
+    sample = new VideoSample(frame, {
+      timestamp: message.timestampMs / 1000,
+      duration: Math.max(0.000001, message.durationMs / 1000)
+    })
+  } catch (error) {
+    frame.close()
+    throw error
+  }
   await addEncodedSample(sample, message.index)
   workerScope.postMessage({ type: 'frame-added', index: message.index })
 }
@@ -381,6 +476,7 @@ async function addFrame(message: FrameMessage) {
 async function finalizeAndCloseOutput(emitComplete: boolean) {
   if (!output || isCanceled) return
   isFinishing = true
+  let finalized = false
   try {
     if (webKitRuntime) {
       postFinalizingStage('正在确认最后一个视频包')
@@ -398,38 +494,66 @@ async function finalizeAndCloseOutput(emitComplete: boolean) {
     await audioTask
     postFinalizingStage('正在完成 MP4 封装')
     await output.finalize()
+    finalized = true
     postFinalizingStage('MP4 封装完成')
-    input?.dispose()
-    if (emitComplete) {
+    if (emitComplete && !isCanceled) {
       workerScope.postMessage({ type: 'complete' })
     }
   } finally {
-    if (webKitEncoder && webKitEncoder.state !== 'closed') webKitEncoder.close()
+    if (!finalized) {
+      await audioConversion?.cancel().catch(() => undefined)
+      await output?.cancel().catch(() => undefined)
+    }
+    if (webKitEncoder && webKitEncoder.state !== 'closed') {
+      try {
+        webKitEncoder.close()
+      } catch {
+        // ignore
+      }
+    }
+    try {
+      input?.dispose()
+    } catch {
+      // ignore
+    }
+    resetWorkerRefs()
   }
 }
 
 async function finishExport() {
   await frameQueue
+  if (isCanceled) return
   await finalizeAndCloseOutput(true)
 }
 
 async function startDirectExport(message: StartDirectMessage) {
   isCanceled = false
   isFinishing = false
+  cancelPromise = null
   webKitRuntime = isWebKitRuntime()
 
   const outcome = await runDirectVideoExportSession(message, {
     encoderSink: {
       probeCanvas: async (offscreen) => {
-        const probe = new VideoFrame(offscreen, {
-          timestamp: 0,
-          duration: Math.max(1, Math.round(1_000_000 / message.fps))
-        })
-        probe.close()
+        let probe: VideoFrame | null = null
+        try {
+          probe = new VideoFrame(offscreen, {
+            timestamp: 0,
+            duration: Math.max(1, Math.round(1_000_000 / message.fps))
+          })
+        } catch {
+          throw new Error('webkit-videoframe-offscreen-unsupported')
+        } finally {
+          probe?.close()
+        }
         if (webKitRuntime) {
           const testEncoder = await createWebKitEncoder(message)
-          if (testEncoder.state !== 'closed') {
-            testEncoder.close()
+          try {
+            // Encoder configured successfully
+          } finally {
+            if (testEncoder.state !== 'closed') {
+              testEncoder.close()
+            }
           }
         }
       },
@@ -437,6 +561,7 @@ async function startDirectExport(message: StartDirectMessage) {
         await initializeMuxerSession({ ...message, readyMessageType: 'direct-ready' })
       },
       encodeCanvasFrame: async (offscreen, frameIndex, timestampMs, durationMs) => {
+        if (isCanceled) return
         if (webKitRuntime) {
           const frame = new VideoFrame(offscreen, {
             timestamp: Math.round(timestampMs * 1000),
@@ -447,7 +572,7 @@ async function startDirectExport(message: StartDirectMessage) {
         }
         const sample = new VideoSample(offscreen, {
           timestamp: timestampMs / 1000,
-          duration: Math.max(0, durationMs / 1000)
+          duration: Math.max(0.000001, durationMs / 1000)
         })
         await addEncodedSample(sample, frameIndex)
       },
@@ -485,21 +610,26 @@ async function startDirectExport(message: StartDirectMessage) {
 }
 
 async function cancelExport() {
+  if (cancelPromise) {
+    return cancelPromise
+  }
   isCanceled = true
   rejectPendingSpriteRequests('视频导出已取消')
-  await frameQueue
-  await audioConversion?.cancel().catch(() => undefined)
-  if (webKitEncoder && webKitEncoder.state !== 'closed') webKitEncoder.close()
-  await output?.cancel().catch(() => undefined)
-  input?.dispose()
-  workerScope.postMessage({ type: 'canceled' })
+  cancelPromise = (async () => {
+    await frameQueue.catch(() => undefined)
+    await cleanupPartialSession()
+    workerScope.postMessage({ type: 'canceled' })
+  })()
+  return cancelPromise
 }
 
 workerScope.onmessage = (event: MessageEvent<IncomingMessage>) => {
   const message = event.data
   if (message.type === 'start') {
     void startExport(message).catch((error) => {
-      workerScope.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+      if (!isCanceled) {
+        workerScope.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+      }
     })
   } else if (message.type === 'start-direct') {
     void startDirectExport(message).catch((error) => {
@@ -515,12 +645,17 @@ workerScope.onmessage = (event: MessageEvent<IncomingMessage>) => {
     }
   } else if (message.type === 'frame') {
     frameQueue = frameQueue.then(() => addFrame(message)).catch((error) => {
+      const wasCanceled = isCanceled
       isCanceled = true
-      workerScope.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+      if (!wasCanceled) {
+        workerScope.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+      }
     })
   } else if (message.type === 'finish') {
     void finishExport().catch((error) => {
-      workerScope.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+      if (!isCanceled) {
+        workerScope.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+      }
     })
   } else if (message.type === 'cancel') {
     void cancelExport()

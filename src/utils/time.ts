@@ -3,10 +3,11 @@
  * @example formatTime(1500) => "00:01.500"
  */
 export function formatTime(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000)
+  const safeMs = typeof ms === 'number' && Number.isFinite(ms) ? Math.max(0, Math.floor(ms)) : 0
+  const totalSeconds = Math.floor(safeMs / 1000)
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
-  const milliseconds = ms % 1000
+  const milliseconds = safeMs % 1000
 
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(milliseconds).padStart(3, '0')}`
 }
@@ -16,20 +17,23 @@ export function formatTime(ms: number): string {
  * @example parseTimeString("01:30.500") => 90500
  */
 export function parseTimeString(timeStr: string): number {
+  if (typeof timeStr !== 'string') return 0
   const match = timeStr.match(/(\d+):(\d+)\.?(\d*)/)
   if (!match) return 0
 
   const minutes = parseInt(match[1], 10)
   const seconds = parseInt(match[2], 10)
   const ms = match[3] ? parseInt(match[3].padEnd(3, '0').slice(0, 3), 10) : 0
+  const total = minutes * 60 * 1000 + seconds * 1000 + ms
 
-  return minutes * 60 * 1000 + seconds * 1000 + ms
+  return Number.isFinite(total) ? Math.max(0, total) : 0
 }
 
 const pad = (value: number) => String(value).padStart(2, '0')
 
 export function formatDateTime(value: number | Date) {
-  const date = value instanceof Date ? value : new Date(value)
+  const rawDate = value instanceof Date ? value : new Date(value)
+  const date = Number.isNaN(rawDate.getTime()) ? new Date(0) : rawDate
   return [
     date.getFullYear(),
     '-',
@@ -46,7 +50,8 @@ export function formatDateTime(value: number | Date) {
 }
 
 export function formatDuration(ms: number) {
-  const totalSeconds = Math.max(0, Math.round(ms / 1000))
+  const safeMs = typeof ms === 'number' && Number.isFinite(ms) ? Math.max(0, ms) : 0
+  const totalSeconds = Math.max(0, Math.round(safeMs / 1000))
   const hours = Math.floor(totalSeconds / 3600)
   const minutes = Math.floor((totalSeconds % 3600) / 60)
   const seconds = totalSeconds % 60

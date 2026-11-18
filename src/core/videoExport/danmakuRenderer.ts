@@ -1,5 +1,51 @@
 import type { DanmakuItem } from '../danmaku'
 
+/**
+ * Unwraps reactive Proxy objects into plain POJO DanmakuItem snapshots
+ * suitable for structured-clone worker messaging and export isolation.
+ */
+export function clonePlainDanmakus(danmakus: readonly DanmakuItem[]): DanmakuItem[] {
+  const result: DanmakuItem[] = new Array(danmakus.length)
+  for (let i = 0; i < danmakus.length; i += 1) {
+    const d = danmakus[i]
+    result[i] = {
+      id: String(d.id ?? ''),
+      layer: Number(d.layer) || 0,
+      startTime: Number(d.startTime) || 0,
+      content: {
+        text: String(d.content?.text ?? ''),
+        font: String(d.content?.font ?? ''),
+        size: Number(d.content?.size ?? 24),
+        color: String(d.content?.color ?? '#ffffff'),
+        stroke: Boolean(d.content?.stroke),
+      },
+      transform: {
+        start: {
+          x: Number(d.transform?.start?.x) || 0,
+          y: Number(d.transform?.start?.y) || 0,
+        },
+        end: {
+          x: Number(d.transform?.end?.x) || 0,
+          y: Number(d.transform?.end?.y) || 0,
+        },
+        zRotate: Number(d.transform?.zRotate) || 0,
+        yRotate: Number(d.transform?.yRotate) || 0,
+      },
+      opacity: {
+        from: Number(d.opacity?.from ?? 1),
+        to: Number(d.opacity?.to ?? 1),
+      },
+      animation: {
+        duration: Number(d.animation?.duration) || 0,
+        moveDuration: Number(d.animation?.moveDuration) || 0,
+        delay: Number(d.animation?.delay) || 0,
+        easing: d.animation?.easing === 'speedup' ? 'speedup' : 'speeddown',
+      },
+    }
+  }
+  return result
+}
+
 export type IndexedDanmaku = {
   item: DanmakuItem
   startTime: number
@@ -89,10 +135,17 @@ const GENERIC_FONT_FAMILIES = new Set([
   'fangsong',
 ])
 
+const FONT_FAMILY_CACHE = new Map<string, string>()
+const MAX_FONT_FAMILY_CACHE = 256
+
 export function formatFontFamilyForCanvas(font: string): string {
-  const raw = String(font || '').trim()
+  const raw = String(font || '').replace(/[\r\n\0;{}]/g, ' ').trim()
   if (!raw) {
     return 'Arial, Helvetica, sans-serif'
+  }
+  const cached = FONT_FAMILY_CACHE.get(raw)
+  if (cached) {
+    return cached
   }
   const parts = raw
     .split(',')
@@ -111,10 +164,17 @@ export function formatFontFamilyForCanvas(font: string): string {
       }
       return `'${part.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
     })
-  if (parts.length === 0) {
-    return 'Arial, Helvetica, sans-serif'
+  const formatted = parts.length === 0
+    ? 'Arial, Helvetica, sans-serif'
+    : `${parts.join(', ')}, Arial, Helvetica, sans-serif`
+  if (FONT_FAMILY_CACHE.size >= MAX_FONT_FAMILY_CACHE) {
+    const oldestKey = FONT_FAMILY_CACHE.keys().next().value
+    if (oldestKey !== undefined) {
+      FONT_FAMILY_CACHE.delete(oldestKey)
+    }
   }
-  return `${parts.join(', ')}, Arial, Helvetica, sans-serif`
+  FONT_FAMILY_CACHE.set(raw, formatted)
+  return formatted
 }
 
 const MAX_SPRITE_PIXELS = 4_194_304
@@ -202,8 +262,13 @@ export function buildDanmakuSpriteKey(spec: DanmakuSpriteSpec): string {
   return `c\u0000${spec.size}\u0000${spec.stroke ? '1' : '0'}\u0000${spec.color}\u0000${spec.font}\u0000${spec.text}`
 }
 
+function finiteOr(value: unknown, fallback: number): number {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : fallback
+}
+
 function clamp01(value: number): number {
-  if (value <= 0) return 0
+  if (!Number.isFinite(value) || value <= 0) return 0
   if (value >= 1) return 1
   return value
 }
@@ -216,6 +281,8 @@ export function applyDanmakuEasing(progress: number, easing: 'speedup' | 'speedd
   return 1 - inv * inv
 }
 
+const TIMELINE_BLOCK_SIZE = 64
+
 /**
  * Maintains danmakus in exact DanmakuLayer render order (`startTime` asc, `layer` asc)
  * and evaluates active items at monotonic or arbitrary timestamps in O(active).
@@ -224,51 +291,73 @@ export class DanmakuTimelineIndex {
   readonly entries: IndexedDanmaku[]
   readonly maxSpriteBatchNeeded: number
 
+  private readonly blockMaxEndTimes: Float64Array
   private active: IndexedDanmaku[] = []
   private nextInsertIdx = 0
   private lastQueryTime = -Infinity
 
   constructor(danmakus: DanmakuItem[]) {
-    const sorted = [...danmakus].sort(
-      (a, b) => a.startTime - b.startTime || (a.layer || 0) - (b.layer || 0)
-    )
-    this.entries = sorted.map((item) => {
-      const duration = Math.max(0, Number(item.animation?.duration) || 0)
-      const moveDuration = Number(item.animation?.moveDuration) || 0
-      const delay = Number(item.animation?.delay) || 0
-      const easing = item.animation?.easing === 'speedup' ? 'speedup' : 'speeddown'
+    const mapped = danmakus.map((item) => {
+      const startTime = finiteOr(item.startTime, 0)
+      const layer = finiteOr(item.layer, 0)
+      const duration = Math.max(0, finiteOr(item.animation?.duration, 0))
+      const moveDuration = finiteOr(item.animation?.moveDuration, 0)
+      const delay = finiteOr(item.animation?.delay, 0)
+      const easing: 'speedup' | 'speeddown' =
+        item.animation?.easing === 'speedup' ? 'speedup' : 'speeddown'
+      const rawSize = Number(item.content?.size)
+      const size = Number.isFinite(rawSize) ? rawSize : 24
       const spec: DanmakuSpriteSpec = {
-        text: item.content?.text ?? '',
-        font: item.content?.font ?? '',
-        size: Number(item.content?.size) || 24,
-        color: item.content?.color || '#ffffff',
+        text: typeof item.content?.text === 'string' ? item.content.text : '',
+        font: typeof item.content?.font === 'string' ? item.content.font : '',
+        size,
+        color: typeof item.content?.color === 'string' && item.content.color ? item.content.color : '#ffffff',
         stroke: Boolean(item.content?.stroke),
       }
-      const yRotate = Number(item.transform?.yRotate) || 0
+      const yRotate = finiteOr(item.transform?.yRotate, 0)
       const yRotateDeg = yRotate === 0 ? 0 : 360 - yRotate
-      const zRotateDeg = Number(item.transform?.zRotate) || 0
+      const zRotateDeg = finiteOr(item.transform?.zRotate, 0)
       return {
-        item,
-        startTime: item.startTime,
-        endTime: item.startTime + duration,
-        duration,
-        moveDuration,
-        delay,
-        easing,
-        startX: Number(item.transform?.start?.x) || 0,
-        startY: Number(item.transform?.start?.y) || 0,
-        endX: Number(item.transform?.end?.x) || 0,
-        endY: Number(item.transform?.end?.y) || 0,
-        zRotateRad: (zRotateDeg * Math.PI) / 180,
-        yRotateRad: (yRotateDeg * Math.PI) / 180,
-        opacityFrom: Number(item.opacity?.from ?? 1),
-        opacityTo: Number(item.opacity?.to ?? 1),
-        spriteKey: buildDanmakuSpriteKey(spec),
-        colorRgb: parseDanmakuColorRgb(spec.color) ?? [1, 1, 1],
-        spriteSpec: spec,
+        layer,
+        indexed: {
+          item,
+          startTime,
+          endTime: startTime + duration,
+          duration,
+          moveDuration,
+          delay,
+          easing,
+          startX: finiteOr(item.transform?.start?.x, 0),
+          startY: finiteOr(item.transform?.start?.y, 0),
+          endX: finiteOr(item.transform?.end?.x, 0),
+          endY: finiteOr(item.transform?.end?.y, 0),
+          zRotateRad: (zRotateDeg * Math.PI) / 180,
+          yRotateRad: (yRotateDeg * Math.PI) / 180,
+          opacityFrom: finiteOr(item.opacity?.from, 1),
+          opacityTo: finiteOr(item.opacity?.to, 1),
+          spriteKey: buildDanmakuSpriteKey(spec),
+          colorRgb: parseDanmakuColorRgb(spec.color) ?? [1, 1, 1],
+          spriteSpec: spec,
+        } satisfies IndexedDanmaku,
       }
     })
+    mapped.sort((a, b) => a.indexed.startTime - b.indexed.startTime || a.layer - b.layer)
+    this.entries = mapped.map((entry) => entry.indexed)
     this.maxSpriteBatchNeeded = this.entries.length
+
+    const blockCount = Math.ceil(this.entries.length / TIMELINE_BLOCK_SIZE)
+    this.blockMaxEndTimes = new Float64Array(blockCount)
+    for (let b = 0; b < blockCount; b += 1) {
+      const start = b * TIMELINE_BLOCK_SIZE
+      const end = Math.min(this.entries.length, start + TIMELINE_BLOCK_SIZE)
+      let maxEnd = -Infinity
+      for (let i = start; i < end; i += 1) {
+        if (this.entries[i].endTime > maxEnd) {
+          maxEnd = this.entries[i].endTime
+        }
+      }
+      this.blockMaxEndTimes[b] = maxEnd
+    }
   }
 
   /**
@@ -276,7 +365,7 @@ export class DanmakuTimelineIndex {
    */
   evaluateAt(timeMs: number, out: ActiveDanmakuDrawState[]): ActiveDanmakuDrawState[] {
     out.length = 0
-    if (this.entries.length === 0) {
+    if (this.entries.length === 0 || !Number.isFinite(timeMs)) {
       return out
     }
 
@@ -326,7 +415,7 @@ export class DanmakuTimelineIndex {
 
       const lifeProgress = entry.duration > 0 ? clamp01(t / entry.duration) : 1
       const opacity = clamp01(entry.opacityFrom + (entry.opacityTo - entry.opacityFrom) * lifeProgress)
-      if (opacity <= 0.001 || !entry.spriteSpec.text) {
+      if (opacity <= 0.001 || entry.spriteSpec.size <= 0 || !entry.spriteSpec.text) {
         continue
       }
       out.push({ entry, x, y, opacity })
@@ -346,21 +435,42 @@ export class DanmakuTimelineIndex {
     limit = Infinity
   ): Array<{ key: string; spec: DanmakuSpriteSpec }> {
     const result: Array<{ key: string; spec: DanmakuSpriteSpec }> = []
-    for (let i = 0; i < this.entries.length; i += 1) {
-      const entry = this.entries[i]
-      if (entry.startTime > endTimeMs) {
+    if (
+      this.entries.length === 0 ||
+      !Number.isFinite(startTimeMs) ||
+      !Number.isFinite(endTimeMs) ||
+      endTimeMs < startTimeMs ||
+      limit <= 0
+    ) {
+      return result
+    }
+
+    const blockCount = this.blockMaxEndTimes.length
+    for (let b = 0; b < blockCount; b += 1) {
+      const blockStart = b * TIMELINE_BLOCK_SIZE
+      if (this.entries[blockStart].startTime > endTimeMs) {
         break
       }
-      if (entry.endTime < startTimeMs || !entry.spriteSpec.text) {
+      if (this.blockMaxEndTimes[b] < startTimeMs) {
         continue
       }
-      if (excludeKeys.has(entry.spriteKey)) {
-        continue
-      }
-      excludeKeys.add(entry.spriteKey)
-      result.push({ key: entry.spriteKey, spec: entry.spriteSpec })
-      if (result.length >= limit) {
-        break
+      const blockEnd = Math.min(this.entries.length, blockStart + TIMELINE_BLOCK_SIZE)
+      for (let i = blockStart; i < blockEnd; i += 1) {
+        const entry = this.entries[i]
+        if (entry.startTime > endTimeMs) {
+          return result
+        }
+        if (entry.endTime < startTimeMs || entry.spriteSpec.size <= 0 || !entry.spriteSpec.text) {
+          continue
+        }
+        if (excludeKeys.has(entry.spriteKey)) {
+          continue
+        }
+        excludeKeys.add(entry.spriteKey)
+        result.push({ key: entry.spriteKey, spec: entry.spriteSpec })
+        if (result.length >= limit) {
+          return result
+        }
       }
     }
     return result
@@ -377,9 +487,13 @@ export class DanmakuSpriteRasterizer {
   private spriteCtx: CanvasRenderingContext2D
   private glyphCanvas: HTMLCanvasElement
   private glyphCtx: CanvasRenderingContext2D
+  private lastSpriteFont = ''
+  private lastGlyphFont = ''
 
   constructor(maxTextureSize = 4096) {
-    this.maxTextureSize = maxTextureSize
+    this.maxTextureSize = Number.isFinite(maxTextureSize) && maxTextureSize > 0
+      ? Math.floor(maxTextureSize)
+      : 4096
     this.spriteCanvas = document.createElement('canvas')
     const spriteCtx = this.spriteCanvas.getContext('2d', { willReadFrequently: true })
     if (!spriteCtx) {
@@ -395,32 +509,81 @@ export class DanmakuSpriteRasterizer {
     this.glyphCtx = glyphCtx
   }
 
+  private ensureCanvasCapacity(
+    canvas: HTMLCanvasElement,
+    ctx: CanvasRenderingContext2D,
+    neededWidth: number,
+    neededHeight: number,
+    isGlyphCanvas: boolean
+  ): void {
+    const curW = canvas.width
+    const curH = canvas.height
+    const curArea = curW * curH
+    const neededArea = neededWidth * neededHeight
+    const needsResize =
+      neededWidth > curW ||
+      neededHeight > curH ||
+      (curArea > 512 * 512 && curArea > neededArea * 4)
+
+    if (needsResize) {
+      canvas.width = neededWidth
+      canvas.height = neededHeight
+      ctx.textBaseline = 'alphabetic'
+      ctx.textAlign = 'left'
+      if (isGlyphCanvas) {
+        this.lastGlyphFont = ''
+      } else {
+        this.lastSpriteFont = ''
+      }
+    } else {
+      ctx.clearRect(
+        0,
+        0,
+        Math.min(curW, neededWidth + 2),
+        Math.min(curH, neededHeight + 2)
+      )
+    }
+  }
+
   rasterize(
     key: string,
     spec: DanmakuSpriteSpec,
     projectScale: number
   ): DanmakuSpriteBitmap | null {
-    if (!spec.text || spec.size <= 0 || projectScale <= 0) {
+    if (
+      !spec.text ||
+      !Number.isFinite(spec.size) ||
+      spec.size <= 0 ||
+      !Number.isFinite(projectScale) ||
+      projectScale <= 0
+    ) {
       return null
     }
 
     const lines = spec.text.split(/\r?\n/)
     let renderScale = projectScale
     const rawFontPx = spec.size * renderScale
+    if (!Number.isFinite(rawFontPx) || rawFontPx <= 0) {
+      return null
+    }
     const fontFamilyCss = formatFontFamilyForCanvas(spec.font)
 
     const ctx = this.spriteCtx
-    ctx.font = `bold ${rawFontPx}px ${fontFamilyCss}`
-    ctx.textBaseline = 'alphabetic'
-    ctx.textAlign = 'left'
+    const measureFontCss = `bold ${rawFontPx}px ${fontFamilyCss}`
+    if (this.lastSpriteFont !== measureFontCss) {
+      ctx.font = measureFontCss
+      ctx.textBaseline = 'alphabetic'
+      ctx.textAlign = 'left'
+      this.lastSpriteFont = measureFontCss
+    }
 
     const strut = ctx.measureText('Hg')
     const rawAscent =
-      typeof strut.fontBoundingBoxAscent === 'number'
+      typeof strut.fontBoundingBoxAscent === 'number' && Number.isFinite(strut.fontBoundingBoxAscent)
         ? strut.fontBoundingBoxAscent
         : rawFontPx * 0.85
     const rawDescent =
-      typeof strut.fontBoundingBoxDescent === 'number'
+      typeof strut.fontBoundingBoxDescent === 'number' && Number.isFinite(strut.fontBoundingBoxDescent)
         ? strut.fontBoundingBoxDescent
         : rawFontPx * 0.15
 
@@ -443,6 +606,9 @@ export class DanmakuSpriteRasterizer {
       const right = Math.max(m.width, m.actualBoundingBoxRight ?? m.width)
       const top = baseY - (m.actualBoundingBoxAscent ?? rawAscent)
       const bottom = baseY + (m.actualBoundingBoxDescent ?? rawDescent)
+      if (!Number.isFinite(left) || !Number.isFinite(right) || !Number.isFinite(top) || !Number.isFinite(bottom)) {
+        continue
+      }
       if (!hasVisibleGlyph) {
         minX = left
         maxX = right
@@ -464,10 +630,13 @@ export class DanmakuSpriteRasterizer {
     const shadowPad = spec.stroke ? Math.ceil(3.5 * renderScale + 2) : 2
     let leftPx = Math.floor(minX) - shadowPad
     let topPx = Math.floor(minY) - shadowPad
-    let rightPx = Math.ceil(maxX) + shadowPad
-    let bottomPx = Math.ceil(maxY) + shadowPad
+    const rightPx = Math.ceil(maxX) + shadowPad
+    const bottomPx = Math.ceil(maxY) + shadowPad
     let pixelWidth = rightPx - leftPx
     let pixelHeight = bottomPx - topPx
+    if (!Number.isFinite(pixelWidth) || !Number.isFinite(pixelHeight) || pixelWidth <= 0 || pixelHeight <= 0) {
+      return null
+    }
 
     // Logical bounds must remain strictly in project coordinate space even if clamped to GPU MAX_TEXTURE_SIZE
     const offsetX = leftPx / projectScale
@@ -480,6 +649,9 @@ export class DanmakuSpriteRasterizer {
     const dimScale = maxDim > this.maxTextureSize ? this.maxTextureSize / maxDim : 1
     const areaScale = pixelArea > MAX_SPRITE_PIXELS ? Math.sqrt(MAX_SPRITE_PIXELS / pixelArea) : 1
     const rasterScaleFactor = Math.min(dimScale, areaScale)
+    if (!Number.isFinite(rasterScaleFactor) || rasterScaleFactor <= 0) {
+      return null
+    }
     if (rasterScaleFactor < 1) {
       pixelWidth = Math.max(1, Math.min(this.maxTextureSize, Math.ceil(pixelWidth * rasterScaleFactor)))
       pixelHeight = Math.max(1, Math.min(this.maxTextureSize, Math.ceil(pixelHeight * rasterScaleFactor)))
@@ -491,32 +663,28 @@ export class DanmakuSpriteRasterizer {
       }
     }
 
-    if (this.spriteCanvas.width !== pixelWidth || this.spriteCanvas.height !== pixelHeight) {
-      this.spriteCanvas.width = pixelWidth
-      this.spriteCanvas.height = pixelHeight
-    } else {
-      ctx.clearRect(0, 0, pixelWidth, pixelHeight)
-    }
+    this.ensureCanvasCapacity(this.spriteCanvas, ctx, pixelWidth, pixelHeight, false)
 
     const fontCss = `bold ${spec.size * renderScale}px ${fontFamilyCss}`
-    ctx.font = fontCss
-    ctx.textBaseline = 'alphabetic'
-    ctx.textAlign = 'left'
+    if (this.lastSpriteFont !== fontCss) {
+      ctx.font = fontCss
+      ctx.textBaseline = 'alphabetic'
+      ctx.textAlign = 'left'
+      this.lastSpriteFont = fontCss
+    }
 
     const originX = -leftPx
     const originY = -topPx
 
     if (spec.stroke) {
-      if (this.glyphCanvas.width !== pixelWidth || this.glyphCanvas.height !== pixelHeight) {
-        this.glyphCanvas.width = pixelWidth
-        this.glyphCanvas.height = pixelHeight
-      } else {
-        this.glyphCtx.clearRect(0, 0, pixelWidth, pixelHeight)
-      }
       const gCtx = this.glyphCtx
-      gCtx.font = fontCss
-      gCtx.textBaseline = 'alphabetic'
-      gCtx.textAlign = 'left'
+      this.ensureCanvasCapacity(this.glyphCanvas, gCtx, pixelWidth, pixelHeight, true)
+      if (this.lastGlyphFont !== fontCss) {
+        gCtx.font = fontCss
+        gCtx.textBaseline = 'alphabetic'
+        gCtx.textAlign = 'left'
+        this.lastGlyphFont = fontCss
+      }
       gCtx.fillStyle = '#000000'
       for (let i = 0; i < lines.length; i += 1) {
         if (lines[i]) {
@@ -531,7 +699,17 @@ export class DanmakuSpriteRasterizer {
         const [ox, oy] = SHADOW_OFFSETS[i]
         ctx.shadowOffsetX = ox * renderScale
         ctx.shadowOffsetY = oy * renderScale
-        ctx.drawImage(this.glyphCanvas, 0, 0)
+        ctx.drawImage(
+          this.glyphCanvas,
+          0,
+          0,
+          pixelWidth,
+          pixelHeight,
+          0,
+          0,
+          pixelWidth,
+          pixelHeight
+        )
       }
       ctx.restore()
     }
@@ -589,6 +767,15 @@ export class DanmakuSpriteRasterizer {
       data: new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength),
     }
   }
+
+  dispose(): void {
+    this.spriteCanvas.width = 0
+    this.spriteCanvas.height = 0
+    this.glyphCanvas.width = 0
+    this.glyphCanvas.height = 0
+    this.lastSpriteFont = ''
+    this.lastGlyphFont = ''
+  }
 }
 
 type CachedGlSprite = {
@@ -620,9 +807,9 @@ void main() {
 }`
 
 const DANMAKU_VERTEX_SHADER = `#version 300 es
-in vec2 a_localPos;
-in vec2 a_uv;
+in vec2 a_unitPos;
 
+uniform vec4 u_quadRect;
 uniform vec2 u_screenSize;
 uniform vec2 u_translate;
 uniform float u_zRotateRad;
@@ -631,12 +818,13 @@ uniform float u_yRotateRad;
 out vec2 v_uv;
 
 void main() {
+  vec2 localPos = u_quadRect.xy + a_unitPos * u_quadRect.zw;
   // CSS right-to-left transform order: translate3d(x, y, 0) * rotateZ(rz) * rotateY(ry)
   float cosY = cos(u_yRotateRad);
   float sinY = sin(u_yRotateRad);
-  float px = a_localPos.x * cosY;
-  float py = a_localPos.y;
-  float pz = -a_localPos.x * sinY;
+  float px = localPos.x * cosY;
+  float py = localPos.y;
+  float pz = -localPos.x * sinY;
 
   float cosZ = cos(u_zRotateRad);
   float sinZ = sin(u_zRotateRad);
@@ -654,8 +842,17 @@ void main() {
   float clipX = dx / (u_screenSize.x * 0.5);
   float clipY = -dy / (u_screenSize.y * 0.5);
   gl_Position = vec4(clipX, clipY, 0.0, w);
-  v_uv = a_uv;
+  v_uv = a_unitPos;
 }`
+
+const UNIT_QUAD_VERTICES = new Float32Array([
+  0, 0,
+  0, 1,
+  1, 0,
+  1, 0,
+  0, 1,
+  1, 1,
+])
 
 const DANMAKU_FRAGMENT_SHADER = `#version 300 es
 precision highp float;
@@ -741,7 +938,7 @@ export class WebGL2DanmakuCompositor {
   private danmakuProgram: WebGLProgram
   private danmakuVao: WebGLVertexArrayObject
   private danmakuVbo: WebGLBuffer
-  private danmakuQuadData = new Float32Array(24)
+  private uQuadRectLoc: WebGLUniformLocation | null
   private uScreenSizeLoc: WebGLUniformLocation | null
   private uTranslateLoc: WebGLUniformLocation | null
   private uZRotateLoc: WebGLUniformLocation | null
@@ -770,6 +967,18 @@ export class WebGL2DanmakuCompositor {
     screenHeight: number,
     maxSpriteCacheBytes = 512 * 1024 * 1024
   ) {
+    if (
+      !Number.isFinite(outputWidth) ||
+      !Number.isFinite(outputHeight) ||
+      !Number.isFinite(screenWidth) ||
+      !Number.isFinite(screenHeight) ||
+      outputWidth <= 0 ||
+      outputHeight <= 0 ||
+      screenWidth <= 0 ||
+      screenHeight <= 0
+    ) {
+      throw new Error('Invalid WebGL2DanmakuCompositor dimensions')
+    }
     this.canvas = canvas
     this.outputWidth = outputWidth
     this.outputHeight = outputHeight
@@ -795,73 +1004,92 @@ export class WebGL2DanmakuCompositor {
     gl.disable(gl.CULL_FACE)
     gl.clearColor(0, 0, 0, 1)
 
-    // Video program setup
-    this.videoProgram = createProgram(gl, VIDEO_VERTEX_SHADER, VIDEO_FRAGMENT_SHADER)
-    this.videoTexLoc = gl.getUniformLocation(this.videoProgram, 'u_tex')
+    let vProg: WebGLProgram | null = null
+    let vVao: WebGLVertexArrayObject | null = null
+    let vVbo: WebGLBuffer | null = null
+    let vTex: WebGLTexture | null = null
+    let dProg: WebGLProgram | null = null
+    let dVao: WebGLVertexArrayObject | null = null
+    let dVbo: WebGLBuffer | null = null
 
-    const vVao = gl.createVertexArray()
-    const vVbo = gl.createBuffer()
-    const vTex = gl.createTexture()
-    if (!vVao || !vVbo || !vTex) {
-      throw new Error('Failed to allocate WebGL2 video resources')
+    try {
+      // Video program setup
+      vProg = createProgram(gl, VIDEO_VERTEX_SHADER, VIDEO_FRAGMENT_SHADER)
+      this.videoProgram = vProg
+      this.videoTexLoc = gl.getUniformLocation(this.videoProgram, 'u_tex')
+
+      vVao = gl.createVertexArray()
+      vVbo = gl.createBuffer()
+      vTex = gl.createTexture()
+      if (!vVao || !vVbo || !vTex) {
+        throw new Error('Failed to allocate WebGL2 video resources')
+      }
+      this.videoVao = vVao
+      this.videoVbo = vVbo
+      this.videoTex = vTex
+
+      gl.bindVertexArray(this.videoVao)
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.videoVbo)
+      gl.bufferData(gl.ARRAY_BUFFER, this.videoQuadData.byteLength, gl.DYNAMIC_DRAW)
+      const vPosLoc = gl.getAttribLocation(this.videoProgram, 'a_pos')
+      const vUvLoc = gl.getAttribLocation(this.videoProgram, 'a_uv')
+      gl.enableVertexAttribArray(vPosLoc)
+      gl.vertexAttribPointer(vPosLoc, 2, gl.FLOAT, false, 16, 0)
+      gl.enableVertexAttribArray(vUvLoc)
+      gl.vertexAttribPointer(vUvLoc, 2, gl.FLOAT, false, 16, 8)
+
+      gl.bindTexture(gl.TEXTURE_2D, this.videoTex)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+
+      // Danmaku program setup
+      dProg = createProgram(gl, DANMAKU_VERTEX_SHADER, DANMAKU_FRAGMENT_SHADER)
+      this.danmakuProgram = dProg
+      this.uQuadRectLoc = gl.getUniformLocation(this.danmakuProgram, 'u_quadRect')
+      this.uScreenSizeLoc = gl.getUniformLocation(this.danmakuProgram, 'u_screenSize')
+      this.uTranslateLoc = gl.getUniformLocation(this.danmakuProgram, 'u_translate')
+      this.uZRotateLoc = gl.getUniformLocation(this.danmakuProgram, 'u_zRotateRad')
+      this.uYRotateLoc = gl.getUniformLocation(this.danmakuProgram, 'u_yRotateRad')
+      this.uDanmakuTexLoc = gl.getUniformLocation(this.danmakuProgram, 'u_tex')
+      this.uOpacityLoc = gl.getUniformLocation(this.danmakuProgram, 'u_opacity')
+      this.uIsMaskLoc = gl.getUniformLocation(this.danmakuProgram, 'u_isMask')
+      this.uColorLoc = gl.getUniformLocation(this.danmakuProgram, 'u_color')
+
+      dVao = gl.createVertexArray()
+      dVbo = gl.createBuffer()
+      if (!dVao || !dVbo) {
+        throw new Error('Failed to allocate WebGL2 danmaku resources')
+      }
+      this.danmakuVao = dVao
+      this.danmakuVbo = dVbo
+
+      gl.bindVertexArray(this.danmakuVao)
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.danmakuVbo)
+      gl.bufferData(gl.ARRAY_BUFFER, UNIT_QUAD_VERTICES, gl.STATIC_DRAW)
+      const dUnitLoc = gl.getAttribLocation(this.danmakuProgram, 'a_unitPos')
+      gl.enableVertexAttribArray(dUnitLoc)
+      gl.vertexAttribPointer(dUnitLoc, 2, gl.FLOAT, false, 8, 0)
+
+      gl.useProgram(this.danmakuProgram)
+      gl.uniform2f(this.uScreenSizeLoc, this.screenWidth, this.screenHeight)
+      gl.uniform1i(this.uDanmakuTexLoc, 0)
+
+      gl.useProgram(this.videoProgram)
+      gl.uniform1i(this.videoTexLoc, 0)
+
+      gl.bindVertexArray(null)
+    } catch (error) {
+      if (vTex) gl.deleteTexture(vTex)
+      if (vVbo) gl.deleteBuffer(vVbo)
+      if (vVao) gl.deleteVertexArray(vVao)
+      if (vProg) gl.deleteProgram(vProg)
+      if (dVbo) gl.deleteBuffer(dVbo)
+      if (dVao) gl.deleteVertexArray(dVao)
+      if (dProg) gl.deleteProgram(dProg)
+      throw error
     }
-    this.videoVao = vVao
-    this.videoVbo = vVbo
-    this.videoTex = vTex
-
-    gl.bindVertexArray(this.videoVao)
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.videoVbo)
-    gl.bufferData(gl.ARRAY_BUFFER, this.videoQuadData.byteLength, gl.DYNAMIC_DRAW)
-    const vPosLoc = gl.getAttribLocation(this.videoProgram, 'a_pos')
-    const vUvLoc = gl.getAttribLocation(this.videoProgram, 'a_uv')
-    gl.enableVertexAttribArray(vPosLoc)
-    gl.vertexAttribPointer(vPosLoc, 2, gl.FLOAT, false, 16, 0)
-    gl.enableVertexAttribArray(vUvLoc)
-    gl.vertexAttribPointer(vUvLoc, 2, gl.FLOAT, false, 16, 8)
-
-    gl.bindTexture(gl.TEXTURE_2D, this.videoTex)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-
-    // Danmaku program setup
-    this.danmakuProgram = createProgram(gl, DANMAKU_VERTEX_SHADER, DANMAKU_FRAGMENT_SHADER)
-    this.uScreenSizeLoc = gl.getUniformLocation(this.danmakuProgram, 'u_screenSize')
-    this.uTranslateLoc = gl.getUniformLocation(this.danmakuProgram, 'u_translate')
-    this.uZRotateLoc = gl.getUniformLocation(this.danmakuProgram, 'u_zRotateRad')
-    this.uYRotateLoc = gl.getUniformLocation(this.danmakuProgram, 'u_yRotateRad')
-    this.uDanmakuTexLoc = gl.getUniformLocation(this.danmakuProgram, 'u_tex')
-    this.uOpacityLoc = gl.getUniformLocation(this.danmakuProgram, 'u_opacity')
-    this.uIsMaskLoc = gl.getUniformLocation(this.danmakuProgram, 'u_isMask')
-    this.uColorLoc = gl.getUniformLocation(this.danmakuProgram, 'u_color')
-
-    const dVao = gl.createVertexArray()
-    const dVbo = gl.createBuffer()
-    if (!dVao || !dVbo) {
-      throw new Error('Failed to allocate WebGL2 danmaku resources')
-    }
-    this.danmakuVao = dVao
-    this.danmakuVbo = dVbo
-
-    gl.bindVertexArray(this.danmakuVao)
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.danmakuVbo)
-    gl.bufferData(gl.ARRAY_BUFFER, this.danmakuQuadData.byteLength, gl.STREAM_DRAW)
-    const dPosLoc = gl.getAttribLocation(this.danmakuProgram, 'a_localPos')
-    const dUvLoc = gl.getAttribLocation(this.danmakuProgram, 'a_uv')
-    gl.enableVertexAttribArray(dPosLoc)
-    gl.vertexAttribPointer(dPosLoc, 2, gl.FLOAT, false, 16, 0)
-    gl.enableVertexAttribArray(dUvLoc)
-    gl.vertexAttribPointer(dUvLoc, 2, gl.FLOAT, false, 16, 8)
-
-    gl.useProgram(this.danmakuProgram)
-    gl.uniform2f(this.uScreenSizeLoc, this.screenWidth, this.screenHeight)
-    gl.uniform1i(this.uDanmakuTexLoc, 0)
-
-    gl.useProgram(this.videoProgram)
-    gl.uniform1i(this.videoTexLoc, 0)
-
-    gl.bindVertexArray(null)
   }
 
   hasSprite(key: string): boolean {
@@ -881,10 +1109,21 @@ export class WebGL2DanmakuCompositor {
       return
     }
 
+    if (
+      !Number.isInteger(sprite.pixelWidth) ||
+      !Number.isInteger(sprite.pixelHeight) ||
+      sprite.pixelWidth <= 0 ||
+      sprite.pixelHeight <= 0
+    ) {
+      return
+    }
     const byteSize =
       sprite.format === 'r8'
         ? sprite.pixelWidth * sprite.pixelHeight
         : sprite.pixelWidth * sprite.pixelHeight * 4
+    if (sprite.data.byteLength < byteSize) {
+      return
+    }
     if (
       this.spriteCache.size > 0 &&
       this.spriteCacheBytes + byteSize > this.maxSpriteCacheBytes
@@ -911,41 +1150,46 @@ export class WebGL2DanmakuCompositor {
     if (!texture) {
       throw new Error('Failed to create WebGL2 texture for danmaku sprite')
     }
-    gl.activeTexture(gl.TEXTURE0)
-    gl.bindTexture(gl.TEXTURE_2D, texture)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
-    if (sprite.format === 'r8') {
-      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
-      gl.texImage2D(
-        gl.TEXTURE_2D,
-        0,
-        gl.R8,
-        sprite.pixelWidth,
-        sprite.pixelHeight,
-        0,
-        gl.RED,
-        gl.UNSIGNED_BYTE,
-        sprite.data
-      )
-    } else {
-      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true)
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4)
-      gl.texImage2D(
-        gl.TEXTURE_2D,
-        0,
-        gl.RGBA,
-        sprite.pixelWidth,
-        sprite.pixelHeight,
-        0,
-        gl.RGBA,
-        gl.UNSIGNED_BYTE,
-        sprite.data
-      )
+    try {
+      gl.activeTexture(gl.TEXTURE0)
+      gl.bindTexture(gl.TEXTURE_2D, texture)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
+      if (sprite.format === 'r8') {
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+        gl.texImage2D(
+          gl.TEXTURE_2D,
+          0,
+          gl.R8,
+          sprite.pixelWidth,
+          sprite.pixelHeight,
+          0,
+          gl.RED,
+          gl.UNSIGNED_BYTE,
+          sprite.data
+        )
+      } else {
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true)
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4)
+        gl.texImage2D(
+          gl.TEXTURE_2D,
+          0,
+          gl.RGBA,
+          sprite.pixelWidth,
+          sprite.pixelHeight,
+          0,
+          gl.RGBA,
+          gl.UNSIGNED_BYTE,
+          sprite.data
+        )
+      }
+    } catch (error) {
+      gl.deleteTexture(texture)
+      throw error
     }
 
     this.spriteCache.set(sprite.key, {
@@ -960,10 +1204,18 @@ export class WebGL2DanmakuCompositor {
     this.spriteCacheBytes += byteSize
   }
 
-  private updateVideoQuadGeometry(orientation: VideoQuadOrientation): void {
+  private updateVideoQuadGeometry(orientation: VideoQuadOrientation): boolean {
+    if (
+      !Number.isFinite(orientation.displayWidth) ||
+      !Number.isFinite(orientation.displayHeight) ||
+      orientation.displayWidth <= 0 ||
+      orientation.displayHeight <= 0
+    ) {
+      return false
+    }
     const key = `${orientation.displayWidth}x${orientation.displayHeight}:${orientation.rotation}:${orientation.flip ? 1 : 0}`
     if (key === this.lastVideoOrientationKey) {
-      return
+      return true
     }
     this.lastVideoOrientationKey = key
 
@@ -1029,16 +1281,22 @@ export class WebGL2DanmakuCompositor {
     const gl = this.gl
     gl.bindBuffer(gl.ARRAY_BUFFER, this.videoVbo)
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, d)
+    return true
   }
 
   private ensureScratchCanvas(width: number, height: number) {
+    const maxDim = Math.max(width, height)
+    const scale = maxDim > this.maxTextureSize ? this.maxTextureSize / maxDim : 1
+    const safeWidth = Math.max(1, Math.min(this.maxTextureSize, Math.round(width * scale)))
+    const safeHeight = Math.max(1, Math.min(this.maxTextureSize, Math.round(height * scale)))
+
     if (!this.scratchCanvas) {
       if (typeof OffscreenCanvas !== 'undefined') {
-        this.scratchCanvas = new OffscreenCanvas(width, height)
+        this.scratchCanvas = new OffscreenCanvas(safeWidth, safeHeight)
       } else {
         const el = document.createElement('canvas')
-        el.width = width
-        el.height = height
+        el.width = safeWidth
+        el.height = safeHeight
         this.scratchCanvas = el
       }
       this.scratchCtx = this.scratchCanvas.getContext('2d') as
@@ -1046,9 +1304,9 @@ export class WebGL2DanmakuCompositor {
         | CanvasRenderingContext2D
         | null
     }
-    if (this.scratchCanvas.width !== width || this.scratchCanvas.height !== height) {
-      this.scratchCanvas.width = width
-      this.scratchCanvas.height = height
+    if (this.scratchCanvas.width !== safeWidth || this.scratchCanvas.height !== safeHeight) {
+      this.scratchCanvas.width = safeWidth
+      this.scratchCanvas.height = safeHeight
     }
     if (!this.scratchCtx) {
       throw new Error('Failed to create 2D scratch canvas for video upload')
@@ -1082,7 +1340,7 @@ export class WebGL2DanmakuCompositor {
     gl.disable(gl.BLEND)
     gl.clear(gl.COLOR_BUFFER_BIT)
 
-    if (videoSample) {
+    if (videoSample && videoSample.displayWidth > 0 && videoSample.displayHeight > 0) {
       gl.activeTexture(gl.TEXTURE0)
       gl.bindTexture(gl.TEXTURE_2D, this.videoTex)
 
@@ -1090,6 +1348,7 @@ export class WebGL2DanmakuCompositor {
         this.videoLastSampleTimestamp = videoSample.timestamp
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4)
 
         let uploaded = false
         if (!this.forceScratchCanvasVideoUpload) {
@@ -1118,16 +1377,18 @@ export class WebGL2DanmakuCompositor {
         }
       }
 
-      this.updateVideoQuadGeometry({
-        displayWidth: videoSample.displayWidth,
-        displayHeight: videoSample.displayHeight,
-        rotation: videoSample.rotation,
-        flip: videoSample.flip,
-      })
-
-      gl.useProgram(this.videoProgram)
-      gl.bindVertexArray(this.videoVao)
-      gl.drawArrays(gl.TRIANGLES, 0, 6)
+      if (
+        this.updateVideoQuadGeometry({
+          displayWidth: videoSample.displayWidth,
+          displayHeight: videoSample.displayHeight,
+          rotation: videoSample.rotation,
+          flip: videoSample.flip,
+        })
+      ) {
+        gl.useProgram(this.videoProgram)
+        gl.bindVertexArray(this.videoVao)
+        gl.drawArrays(gl.TRIANGLES, 0, 6)
+      }
     }
 
     if (activeDanmakus.length > 0) {
@@ -1137,8 +1398,12 @@ export class WebGL2DanmakuCompositor {
       gl.bindVertexArray(this.danmakuVao)
       gl.activeTexture(gl.TEXTURE0)
 
-      let prevQuadKey = ''
+      let lastQuadOffsetX = NaN
+      let lastQuadOffsetY = NaN
+      let lastQuadWidth = NaN
+      let lastQuadHeight = NaN
       let lastIsMask = -1
+      let lastSpriteTex: WebGLTexture | null = null
       for (let i = 0; i < activeDanmakus.length; i += 1) {
         const drawItem = activeDanmakus[i]
         const sprite = this.spriteCache.get(drawItem.entry.spriteKey)
@@ -1146,24 +1411,23 @@ export class WebGL2DanmakuCompositor {
           continue
         }
 
-        const x0 = sprite.offsetX
-        const y0 = sprite.offsetY
-        const x1 = x0 + sprite.logicalWidth
-        const y1 = y0 + sprite.logicalHeight
-        const quadKey = `${x0},${y0},${x1},${y1}`
-        if (quadKey !== prevQuadKey) {
-          prevQuadKey = quadKey
-          const d = this.danmakuQuadData
-          d[0] = x0; d[1] = y0; d[2] = 0; d[3] = 0
-          d[4] = x0; d[5] = y1; d[6] = 0; d[7] = 1
-          d[8] = x1; d[9] = y0; d[10] = 1; d[11] = 0
-
-          d[12] = x1; d[13] = y0; d[14] = 1; d[15] = 0
-          d[16] = x0; d[17] = y1; d[18] = 0; d[19] = 1
-          d[20] = x1; d[21] = y1; d[22] = 1; d[23] = 1
-
-          gl.bindBuffer(gl.ARRAY_BUFFER, this.danmakuVbo)
-          gl.bufferSubData(gl.ARRAY_BUFFER, 0, d)
+        if (
+          sprite.offsetX !== lastQuadOffsetX ||
+          sprite.offsetY !== lastQuadOffsetY ||
+          sprite.logicalWidth !== lastQuadWidth ||
+          sprite.logicalHeight !== lastQuadHeight
+        ) {
+          lastQuadOffsetX = sprite.offsetX
+          lastQuadOffsetY = sprite.offsetY
+          lastQuadWidth = sprite.logicalWidth
+          lastQuadHeight = sprite.logicalHeight
+          gl.uniform4f(
+            this.uQuadRectLoc,
+            sprite.offsetX,
+            sprite.offsetY,
+            sprite.logicalWidth,
+            sprite.logicalHeight
+          )
         }
 
         const isMaskInt = sprite.format === 'r8' ? 1 : 0
@@ -1176,7 +1440,10 @@ export class WebGL2DanmakuCompositor {
           gl.uniform3f(this.uColorLoc, r, g, b)
         }
 
-        gl.bindTexture(gl.TEXTURE_2D, sprite.texture)
+        if (sprite.texture !== lastSpriteTex) {
+          lastSpriteTex = sprite.texture
+          gl.bindTexture(gl.TEXTURE_2D, sprite.texture)
+        }
         gl.uniform2f(this.uTranslateLoc, drawItem.x, drawItem.y)
         gl.uniform1f(this.uZRotateLoc, drawItem.entry.zRotateRad)
         gl.uniform1f(this.uYRotateLoc, drawItem.entry.yRotateRad)
@@ -1193,6 +1460,12 @@ export class WebGL2DanmakuCompositor {
     }
     this.spriteCache.clear()
     this.spriteCacheBytes = 0
+    if (this.scratchCanvas) {
+      this.scratchCanvas.width = 0
+      this.scratchCanvas.height = 0
+      this.scratchCanvas = null
+      this.scratchCtx = null
+    }
     gl.deleteTexture(this.videoTex)
     gl.deleteBuffer(this.videoVbo)
     gl.deleteVertexArray(this.videoVao)

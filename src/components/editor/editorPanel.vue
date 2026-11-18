@@ -7,7 +7,7 @@
     </div>
 
     <!-- 有选中状态 -->
-    <template v-show="hasSelection === true" style="display: contents;">
+    <div v-show="hasSelection" class="panel-selected">
       <div class="panel-header">
         <h2>已选择：{{ store.selectedCount }} 条弹幕</h2>
       </div>
@@ -21,7 +21,8 @@
             <input
               type="text"
               v-model="layer"
-              @change="updateField('layer', layer)"
+              @focus="onFieldFocus"
+              @change="commitField('layer', layer)"
               placeholder="提示: +1 或 -1"
             />
           </div>
@@ -31,10 +32,11 @@
             <div class="time-input">
               <input
                 v-model="startTime"
-                @change="updateField('startTime', startTime)"
+                @focus="onFieldFocus"
+                @change="commitField('startTime', startTime)"
                 placeholder="支持 ±*/ 操作"
               />
-              <span class="time-display">{{ formatTime(parseTimeValue(startTime)) }}</span>
+              <span class="time-display">{{ startTimePreview }}</span>
             </div>
           </div>
         </section>
@@ -47,14 +49,15 @@
             <label>文本内容 (0-255个字符，换行占2个)</label>
             <textarea
               v-model="text"
+              @focus="onFieldFocus"
               @change="onTextChange"
               @keydown="onTextInputKeydown"
               :placeholder="isTextMixed ? '内容不一致' : '输入弹幕文本内容'"
               class="text-input  have-scrollbar"
             ></textarea>
-            <div 
+            <div
               class="char-counter"
-              :class="{ 'char-counter-exceeded': !isTextLengthValid(text) }"
+              :class="{ 'char-counter-exceeded': !isTextMixed && !isTextLengthValid(text) }"
             >
               已占用: {{ isTextMixed ? '--' : calculateTextLength(text) }}/255
             </div>
@@ -67,6 +70,7 @@
                 type="button"
                 class="font-trigger"
                 :class="{ 'font-trigger-open': isFontDropdownOpen }"
+                :aria-expanded="isFontDropdownOpen"
                 @click="toggleFontDropdown"
               >
                 <span class="font-trigger-label">{{ isFontMixed ? '字体不一致' : selectedFontLabel }}</span>
@@ -85,10 +89,19 @@
               </button>
 
               <div v-show="isFontDropdownOpen" class="font-dropdown">
-                <div class="font-section">
+                <input
+                  v-model="fontSearchQuery"
+                  type="text"
+                  class="font-search-input"
+                  placeholder="搜索字体..."
+                  aria-label="搜索字体"
+                  @click.stop
+                />
+
+                <div v-if="filteredBuiltInFontOptions.length > 0" class="font-section">
                   <div class="font-section-title">常用字体</div>
                   <button
-                    v-for="option in builtInFontOptions"
+                    v-for="option in filteredBuiltInFontOptions"
                     :key="option.value"
                     type="button"
                     class="font-option"
@@ -104,7 +117,9 @@
                   <div v-if="isLoadingLocalFonts" class="font-status">正在读取本地字体...</div>
                   <div v-else-if="!localFontsSupported" class="font-status">当前环境不支持本地字体访问</div>
                   <div v-else-if="localFontsPermissionDenied" class="font-status">未授予本地字体访问权限</div>
-                  <div v-else-if="localFontOptions.length === 0" class="font-status">未发现可用的本地字体</div>
+                  <div v-else-if="filteredLocalFontOptions.length === 0" class="font-status">
+                    {{ fontSearchQuery.trim() ? '未找到匹配的本地字体' : '未发现可用的本地字体' }}
+                  </div>
                   <div
                     v-else
                     ref="localFontListRef"
@@ -142,9 +157,8 @@
             <input
               type="text"
               v-model="size"
-              @change="updateField('content.size', size)"
-              min="10"
-              max="127"
+              @focus="onFieldFocus"
+              @change="commitField('content.size', size)"
               placeholder="±*/ 支持"
             />
           </div>
@@ -155,13 +169,15 @@
               <input
                 type="color"
                 v-model.lazy="colorPicker"
-                @change="updateField('content.color', colorPicker)"
+                @focus="onFieldFocus"
+                @change="commitField('content.color', colorPicker)"
                 class="color-picker"
               />
               <input
                 type="text"
                 v-model="color"
-                @change="updateField('content.color', color)"
+                @focus="onFieldFocus"
+                @change="onColorTextChange"
                 placeholder="#FFFFFF"
                 class="color-text"
               />
@@ -193,7 +209,8 @@
                 <input
                   type="text"
                   v-model="startX"
-                  @change="updateField('transform.start.x', startX)"
+                  @focus="onFieldFocus"
+                  @change="commitField('transform.start.x', startX)"
                   placeholder="±*/ 支持"
                 />
               </div>
@@ -202,7 +219,8 @@
                 <input
                   type="text"
                   v-model="startY"
-                  @change="updateField('transform.start.y', startY)"
+                  @focus="onFieldFocus"
+                  @change="commitField('transform.start.y', startY)"
                   placeholder="±*/ 支持"
                 />
               </div>
@@ -217,7 +235,8 @@
                 <input
                   type="text"
                   v-model="endX"
-                  @change="updateField('transform.end.x', endX)"
+                  @focus="onFieldFocus"
+                  @change="commitField('transform.end.x', endX)"
                   placeholder="±*/ 支持"
                 />
               </div>
@@ -226,7 +245,8 @@
                 <input
                   type="text"
                   v-model="endY"
-                  @change="updateField('transform.end.y', endY)"
+                  @focus="onFieldFocus"
+                  @change="commitField('transform.end.y', endY)"
                   placeholder="±*/ 支持"
                 />
               </div>
@@ -241,9 +261,9 @@
                 <input
                   type="text"
                   v-model="zRotate"
-                  @change="updateField('transform.zRotate', zRotate)"
-                  min="0"
-                  max="360"
+                  @focus="onFieldFocus"
+                  @change="commitField('transform.zRotate', zRotate)"
+                  placeholder="±*/ 支持"
                 />
               </div>
               <div class="form-group" style="width: 145px;">
@@ -251,9 +271,9 @@
                 <input
                   type="text"
                   v-model="yRotate"
-                  @change="updateField('transform.yRotate', yRotate)"
-                  min="0"
-                  max="360"
+                  @focus="onFieldFocus"
+                  @change="commitField('transform.yRotate', yRotate)"
+                  placeholder="±*/ 支持"
                 />
               </div>
             </div>
@@ -269,13 +289,16 @@
               <input
                 type="text"
                 v-model="opacityFrom"
+                @focus="onFieldFocus"
                 @change="onOpacityFieldChange('opacity.from', opacityFrom)"
                 placeholder="支持 ±*/ 操作"
               />
               <input
                 type="range"
-                v-model="opacityFrom"
-                @input="onOpacityFieldChange('opacity.from', opacityFrom)"
+                :value="opacityFromSlider"
+                @focus="onFieldFocus"
+                @input="onOpacitySliderInput('opacity.from', $event)"
+                @change="onOpacitySliderChange('opacity.from', $event)"
                 min="0"
                 max="1"
                 step="0.01"
@@ -287,13 +310,16 @@
               <input
                 type="text"
                 v-model="opacityTo"
+                @focus="onFieldFocus"
                 @change="onOpacityFieldChange('opacity.to', opacityTo)"
                 placeholder="支持 ±*/ 操作"
               />
               <input
                 type="range"
-                v-model="opacityTo"
-                @input="onOpacityFieldChange('opacity.to', opacityTo)"
+                :value="opacityToSlider"
+                @focus="onFieldFocus"
+                @input="onOpacitySliderInput('opacity.to', $event)"
+                @change="onOpacitySliderChange('opacity.to', $event)"
                 min="0"
                 max="1"
                 step="0.01"
@@ -312,8 +338,8 @@
             <input
               type="text"
               v-model="duration"
-              @change="updateField('animation.duration', duration)"
-              min="0"
+              @focus="onFieldFocus"
+              @change="commitField('animation.duration', duration)"
               placeholder="±*/ 支持"
             />
           </div>
@@ -323,8 +349,8 @@
             <input
               type="text"
               v-model="moveDuration"
-              @change="updateField('animation.moveDuration', moveDuration)"
-              min="0"
+              @focus="onFieldFocus"
+              @change="commitField('animation.moveDuration', moveDuration)"
               placeholder="±*/ 支持"
             />
           </div>
@@ -334,15 +360,15 @@
             <input
               type="text"
               v-model="delay"
-              @change="updateField('animation.delay', delay)"
-              min="0"
+              @focus="onFieldFocus"
+              @change="commitField('animation.delay', delay)"
               placeholder="±*/ 支持"
             />
           </div>
 
           <div class="form-group">
             <label>运动方式 (Easing)</label>
-            <select v-model="easing" @change="updateField('animation.easing', easing)">
+            <select v-model="easing" @focus="onFieldFocus" @change="onEasingChange">
               <option value="" disabled>{{ isEasingMixed ? '不一致' : '请选择运动方式' }}</option>
               <option value="speedup">加速 (Speedup)</option>
               <option value="speeddown">减速 (Speeddown)</option>
@@ -351,10 +377,10 @@
         </section>
 
         <div class="panel-actions">
-          <button @click="handleClearSelection" class="btn-secondary">取消选择</button>
+          <button type="button" @click="handleClearSelection" class="btn-secondary">取消选择</button>
         </div>
       </div>
-    </template>
+    </div>
   </div>
 </template>
 
@@ -364,8 +390,7 @@ import { useEditorStore } from '@/store/editor'
 import { useNoticeStore } from '@/store/notice'
 import {
   parseInput,
-  applyOperation,
-  formatInputDisplay
+  applyOperation
 } from '@/utils/parser'
 import { formatTime } from '@/utils/time'
 
@@ -397,7 +422,6 @@ const builtInFontOptions: FontOption[] = [
 
 // 本地编辑缓存，避免频繁触发响应式更新
 const editCache = ref<Record<string, any>>({})
-const updateDebounceTimer = ref<ReturnType<typeof setTimeout> | null>(null)
 const fontPickerRef = ref<HTMLElement | null>(null)
 const localFontListRef = ref<HTMLElement | null>(null)
 const localFontOptions = ref<FontOption[]>([])
@@ -408,46 +432,167 @@ const localFontsPermissionDenied = ref(false)
 const isLoadingLocalFonts = ref(false)
 const isFontDropdownOpen = ref(false)
 const localFontListScrollTop = ref(0)
+const fontSearchQuery = ref('')
 
 // 计算属性：是否有选中的弹幕
 const hasSelection = computed(() => store.selectedIds.length > 0)
+const selectionKey = computed(() => store.selectedIds.join('\0'))
+const activeEditSelectionKey = ref<string | null>(null)
 
 // 计算属性：获取选中的弹幕
 const selectedDanmakus = computed(() => store.getSelectedDanmakus)
 
-// 辅助函数：获取多个选中弹幕的某字段值
-function getFieldValues(path: string): any[] {
-  return selectedDanmakus.value.map(d => {
-    const keys = path.split('.')
-    let value: any = d
-    for (const key of keys) {
-      value = value?.[key]
+function toFullHexColor(value: string): string | null {
+  const trimmed = value.trim()
+  if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) {
+    return trimmed.toLowerCase()
+  }
+  const shortMatch = trimmed.match(/^#([0-9a-fA-F]{3})$/)
+  if (shortMatch) {
+    const [r, g, b] = shortMatch[1]
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase()
+  }
+  return null
+}
+
+type NumericAgg = {
+  hasValue: boolean
+  first: number | null
+  mixed: boolean
+}
+
+function createNumericAgg(): NumericAgg {
+  return { hasValue: false, first: null, mixed: false }
+}
+
+function pushNumericAgg(agg: NumericAgg, value: unknown) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return
+  }
+  if (!agg.hasValue) {
+    agg.hasValue = true
+    agg.first = value
+  } else if (!agg.mixed && value !== agg.first) {
+    agg.mixed = true
+  }
+}
+
+function formatAggDisplay(agg: NumericAgg): string {
+  if (!agg.hasValue || agg.first === null) return ''
+  return agg.mixed ? '--' : String(agg.first)
+}
+
+// 单次扫描选中弹幕，避免在多选场景下重复遍历与数组分配
+const fieldSummary = computed(() => {
+  const list = selectedDanmakus.value
+  const layerAgg = createNumericAgg()
+  const startTimeAgg = createNumericAgg()
+  const sizeAgg = createNumericAgg()
+  const startXAgg = createNumericAgg()
+  const startYAgg = createNumericAgg()
+  const endXAgg = createNumericAgg()
+  const endYAgg = createNumericAgg()
+  const zRotateAgg = createNumericAgg()
+  const yRotateAgg = createNumericAgg()
+  const opacityFromAgg = createNumericAgg()
+  const opacityToAgg = createNumericAgg()
+  const durationAgg = createNumericAgg()
+  const moveDurationAgg = createNumericAgg()
+  const delayAgg = createNumericAgg()
+
+  let hasItems = false
+  let firstText = ''
+  let textMixed = false
+  let firstFont = ''
+  let fontMixed = false
+  let firstColor = ''
+  let colorMixed = false
+  let firstStroke = false
+  let strokeMixed = false
+  let firstEasing = ''
+  let easingMixed = false
+
+  for (let i = 0; i < list.length; i++) {
+    const d = list[i]
+    pushNumericAgg(layerAgg, d.layer)
+    pushNumericAgg(startTimeAgg, d.startTime)
+    pushNumericAgg(sizeAgg, d.content?.size)
+    pushNumericAgg(startXAgg, d.transform?.start?.x)
+    pushNumericAgg(startYAgg, d.transform?.start?.y)
+    pushNumericAgg(endXAgg, d.transform?.end?.x)
+    pushNumericAgg(endYAgg, d.transform?.end?.y)
+    pushNumericAgg(zRotateAgg, d.transform?.zRotate)
+    pushNumericAgg(yRotateAgg, d.transform?.yRotate)
+    pushNumericAgg(opacityFromAgg, d.opacity?.from)
+    pushNumericAgg(opacityToAgg, d.opacity?.to)
+    pushNumericAgg(durationAgg, d.animation?.duration)
+    pushNumericAgg(moveDurationAgg, d.animation?.moveDuration)
+    pushNumericAgg(delayAgg, d.animation?.delay)
+
+    const t = d.content?.text ?? ''
+    const f = d.content?.font ?? ''
+    const c = d.content?.color ?? ''
+    const s = d.content?.stroke === true
+    const e = d.animation?.easing ?? ''
+
+    if (!hasItems) {
+      hasItems = true
+      firstText = t
+      firstFont = f
+      firstColor = c
+      firstStroke = s
+      firstEasing = e
+    } else {
+      if (!textMixed && t !== firstText) textMixed = true
+      if (!fontMixed && f !== firstFont) fontMixed = true
+      if (!colorMixed && c !== firstColor) colorMixed = true
+      if (!strokeMixed && s !== firstStroke) strokeMixed = true
+      if (!easingMixed && e !== firstEasing) easingMixed = true
     }
-    return value
-  })
-}
+  }
 
-// 辅助函数：获取多个选中弹幕的某字段数值
-function getNumericFieldValues(path: string): number[] {
-  return getFieldValues(path)
-    .filter(v => typeof v === 'number' && !isNaN(v))
-}
-
-function hasMixedFieldValues(path: string): boolean {
-  const values = getFieldValues(path)
-  return values.length > 1 && values.some(value => value !== values[0])
-}
+  return {
+    hasItems,
+    layer: formatAggDisplay(layerAgg),
+    startTime: formatAggDisplay(startTimeAgg),
+    startTimeFirst: startTimeAgg.first,
+    size: formatAggDisplay(sizeAgg),
+    startX: formatAggDisplay(startXAgg),
+    startY: formatAggDisplay(startYAgg),
+    endX: formatAggDisplay(endXAgg),
+    endY: formatAggDisplay(endYAgg),
+    zRotate: formatAggDisplay(zRotateAgg),
+    yRotate: formatAggDisplay(yRotateAgg),
+    opacityFrom: formatAggDisplay(opacityFromAgg),
+    opacityFromFirst: opacityFromAgg.first,
+    opacityTo: formatAggDisplay(opacityToAgg),
+    opacityToFirst: opacityToAgg.first,
+    duration: formatAggDisplay(durationAgg),
+    moveDuration: formatAggDisplay(moveDurationAgg),
+    delay: formatAggDisplay(delayAgg),
+    text: hasItems ? (textMixed ? '' : firstText) : '',
+    textMixed,
+    font: hasItems ? (fontMixed ? '' : (firstFont || 'Microsoft YaHei')) : 'Microsoft YaHei',
+    fontMixed,
+    color: hasItems ? (colorMixed ? '--' : firstColor) : '',
+    colorFirst: firstColor,
+    colorMixed,
+    stroke: hasItems ? (strokeMixed ? null : firstStroke) : false,
+    easing: hasItems ? (easingMixed ? '' : (firstEasing || 'speedup')) : 'speedup',
+    easingMixed
+  }
+})
 
 // 基础信息
 const layer = computed<string>({
-  get: () => editCache.value['layer'] !== undefined ? String(editCache.value['layer']) : formatInputDisplay(getNumericFieldValues('layer')),
+  get: () => editCache.value['layer'] !== undefined ? String(editCache.value['layer']) : fieldSummary.value.layer,
   set: (v) => {
     editCache.value['layer'] = v
   }
 })
 
 const startTime = computed<string>({
-  get: () => editCache.value['startTime'] !== undefined ? editCache.value['startTime'] : formatInputDisplay(getNumericFieldValues('startTime')),
+  get: () => editCache.value['startTime'] !== undefined ? String(editCache.value['startTime']) : fieldSummary.value.startTime,
   set: (v) => {
     editCache.value['startTime'] = v
   }
@@ -455,48 +600,32 @@ const startTime = computed<string>({
 
 // 内容编辑
 const text = computed<string>({
-  get: () => {
-    if (editCache.value['content.text'] !== undefined) return editCache.value['content.text']
-    const values = getFieldValues('content.text')
-    if (values.length === 0) return ''
-    const allSame = values.every((v, i) => i === 0 || v === values[0])
-    return allSame ? values[0] : ''
-  },
+  get: () => editCache.value['content.text'] !== undefined ? String(editCache.value['content.text']) : fieldSummary.value.text,
   set: (v) => {
     editCache.value['content.text'] = v
   }
 })
 
-const isTextMixed = computed(() => editCache.value['content.text'] === undefined && hasMixedFieldValues('content.text'))
+const isTextMixed = computed(() => editCache.value['content.text'] === undefined && fieldSummary.value.textMixed)
 
 const font = computed<string>({
-  get: () => {
-    if (editCache.value['content.font'] !== undefined) return editCache.value['content.font']
-    if (hasMixedFieldValues('content.font')) return ''
-    return selectedDanmakus.value[0]?.content.font || 'Microsoft YaHei'
-  },
+  get: () => editCache.value['content.font'] !== undefined ? String(editCache.value['content.font']) : fieldSummary.value.font,
   set: (v) => {
     editCache.value['content.font'] = v
   }
 })
 
-const isFontMixed = computed(() => editCache.value['content.font'] === undefined && hasMixedFieldValues('content.font'))
+const isFontMixed = computed(() => editCache.value['content.font'] === undefined && fieldSummary.value.fontMixed)
 
 const size = computed<string>({
-  get: () => editCache.value['content.size'] !== undefined ? String(editCache.value['content.size']) : formatInputDisplay(getNumericFieldValues('content.size')),
+  get: () => editCache.value['content.size'] !== undefined ? String(editCache.value['content.size']) : fieldSummary.value.size,
   set: (v) => {
     editCache.value['content.size'] = v
   }
 })
 
 const color = computed<string>({
-  get: () => {
-    if (editCache.value['content.color'] !== undefined) return editCache.value['content.color']
-    const values = getFieldValues('content.color')
-    if (values.length === 0) return ''
-    const allSame = values.every((v, i) => i === 0 || v === values[0])
-    return allSame ? values[0] : '--'
-  },
+  get: () => editCache.value['content.color'] !== undefined ? String(editCache.value['content.color']) : fieldSummary.value.color,
   set: (v) => {
     editCache.value['content.color'] = v
   }
@@ -505,18 +634,14 @@ const color = computed<string>({
 const colorPicker = computed<string>({
   get: () => {
     const cacheValue = editCache.value['content.color']
-    
-    // 使用正则校验，确保只给拾色器传递合法的 #RRGGBB 格式
-    const hexRegex = /^#[0-9a-fA-F]{6}$/
-    if (cacheValue !== undefined && hexRegex.test(cacheValue)) {
-      return cacheValue
+    if (typeof cacheValue === 'string') {
+      const hex = toFullHexColor(cacheValue)
+      if (hex) return hex
     }
 
-    const values = getFieldValues('content.color')
-    if (values.length === 0) return '#ffffff'
-    
-    const first = selectedDanmakus.value[0]?.content.color
-    return (first && hexRegex.test(first)) ? first : '#ffffff'
+    if (!fieldSummary.value.hasItems) return '#ffffff'
+    const firstHex = toFullHexColor(fieldSummary.value.colorFirst)
+    return firstHex ?? '#ffffff'
   },
   set: (v) => {
     editCache.value['content.color'] = v
@@ -525,19 +650,10 @@ const colorPicker = computed<string>({
 
 const stroke = computed<boolean | null>({
   get: () => {
-    //优先从缓存中获取当前正在编辑的值
     if (editCache.value['content.stroke'] !== undefined) {
       return editCache.value['content.stroke']
     }
-
-    // 如果缓存没值，再走原本的 Store 读取逻辑
-    if (selectedDanmakus.value.length === 1) {
-      return selectedDanmakus.value[0]?.content.stroke || false
-    }
-    
-    const values = getFieldValues('content.stroke')
-    if (values.length > 1 && values.some(v => v !== values[0])) return null
-    return values.length > 0 && values[0] === true
+    return fieldSummary.value.stroke
   },
   set: (v) => {
     editCache.value['content.stroke'] = v
@@ -546,42 +662,42 @@ const stroke = computed<boolean | null>({
 
 // 位置与变换
 const startX = computed<string>({
-  get: () => editCache.value['transform.start.x'] !== undefined ? String(editCache.value['transform.start.x']) : formatInputDisplay(getNumericFieldValues('transform.start.x')),
+  get: () => editCache.value['transform.start.x'] !== undefined ? String(editCache.value['transform.start.x']) : fieldSummary.value.startX,
   set: (v) => {
     editCache.value['transform.start.x'] = v
   }
 })
 
 const startY = computed<string>({
-  get: () => editCache.value['transform.start.y'] !== undefined ? String(editCache.value['transform.start.y']) : formatInputDisplay(getNumericFieldValues('transform.start.y')),
+  get: () => editCache.value['transform.start.y'] !== undefined ? String(editCache.value['transform.start.y']) : fieldSummary.value.startY,
   set: (v) => {
     editCache.value['transform.start.y'] = v
   }
 })
 
 const endX = computed<string>({
-  get: () => editCache.value['transform.end.x'] !== undefined ? String(editCache.value['transform.end.x']) : formatInputDisplay(getNumericFieldValues('transform.end.x')),
+  get: () => editCache.value['transform.end.x'] !== undefined ? String(editCache.value['transform.end.x']) : fieldSummary.value.endX,
   set: (v) => {
     editCache.value['transform.end.x'] = v
   }
 })
 
 const endY = computed<string>({
-  get: () => editCache.value['transform.end.y'] !== undefined ? String(editCache.value['transform.end.y']) : formatInputDisplay(getNumericFieldValues('transform.end.y')),
+  get: () => editCache.value['transform.end.y'] !== undefined ? String(editCache.value['transform.end.y']) : fieldSummary.value.endY,
   set: (v) => {
     editCache.value['transform.end.y'] = v
   }
 })
 
 const zRotate = computed<string>({
-  get: () => editCache.value['transform.zRotate'] !== undefined ? String(editCache.value['transform.zRotate']) : formatInputDisplay(getNumericFieldValues('transform.zRotate')),
+  get: () => editCache.value['transform.zRotate'] !== undefined ? String(editCache.value['transform.zRotate']) : fieldSummary.value.zRotate,
   set: (v) => {
     editCache.value['transform.zRotate'] = v
   }
 })
 
 const yRotate = computed<string>({
-  get: () => editCache.value['transform.yRotate'] !== undefined ? String(editCache.value['transform.yRotate']) : formatInputDisplay(getNumericFieldValues('transform.yRotate')),
+  get: () => editCache.value['transform.yRotate'] !== undefined ? String(editCache.value['transform.yRotate']) : fieldSummary.value.yRotate,
   set: (v) => {
     editCache.value['transform.yRotate'] = v
   }
@@ -589,55 +705,87 @@ const yRotate = computed<string>({
 
 // 透明度
 const opacityFrom = computed<string>({
-  get: () => editCache.value['opacity.from'] !== undefined ? String(editCache.value['opacity.from']) : formatInputDisplay(getNumericFieldValues('opacity.from')),
+  get: () => editCache.value['opacity.from'] !== undefined ? String(editCache.value['opacity.from']) : fieldSummary.value.opacityFrom,
   set: (v) => {
     editCache.value['opacity.from'] = v
   }
 })
 
 const opacityTo = computed<string>({
-  get: () => editCache.value['opacity.to'] !== undefined ? String(editCache.value['opacity.to']) : formatInputDisplay(getNumericFieldValues('opacity.to')),
+  get: () => editCache.value['opacity.to'] !== undefined ? String(editCache.value['opacity.to']) : fieldSummary.value.opacityTo,
   set: (v) => {
     editCache.value['opacity.to'] = v
   }
 })
 
+function resolveSliderValue(textVal: string, fallback: number | null): number {
+  const trimmed = textVal.trim()
+  if (!trimmed || trimmed === '--') {
+    return fallback !== null ? Math.max(0, Math.min(1, fallback)) : 1
+  }
+  const num = Number(trimmed)
+  if (Number.isFinite(num)) {
+    return Math.max(0, Math.min(1, num))
+  }
+  return fallback !== null ? Math.max(0, Math.min(1, fallback)) : 1
+}
+
+const opacityFromSlider = computed<number>(() =>
+  resolveSliderValue(opacityFrom.value, fieldSummary.value.opacityFromFirst)
+)
+
+const opacityToSlider = computed<number>(() =>
+  resolveSliderValue(opacityTo.value, fieldSummary.value.opacityToFirst)
+)
+
 // 动画
 const duration = computed<string>({
-  get: () => editCache.value['animation.duration'] !== undefined ? String(editCache.value['animation.duration']) : formatInputDisplay(getNumericFieldValues('animation.duration')),
+  get: () => editCache.value['animation.duration'] !== undefined ? String(editCache.value['animation.duration']) : fieldSummary.value.duration,
   set: (v) => {
     editCache.value['animation.duration'] = v
   }
 })
 
 const moveDuration = computed<string>({
-  get: () => editCache.value['animation.moveDuration'] !== undefined ? String(editCache.value['animation.moveDuration']) : formatInputDisplay(getNumericFieldValues('animation.moveDuration')),
+  get: () => editCache.value['animation.moveDuration'] !== undefined ? String(editCache.value['animation.moveDuration']) : fieldSummary.value.moveDuration,
   set: (v) => {
     editCache.value['animation.moveDuration'] = v
   }
 })
 
 const delay = computed<string>({
-  get: () => editCache.value['animation.delay'] !== undefined ? String(editCache.value['animation.delay']) : formatInputDisplay(getNumericFieldValues('animation.delay')),
+  get: () => editCache.value['animation.delay'] !== undefined ? String(editCache.value['animation.delay']) : fieldSummary.value.delay,
   set: (v) => {
     editCache.value['animation.delay'] = v
   }
 })
 
 const easing = computed<string>({
-  get: () => {
-    if (editCache.value['animation.easing'] !== undefined) return editCache.value['animation.easing']
-    if (hasMixedFieldValues('animation.easing')) return ''
-    return selectedDanmakus.value[0]?.animation.easing || 'speedup'
-  },
+  get: () => editCache.value['animation.easing'] !== undefined ? String(editCache.value['animation.easing']) : fieldSummary.value.easing,
   set: (v) => {
     editCache.value['animation.easing'] = v
   }
 })
 
-const isEasingMixed = computed(() => editCache.value['animation.easing'] === undefined && hasMixedFieldValues('animation.easing'))
+const isEasingMixed = computed(() => editCache.value['animation.easing'] === undefined && fieldSummary.value.easingMixed)
 
 const builtInFontKeys = new Set(builtInFontOptions.map(option => normalizeFontKey(option.value)))
+
+const normalizedFontSearch = computed(() => normalizeFontKey(fontSearchQuery.value))
+
+const filteredBuiltInFontOptions = computed(() => {
+  const query = normalizedFontSearch.value
+  if (!query) return builtInFontOptions
+  return builtInFontOptions.filter(
+    option => normalizeFontKey(option.label).includes(query) || normalizeFontKey(option.value).includes(query)
+  )
+})
+
+const filteredLocalFontOptions = computed(() => {
+  const query = normalizedFontSearch.value
+  if (!query) return localFontOptions.value
+  return localFontOptions.value.filter(option => normalizeFontKey(option.label).includes(query))
+})
 
 const currentFontOption = computed<FontOption | null>(() => {
   const currentFontValue = font.value.trim()
@@ -677,14 +825,14 @@ const localFontListStartIndex = computed(() => {
 
 const localFontListEndIndex = computed(() => {
   const visibleCount = Math.ceil(LOCAL_FONT_LIST_HEIGHT / LOCAL_FONT_ITEM_HEIGHT) + LOCAL_FONT_OVERSCAN * 2
-  return Math.min(localFontOptions.value.length, localFontListStartIndex.value + visibleCount)
+  return Math.min(filteredLocalFontOptions.value.length, localFontListStartIndex.value + visibleCount)
 })
 
 const localFontListOffset = computed(() => localFontListStartIndex.value * LOCAL_FONT_ITEM_HEIGHT)
-const localFontListTotalHeight = computed(() => localFontOptions.value.length * LOCAL_FONT_ITEM_HEIGHT)
+const localFontListTotalHeight = computed(() => filteredLocalFontOptions.value.length * LOCAL_FONT_ITEM_HEIGHT)
 
 const visibleLocalFontOptions = computed(() => {
-  return localFontOptions.value.slice(localFontListStartIndex.value, localFontListEndIndex.value)
+  return filteredLocalFontOptions.value.slice(localFontListStartIndex.value, localFontListEndIndex.value)
 })
 
 let skipNextTextChange = false
@@ -791,6 +939,7 @@ async function openFontDropdown() {
 
 function closeFontDropdown() {
   isFontDropdownOpen.value = false
+  fontSearchQuery.value = ''
 }
 
 function toggleFontDropdown() {
@@ -803,8 +952,9 @@ function toggleFontDropdown() {
 }
 
 function selectFontOption(value: string) {
+  onFieldFocus()
   font.value = value
-  updateField('content.font', value)
+  void commitField('content.font', value)
   closeFontDropdown()
 }
 
@@ -815,7 +965,7 @@ function onLocalFontListScroll(event: Event) {
 // 将选中字体滚动到可视区域
 function scrollSelectedFontIntoView() {
   const currentFontKey = normalizeFontKey(font.value)
-  const targetIndex = localFontOptions.value.findIndex(option => normalizeFontKey(option.value) === currentFontKey)
+  const targetIndex = filteredLocalFontOptions.value.findIndex(option => normalizeFontKey(option.value) === currentFontKey)
   const listElement = localFontListRef.value
 
   if (targetIndex < 0 || !listElement) {
@@ -851,11 +1001,22 @@ function onDocumentPointerDown(event: PointerEvent) {
 
 function onDocumentKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape' && isFontDropdownOpen.value) {
+    event.preventDefault()
+    event.stopPropagation()
     closeFontDropdown()
   }
 }
 
+function onFieldFocus() {
+  activeEditSelectionKey.value = selectionKey.value
+}
+
 async function applyFieldUpdate(path: string, inputValue: string | number | boolean) {
+  if (!hasSelection.value) {
+    delete editCache.value[path]
+    return
+  }
+
   const result = await store.applyFieldUpdate(path, inputValue)
   if (!result.ok) {
     notice.alert(result.message, 'warn')
@@ -865,15 +1026,31 @@ async function applyFieldUpdate(path: string, inputValue: string | number | bool
   result.warnings.forEach((warning) => notice.alert(warning, 'warn'))
   delete editCache.value[path]
 }
-// 核心更新逻辑
-function updateField(path: string, inputValue: string | number | boolean) {
-  if (updateDebounceTimer.value) {
-    clearTimeout(updateDebounceTimer.value)
-  }
 
-  updateDebounceTimer.value = setTimeout(() => {
-    applyFieldUpdate(path, inputValue)
-  }, 100)
+async function commitField(path: string, inputValue: string | number | boolean) {
+  const expectedKey = activeEditSelectionKey.value
+  if (!hasSelection.value || (expectedKey !== null && expectedKey !== selectionKey.value)) {
+    delete editCache.value[path]
+    return
+  }
+  await applyFieldUpdate(path, inputValue)
+}
+
+function onColorTextChange() {
+  const trimmed = color.value.trim()
+  if (!trimmed || trimmed === '--' || trimmed === '—') {
+    delete editCache.value['content.color']
+    return
+  }
+  void commitField('content.color', trimmed)
+}
+
+function onEasingChange() {
+  if (!easing.value) {
+    delete editCache.value['animation.easing']
+    return
+  }
+  void commitField('animation.easing', easing.value)
 }
 
 function onTextChange() {
@@ -882,48 +1059,82 @@ function onTextChange() {
     return
   }
 
-  updateField('content.text', text.value)
+  void commitField('content.text', text.value)
 }
 
 function onTextInputKeydown(e: KeyboardEvent) {
+  if (e.isComposing || e.keyCode === 229) {
+    return
+  }
   if (e.key !== 'Enter' || e.shiftKey) {
     return
   }
 
   e.preventDefault()
-  skipNextTextChange = true
-
-  if (updateDebounceTimer.value) {
-    clearTimeout(updateDebounceTimer.value)
+  const textarea = e.target as HTMLTextAreaElement
+  if (editCache.value['content.text'] === undefined && isTextMixed.value) {
+    textarea.blur()
+    return
   }
 
-  applyFieldUpdate('content.text', text.value)
-  ;(e.target as HTMLTextAreaElement).blur()
+  skipNextTextChange = true
+  void commitField('content.text', text.value)
+  textarea.blur()
+  skipNextTextChange = false
 }
 
 function onOpacityFieldChange(path: 'opacity.from' | 'opacity.to', value: string | number) {
   const textValue = String(value).trim()
-  if (!textValue) {
+  if (!textValue || textValue === '--' || textValue === '—') {
+    delete editCache.value[path]
     return
   }
 
-  updateField(path, textValue)
+  void commitField(path, textValue)
+}
+
+function onOpacitySliderInput(path: 'opacity.from' | 'opacity.to', event: Event) {
+  onFieldFocus()
+  editCache.value[path] = (event.target as HTMLInputElement).value
+}
+
+function onOpacitySliderChange(path: 'opacity.from' | 'opacity.to', event: Event) {
+  const value = (event.target as HTMLInputElement).value
+  editCache.value[path] = value
+  void commitField(path, value)
 }
 
 function onStrokeChange(event: Event) {
-  updateField('content.stroke', (event.target as HTMLInputElement).checked)
+  onFieldFocus()
+  const checked = (event.target as HTMLInputElement).checked
+  editCache.value['content.stroke'] = checked
+  void commitField('content.stroke', checked)
 }
 
-// 解析时间值（支持±*/ 操作）
-function parseTimeValue(input: string): number {
-  const values = getNumericFieldValues('startTime')
-  if (values.length === 0) return 0
-
-  const parseResult = parseInput(input, false)
-  if (parseResult.error) return values[0]
-
-  return applyOperation(values[0], parseResult)
+function formatSafeTime(ms: number): string {
+  if (!Number.isFinite(ms)) return '--:--.---'
+  const rounded = Math.round(ms)
+  return rounded < 0 ? `-${formatTime(Math.abs(rounded))}` : formatTime(rounded)
 }
+
+const startTimePreview = computed<string>(() => {
+  const base = fieldSummary.value.startTimeFirst ?? 0
+  const raw = startTime.value.trim()
+  if (!raw || raw === '--' || raw === '—') {
+    return formatSafeTime(base)
+  }
+  if (raw.startsWith('$')) {
+    return '表达式'
+  }
+  const parseResult = parseInput(raw, false)
+  if (parseResult.error) {
+    return formatSafeTime(base)
+  }
+  if (parseResult.mode === 'random') {
+    return '随机范围'
+  }
+  return formatSafeTime(applyOperation(base, parseResult))
+})
 
 /**
  * 计算文本占用的字符数（换行符占用2个字符）
@@ -949,39 +1160,46 @@ function isTextLengthValid(str: string): boolean {
 
 // 清除选择
 function handleClearSelection() {
-  store.clearSelection()
   editCache.value = {}
+  activeEditSelectionKey.value = null
   closeFontDropdown()
+  store.clearSelection()
 }
 
 // 监听选择变化，清除编辑缓存
-watch(() => store.selectedIds, () => {
+watch(selectionKey, () => {
   editCache.value = {}
+  activeEditSelectionKey.value = null
   closeFontDropdown()
-}, { deep: true })
+})
 
-watch(() => [isFontDropdownOpen.value, localFontOptions.value.length, font.value], async ([isOpen]) => {
+watch(fontSearchQuery, () => {
+  localFontListScrollTop.value = 0
+  if (localFontListRef.value) {
+    localFontListRef.value.scrollTop = 0
+  }
+})
+
+watch(() => [isFontDropdownOpen.value, filteredLocalFontOptions.value.length, font.value], async ([isOpen]) => {
   if (!isOpen) {
     return
   }
 
   await nextTick()
-  scrollSelectedFontIntoView()
+  if (isFontDropdownOpen.value) {
+    scrollSelectedFontIntoView()
+  }
 })
 
 onMounted(() => {
   document.addEventListener('pointerdown', onDocumentPointerDown)
-  document.addEventListener('keydown', onDocumentKeydown)
+  document.addEventListener('keydown', onDocumentKeydown, { capture: true })
 })
 
 // 组件卸载时清理
 onBeforeUnmount(() => {
-  if (updateDebounceTimer.value) {
-    clearTimeout(updateDebounceTimer.value)
-  }
-
   document.removeEventListener('pointerdown', onDocumentPointerDown)
-  document.removeEventListener('keydown', onDocumentKeydown)
+  document.removeEventListener('keydown', onDocumentKeydown, { capture: true })
 })
 </script>
 
@@ -1013,6 +1231,13 @@ onBeforeUnmount(() => {
 .empty-state .hint {
   font-size: 12px;
   color: #666;
+}
+
+.panel-selected {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 
 .panel-header {
@@ -1167,6 +1392,13 @@ onBeforeUnmount(() => {
   border-radius: 6px;
   background-color: #252526;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+}
+
+.font-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 8px;
+  padding: 6px 8px;
 }
 
 .font-section + .font-section {

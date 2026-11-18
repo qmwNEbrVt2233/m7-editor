@@ -13,7 +13,14 @@ export interface LogEntry {
   AdditionalInfo: any
 }
 
+const MAX_LOG_ENTRIES = 2000
 let confirmResolve: ((value: boolean) => void) | null = null
+let lastLogId = 0
+
+function createUniqueLogId(): number {
+  lastLogId = Math.max(Date.now(), lastLogId + 1)
+  return lastLogId
+}
 
 function serializeAdditionalInfo(value: unknown) {
   if (value == null) {
@@ -82,8 +89,12 @@ function buildLogMarkdown(logList: LogEntry[]): string {
     .map((item) => item.id)
     .filter((value): value is number => Number.isFinite(value))
 
-  const firstTimestamp = timestamps.length > 0 ? Math.min(...timestamps) : null
-  const lastTimestamp = timestamps.length > 0 ? Math.max(...timestamps) : null
+  let firstTimestamp: number | null = null
+  let lastTimestamp: number | null = null
+  for (const ts of timestamps) {
+    if (firstTimestamp === null || ts < firstTimestamp) firstTimestamp = ts
+    if (lastTimestamp === null || ts > lastTimestamp) lastTimestamp = ts
+  }
   const timeSpan = firstTimestamp !== null && lastTimestamp !== null
     ? formatDuration(lastTimestamp - firstTimestamp)
     : '0秒'
@@ -135,20 +146,26 @@ export const useNoticeStore = defineStore('notice', {
 
   actions: {
     addLog(msg: string, noticeType?: NoticeType, AdditionalInfo?: any) {
-      const entry = {
-        id: Date.now(),
-        timestamp: new Date().toLocaleTimeString(),
+      const now = Date.now()
+      const entry: LogEntry = {
+        id: createUniqueLogId(),
+        timestamp: new Date(now).toLocaleTimeString(),
         type: noticeType,
         message: msg,
         AdditionalInfo
       }
 
       this.logList.push(entry)
+      if (this.logList.length > MAX_LOG_ENTRIES) {
+        this.logList.splice(0, this.logList.length - MAX_LOG_ENTRIES)
+      }
 
-      this.lastLogTime = Date.now()
+      this.lastLogTime = now
 
       if (isTauriRuntime()) {
-        const line = `[${entry.timestamp}] [${entry.type ?? 'log'}] ${entry.message}${entry.AdditionalInfo ? '\n' + serializeAdditionalInfo(entry.AdditionalInfo) + '\n' : ''}`
+        const hasExtra = entry.AdditionalInfo !== undefined && entry.AdditionalInfo !== null
+        const extraText = hasExtra ? serializeAdditionalInfo(entry.AdditionalInfo) : ''
+        const line = `[${entry.timestamp}] [${entry.type ?? 'log'}] ${entry.message}${extraText ? '\n' + extraText + '\n' : ''}`
         void appendLogToFile(line).catch((error) => {
           console.warn('[日志] 写入后端日志失败', error)
         })
@@ -161,6 +178,11 @@ export const useNoticeStore = defineStore('notice', {
     },
 
     alert(msg: string, alertType: NoticeType = 'info', alertTitle = '提示', AdditionalInfo?: any) {
+      if (confirmResolve) {
+        const pendingResolve = confirmResolve
+        confirmResolve = null
+        pendingResolve(false)
+      }
       this.isConfirm = false
       this.type = alertType
       this.title = alertTitle
@@ -171,6 +193,11 @@ export const useNoticeStore = defineStore('notice', {
     },
 
     confirm(msg: string, alertTitle = '请确认'): Promise<boolean> {
+      if (confirmResolve) {
+        const pendingResolve = confirmResolve
+        confirmResolve = null
+        pendingResolve(false)
+      }
       this.isConfirm = true
       this.type = 'warn'
       this.title = alertTitle
@@ -189,16 +216,18 @@ export const useNoticeStore = defineStore('notice', {
       this.isVisible = false
       this.addLog(`用户点击了: ${result ? '确定' : '取消'}`, 'info')
       if (confirmResolve) {
-        confirmResolve(result)
+        const resolve = confirmResolve
         confirmResolve = null
+        resolve(result)
       }
     },
 
     async exportLogs() {
       const markdown = buildLogMarkdown(this.logList)
       const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
+      const safeTimestamp = formatDateTime(Date.now()).replace(/:/g, '-')
 
-      await saveBlobWithFallback(blob, `notice-logs_${formatDateTime(Date.now())}.md`, {
+      await saveBlobWithFallback(blob, `notice-logs_${safeTimestamp}.md`, {
         description: 'Markdown 日志文件',
         accept: {
           'text/markdown': ['.md']
