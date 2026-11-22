@@ -21,7 +21,6 @@
 <a href="https://v2.tauri.app/"><img src="https://v2.tauri.app/_astro/logo.BQPqkdSq.svg" style="width: 66px; height: 20px"></a>
 <a href="https://mathjs.org/"><img src="https://mathjs.org/css/img/mathjs.svg" style="width: 66px; height: 20px"></a>
 <a href="https://mediabunny.dev/"><img src="https://mediabunny.dev/mediabunny-logo.svg" style="width: 20px; height: 20px"></a>
-<a href="https://wavesurfer.xyz/"><img src="https://wavesurfer.xyz/logo-small.png" style="width: 20px; height: 20px"></a>
 
 原生 DOM / FileReader / Blob API
 
@@ -42,7 +41,6 @@ npm install
 - `@vitejs/plugin-vue`
 - `mathjs`
 - `mediabunny`
-- `wavesurfer.js`
 - `terser`
 - `tauri`
 - `@tauri-apps/api`
@@ -190,6 +188,7 @@ Codex 会负责启动 stdio 服务；不要先在终端单独运行 `npm run --s
 │   │   │       VideoExportDialog.vue         #视频导出设置弹窗
 │   │   │
 │   │   └───timeline
+|   |           SpectrogramLayer.vue          #频谱图渲染层
 │   │           timeline.vue                  #时间轴模块
 │   │
 │   ├───mcp
@@ -203,6 +202,7 @@ Codex 会负责启动 stdio 服务；不要先在终端单独运行 `npm run --s
 │   │   │   editorApi.ts                      #统一编辑事务API
 │   │   │   history.ts                        #快照管理
 │   │   │   player.ts                         #播放器播放状态
+│   │   │   spectrogram.worker.ts             #频谱图计算worker
 │   │   │
 │   │   └───videoExport
 │   │           danmakuRenderer.ts            #视频导出的弹幕索引与WebGL渲染
