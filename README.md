@@ -247,8 +247,27 @@ Codex 会负责启动 stdio 服务；不要先在终端单独运行 `npm run --s
     │       ...
     │
     └───src                                   #后端
-         lib.rs
-         main.rs
+        │   config.rs                         #应用配置、数据目录与日志
+        │   desktop.rs                        #桌面窗口显隐与系统托盘
+        │   dialogs.rs                        #跨平台原生文件/保存对话框
+        │   fs_utils.rs                       #路径校验、原子读写与回收站
+        │   lib.rs                            #应用入口与Tauri命令注册
+        │   main.rs                           #桌面端程序启动入口
+        │   mcp_bridge.rs                     #MCP本机HTTP桥接服务
+        │   media.rs                          #媒体文件校验与协议授权
+        │   templates.rs                      #弹幕模板读写与管理
+        │
+        ├───projects
+        │       commands.rs                   #文件夹工程与单文件导入命令
+        │       mod.rs                        #工程配置与请求响应数据结构
+        │       store.rs                      #工程配置读写、校验与媒体管理
+        │
+        └───video_export
+                ffmpeg.rs                     #FFmpeg进程管理与管道编码
+                file.rs                       #导出路径校验与分片文件写入
+                mod.rs                        #视频导出状态与IPC载荷解析
+                render_window.rs              #独立渲染/帧截图窗口管理
+                snapshot.rs                   #跨平台WebView截图适配
 ```
 
 </details>
