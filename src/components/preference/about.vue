@@ -130,7 +130,7 @@ const safeVersion = computed(() => escapeHtml(store.version || '1.12.0'))
 const sectionContents = computed<Record<string, string>>(() => ({
   'about': `
     <subtitle>关于</subtitle>
-    <img src="/favicon.svg" alt="m7-editor" style="width: 150px; height: 150px;">
+    <img src="/favicon.svg" alt="m7-editor" style="width: 150px; height: 150px;" class="no-select">
     <p>m7-editor是一个面向 M7 / B 站特效弹幕场景的可视化编辑器，由jerryeee开发</p>
     <p><strong>您所在的版本：</strong><kbd>${safeVersion.value}</kbd></p>
     <h3>获取帮助</h3>
@@ -148,12 +148,13 @@ const sectionContents = computed<Record<string, string>>(() => ({
 
   'interface-project-manager': `
     <subtitle>工程管理</subtitle>
-    <img src="./oi2neu10df-92emusioa-2ei1jb.jpg" style="width: 100%;">
+    <img src="./oi2neu10df-92emusioa-2ei1jb.jpg" style="width: 100%;" class="no-select">
     <p style="color: #aaa; font-style: italic;">开启应用时你应该看到这个</p>
     <p>应用会在系统文档中创建一个文件夹，结构如下</p>
-    <kbd style="white-space: pre; display: block; width: fit-content; min-width: 140px; max-width: 100%; overflow-x: auto;">└───m7-editor<br>    ├───logs<br>    ├───projects<br>    └───templates</kbd>
+    <kbd style="white-space: pre; display: block; width: fit-content; min-width: 140px; max-width: 100%; overflow-x: auto;">└───m7-editor<br>    ├───logs<br>    ├───presets<br>    ├───projects<br>    └───templates</kbd>
     <ul>
       <li>logs用于实时存放日志，每次打开都会创建一个新文件用于记录</li>
+      <li>presets为高级创建工具生成规则预设同步目录</li>
       <li>projects是默认的工程创建目录</li>
       <li>templates为模板读取目录</li>
     </ul>
@@ -456,7 +457,7 @@ const sectionContents = computed<Record<string, string>>(() => ({
 
   'interface-template-manager': `
     <subtitle>模板管理器</subtitle>
-    <img src="./zjih13u7128nsjuwio2w.jpg" style="width: 100%;">
+    <img src="./zjih13u7128nsjuwio2w.jpg" style="width: 100%;" class="no-select">
     <p>按 <kbd>'</kbd> 打开或关闭模板管理器；打开后按 <kbd>Escape</kbd> 也可关闭</p>
 
     <h3>管理模板</h3>
@@ -581,14 +582,16 @@ const sectionContents = computed<Record<string, string>>(() => ({
     <ul>
       <li>命令类型声明 <code>/s</code></li>
       <li>规则列表（或）使用 <code>;</code> 分隔，筛选规则（与）使用 <code>,</code> 分隔</li>
-      <li>单个筛选规则格式：<code>筛选字段名:"规则"</code></li>
+      <li>关键字条件：<code>all</code>（全选）、<code>none</code>（清空选择）、<code>selecting</code>（保持当前选择）</li>
+      <li>单个筛选规则格式：<code>筛选字段名:"规则"</code>（双引号内多个条件用 <code>,</code> 表示或）</li>
       <ul>
-        <li>数值范围：<code>"数值~数值"</code></li>
+        <li><code>id</code> 与数值字段统一支持：单个数值/表达式（如 <code>"7"</code>）、闭区间（<code>"1~3"</code> / <code>"1000~5000"</code>）、半开区间（<code>"10~"</code> / <code>"~5000"</code>）</li>
         <li>正则表达式：<code>"&lt;^Hello.*$&gt;"</code></li>
-        <li>严格匹配：<code>"'匹配值'"</code></li>
+        <li>严格字符串匹配：<code>"'匹配值'"</code>（非数字字符串 ID 或文本精确匹配）</li>
+        <li><code>stroke</code> 支持直接写 <code>true</code>/<code>false</code>；<code>easing</code> 支持直接写 <code>speedup</code>/<code>speeddown</code></li>
       </ul>
     </ul>
-    <ul><li><strong>例：</strong><kbd>/s startTime:"1000~56000,'300'",text:"<^sample>";size:"'127'"</kbd></li></ul>
+    <ul><li><strong>例：</strong><kbd>/s id:"1~3,7,19"; startTime:"1000~56000,300",text:"<^sample>"; size:"127"</kbd></li></ul>
   `,
 
   'interface-timeline': `
@@ -610,7 +613,7 @@ const sectionContents = computed<Record<string, string>>(() => ({
 
   'interface-creation': `
     <subtitle>高级创建工具</subtitle>
-    <img src="./zney812dm21ey890523-18297.jpg" style="width: 100%;">
+    <img src="./zney812dm21ey890523-18297.jpg" style="width: 100%;" class="no-select">
 
     <h3>预备弹幕数据区</h3>
     <ul>
@@ -645,15 +648,14 @@ const sectionContents = computed<Record<string, string>>(() => ({
 
   'interface-creation-presets': `
     <subtitle>预设管理器</subtitle>
-    <p>高级创建工具右侧带有独立的预设管理侧边栏，用于保存、导入、导出和管理整套工具面板配置：</p>
+    <p>高级创建工具右侧带有独立的规则预设管理侧边栏，用于保存、编辑、同步、导入和导出整套工具面板配置：</p>
     <ul>
-      <li><strong>导入预设</strong>：将 .prs 文件中的预设追加到当前列表</li>
-      <li><strong>导出预设</strong>：将当前列表中的全部预设导出为 .prs 格式（实质为 JSON）</li>
-      <li><strong>添加预设</strong>：将当前工具面板配置保存为新预设，默认命名为"新建预设1"、"新建预设2"依次递增</li>
-      <li><strong>预设列表</strong>：点击即把该预设应用到当前工具面板</li>
-      <li><strong>预设管理</strong>：拥有独立的管理选中状态，单击选中用于管理，再次点击进入重命名，按 Delete 删除当前选中的预设</li>
+      <li><strong>本地文件同步</strong>：桌面端将每个预设独立保存为 <code>文档/m7-editor/presets/&lt;预设名&gt;.json</code>（支持点击 <code>⟲</code> 从本地刷新，删除时移入系统回收站），网页版保存在浏览器 <code>localStorage</code>。首次启动桌面端时会自动将旧版浏览器缓存预设无损迁移到本地文件夹。</li>
+      <li><strong>新建预设 / 另存为</strong>：将当前工具面板配置保存为新预设；激活已有预设并在面板修改参数后，可通过操作栏<strong>保存更改</strong>直接更新该预设，或点击<strong>还原</strong>放弃未保存改动、点击<strong>另存为</strong>创建副本。</li>
+      <li><strong>可视化与结构编辑</strong>：点击列表项应用并激活该预设；点击行内<strong>编辑</strong>可打开预设结构 JSON 编辑器直接修改预设名称与完整 <code>state</code> 数据（带实时校验与格式化），也可点击<strong>重命名</strong>或<strong>删除</strong>（按 <code>Delete</code> 删除当前激活预设）。</li>
+      <li><strong>导入 / 导出</strong>：支持导入 <code>.prs</code> 预设包或单个 <code>.json</code> 预设文件（同名自动去重），以及将全部预设导出为 <code>.prs</code> 文件。</li>
     </ul>
-    <p>预设内容仅保存工具面板状态，不会保存预览框里的 JSON。预设列表会自动同步到浏览器 localStorage，也可通过导入/导出在不同工程环境中迁移。</p>
+    <p>预设仅保存工具面板生成规则状态，不会保存预览框里的 JSON。</p>
   `,
 
   'interface-creation-expressions': `

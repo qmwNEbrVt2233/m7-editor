@@ -1,5 +1,5 @@
 <template>
-  <div class="template-overlay" @mousedown.self="close">
+  <div class="template-overlay no-select" @mousedown.self="close">
     <section class="template-dialog" role="dialog" aria-modal="true" aria-label="弹幕模板管理器">
       <header class="template-header">
         <div>
@@ -479,13 +479,17 @@ async function deleteSelected() {
 .template-refresh-button {
   width: 27px;
   height: 27px;
-  border: 1px solid #444448;
+  border: none;
   border-radius: 4px;
-  background: #2a2a2d;
+  background: #202021;
   color: #c8c8ce;
   font-size: 15px;
   line-height: 1;
   cursor: pointer;
+}
+
+.template-refresh-button:hover:not(:disabled) {
+  filter: brightness(1.3);
 }
 
 .template-refresh-button:disabled {

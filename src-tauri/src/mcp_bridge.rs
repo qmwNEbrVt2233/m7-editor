@@ -3,7 +3,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc, Arc, Mutex,
@@ -15,10 +15,14 @@ use std::{
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::{fs_utils::now_millis, MAIN_WINDOW_LABEL};
+use crate::{
+    fs_utils::{now_millis, read_text_file_bounded, write_json},
+    MAIN_WINDOW_LABEL,
+};
 
 const MCP_DESCRIPTOR_PREFIX: &str = "m7-editor-mcp-bridge-";
 const MCP_MAX_BODY_BYTES: usize = 1024 * 1024;
+const MCP_MAX_JSON_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MCP_MAX_HEADER_BYTES: usize = 8192;
 const MCP_MAX_CONCURRENT_CONNECTIONS: usize = 32;
 const MCP_MAX_PENDING_REQUESTS: usize = 64;
@@ -530,6 +534,58 @@ pub(crate) fn set_mcp_frontend_ready(bridge: State<'_, McpBridgeRuntime>, ready:
     bridge.set_frontend_ready(ready);
 }
 
+fn read_mcp_json_file_inner(path: &Path) -> Result<Value, String> {
+    if path.as_os_str().is_empty() {
+        return Err("JSON 文件路径不能为空".to_string());
+    }
+    let raw = read_text_file_bounded(path, MCP_MAX_JSON_FILE_BYTES, "MCP JSON 文件")?;
+    let trimmed = raw.trim_start_matches('\u{feff}');
+    serde_json::from_str::<Value>(trimmed)
+        .map_err(|error| format!("无法解析 MCP JSON 文件 {}: {error}", path.display()))
+}
+
+fn write_mcp_json_file_inner(path: &Path, value: &Value) -> Result<u64, String> {
+    if path.as_os_str().is_empty() {
+        return Err("输出路径不能为空".to_string());
+    }
+    if !path.is_absolute() {
+        return Err("输出路径必须是绝对路径".to_string());
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err("输出路径不能包含 .. 路径段".to_string());
+    }
+    if path.exists() && path.is_dir() {
+        return Err("输出路径不能指向已存在的目录".to_string());
+    }
+    write_json(path, value)?;
+    Ok(fs::metadata(path).map(|meta| meta.len()).unwrap_or(0))
+}
+
+#[tauri::command]
+pub(crate) async fn read_mcp_json_file(path: String) -> Result<Value, String> {
+    let trimmed = path.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("JSON 文件路径不能为空".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || read_mcp_json_file_inner(Path::new(&trimmed)))
+        .await
+        .map_err(|error| format!("读取 MCP JSON 文件失败: {error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn write_mcp_json_file(path: String, value: Value) -> Result<u64, String> {
+    let trimmed = path.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("输出路径不能为空".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || write_mcp_json_file_inner(Path::new(&trimmed), &value))
+        .await
+        .map_err(|error| format!("写入 MCP JSON 文件失败: {error}"))?
+}
+
 fn write_mcp_http_response(stream: &mut TcpStream, status: u16, reason: &str, payload: &Value) {
     let Ok(body) = serde_json::to_vec(payload) else {
         return;
@@ -630,6 +686,7 @@ fn write_mcp_descriptor(path: &Path, port: u16, token: &str) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fs_utils::unique_test_dir;
 
     #[test]
     fn constant_time_equal_and_header_end_checks() {
@@ -639,5 +696,29 @@ mod tests {
 
         assert_eq!(find_http_header_end(b"POST /rpc HTTP/1.1\r\n\r\n{}"), Some(18));
         assert_eq!(find_http_header_end(b"POST /rpc HTTP/1.1\r\n"), None);
+    }
+
+    #[test]
+    fn mcp_json_file_roundtrip_bom_parent_dir_and_validation() {
+        let root = unique_test_dir("m7_mcp_json_io");
+        let nested_out = root.join("nested").join("out.json");
+        let payload = json!({ "danmakus": [{ "id": "1" }], "total": 1 });
+
+        let written_bytes = write_mcp_json_file_inner(&nested_out, &payload).unwrap();
+        assert!(written_bytes > 0);
+        assert_eq!(read_mcp_json_file_inner(&nested_out).unwrap(), payload);
+
+        let bom_path = root.join("bom.json");
+        fs::write(&bom_path, "\u{feff}{\"ok\":true}").unwrap();
+        assert_eq!(read_mcp_json_file_inner(&bom_path).unwrap(), json!({ "ok": true }));
+
+        // Directory target must be rejected
+        assert!(write_mcp_json_file_inner(&root, &payload).is_err());
+
+        // Relative or .. paths must be rejected for write
+        assert!(write_mcp_json_file_inner(Path::new("relative.json"), &payload).is_err());
+        assert!(write_mcp_json_file_inner(&root.join("..").join("escape.json"), &payload).is_err());
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

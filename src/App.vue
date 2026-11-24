@@ -197,7 +197,17 @@ async function handleMcpCommand(payload: McpCommandPayload) {
       }
     } else if (method === 'editor.getDanmakus') {
       if (!editorReady.value) throw new Error('编辑器尚未加载工程')
-      result = store.getMcpDanmakus(params as { ids?: string[]; selectedOnly?: boolean; offset?: number; limit?: number })
+      if (typeof params.outputPath === 'string' && params.outputPath.trim()) {
+        result = await store.exportMcpDanmakusToFile({
+          outputPath: params.outputPath,
+          ids: Array.isArray(params.ids) ? params.ids as string[] : undefined,
+          selectedOnly: typeof params.selectedOnly === 'boolean' ? params.selectedOnly : undefined,
+          offset: typeof params.offset === 'number' ? params.offset : undefined,
+          limit: typeof params.limit === 'number' ? params.limit : undefined
+        })
+      } else {
+        result = store.getMcpDanmakus(params as { ids?: string[]; selectedOnly?: boolean; offset?: number; limit?: number; idsOnly?: boolean })
+      }
     } else if (method === 'editor.getLogs') {
       result = store.getMcpLogs(params as { type?: string; offset?: number; limit?: number })
     } else if (method === 'editor.getHistorySnapshots') {
@@ -206,7 +216,26 @@ async function handleMcpCommand(payload: McpCommandPayload) {
     } else if (method === 'editor.getHistorySnapshot') {
       if (!editorReady.value) throw new Error('编辑器尚未加载工程')
       if (typeof params.snapshotId !== 'string' || !params.snapshotId) throw new Error('快照 ID 不能为空')
-      result = store.getMcpHistorySnapshot(params.snapshotId, params as { offset?: number; limit?: number })
+      if (typeof params.outputPath === 'string' && params.outputPath.trim()) {
+        result = await store.exportMcpHistorySnapshotToFile(params.snapshotId, {
+          outputPath: params.outputPath,
+          offset: typeof params.offset === 'number' ? params.offset : undefined,
+          limit: typeof params.limit === 'number' ? params.limit : undefined
+        })
+      } else {
+        result = store.getMcpHistorySnapshot(params.snapshotId, params as { offset?: number; limit?: number })
+      }
+    } else if (method === 'editor.createDanmakusFromFile') {
+      if (!editorReady.value) throw new Error('编辑器尚未加载工程，暂不能创建弹幕')
+      if (typeof params.jsonPath !== 'string' || !params.jsonPath.trim()) {
+        throw new Error('jsonPath 不能为空')
+      }
+      if (typeof params.relativeToCurrentTime !== 'boolean') {
+        throw new Error('relativeToCurrentTime 必须明确传入 true 或 false')
+      }
+      const response = await store.createDanmakusFromJsonFileForMcp(params.jsonPath, params.relativeToCurrentTime)
+      result = response
+      reportMcpEditResult('@danmaku.create', response)
     } else if (method === 'editor.createGeneratedDanmakus') {
       if (!editorReady.value) throw new Error('编辑器尚未加载工程，暂不能创建弹幕')
       const input = params as AgentCreationRequest & { relativeToCurrentTime?: boolean }
@@ -688,6 +717,7 @@ onMounted(() => {
       .catch((error) => console.error('[MCP] 本机桥事件监听启动失败:', error))
   }
   void store.loadDanmakuTemplates().catch((error) => console.error('[模板] 加载失败:', error))
+  void store.loadCreationToolPresets().catch((error) => console.error('[预设] 加载失败:', error))
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('keyup', handleKeyUp)
   window.addEventListener('blur', handleWindowBlur)

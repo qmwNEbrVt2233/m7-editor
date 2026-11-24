@@ -1,7 +1,7 @@
 <template>
   <div
     v-if="visible"
-    class="creation-tools-overlay"
+    class="creation-tools-overlay no-select"
     @mousedown.self="closePanel"
   >
     <div class="creation-tools-shell">
@@ -453,14 +453,14 @@
       </section>
 
       <PresetManager
-        :presets="presets"
-        :managed-preset-id="managedPresetId"
-        @add-current="handleAddPreset"
+        :active-preset-name="activePresetName"
+        :is-dirty="isActivePresetDirty"
+        :get-panel-state="buildPanelState"
         @apply-preset="handleApplyPreset"
-        @select-managed-preset="handleSelectManagedPreset"
-        @rename-preset="handleRenamePreset"
-        @delete-preset="handleDeletePreset"
-        @import-presets="handleImportPresets"
+        @revert-preset="handleRevertPreset"
+        @active-preset-change="handleActivePresetChange"
+        @sync-active-state="handleSyncActiveState"
+        @status="handlePresetStatus"
       />
     </div>
   </div>
@@ -472,12 +472,10 @@ import { useEditorStore, parsePastedDanmakusText } from '@/store/editor'
 import { useHelpStore } from '@/store/help'
 import type {
   ColorFieldPath,
-  ColorRuleState,
   DanmakuDraft,
   DirectRuleMode,
   DirectFieldPath,
   NumericFieldPath,
-  NumericRuleState,
   RuleMode,
   ToolWriteRequest,
   WriteMode
@@ -493,13 +491,12 @@ import {
 } from '@/utils/danmakuGenerator'
 import { normalizeColor } from '@/utils/validation'
 import PresetManager from './PresetManager.vue'
-import type { CreationToolPanelState, CreationToolPreset } from '@/utils/toolPresets'
+import { isTauriRuntime } from '@/utils/tauriBackend'
 import {
-  createPresetFromState,
-  loadCreationToolPresets,
-  mergeImportedPresets,
-  saveCreationToolPresets,
-  updatePresetName
+  areCreationPanelStatesEqual,
+  sanitizeCreationPanelState,
+  type CreationToolPanelState,
+  type CreationToolPresetRecord
 } from '@/utils/toolPresets'
 import { useNoticeStore } from '@/store/notice.ts'
 
@@ -575,110 +572,6 @@ function toFullHexColor(value: string): string {
   return normalized
 }
 
-function isRuleMode(value: unknown): value is RuleMode {
-  return value === 'cycle' || value === 'range' || value === 'relative'
-}
-
-function isDirectRuleMode(value: unknown): value is DirectRuleMode {
-  return value === 'assign' || value === 'cycle'
-}
-
-function sanitizePanelState(raw: unknown): CreationToolPanelState {
-  const defaultNumeric = createDefaultNumericRules(store.currentTime)
-  const defaultColor = createDefaultColorRule()
-  const defaultDirect = createDefaultDirectRules()
-  const source = raw && typeof raw === 'object' && !Array.isArray(raw)
-    ? (raw as Record<string, any>)
-    : {}
-
-  const rawNumeric = source.numericRules && typeof source.numericRules === 'object' ? source.numericRules : {}
-  const nextNumeric = {} as Record<NumericFieldPath, NumericRuleState>
-  for (const path of Object.keys(defaultNumeric) as NumericFieldPath[]) {
-    const fallback = defaultNumeric[path]
-    const candidate = rawNumeric[path] && typeof rawNumeric[path] === 'object' ? rawNumeric[path] : {}
-    nextNumeric[path] = {
-      mode: isRuleMode(candidate.mode) ? candidate.mode : fallback.mode,
-      cycleList: typeof candidate.cycleList === 'string' ? candidate.cycleList : fallback.cycleList,
-      start: typeof candidate.start === 'string' ? candidate.start : fallback.start,
-      end: typeof candidate.end === 'string' ? candidate.end : fallback.end,
-      step: typeof candidate.step === 'string' ? candidate.step : fallback.step,
-      expression: typeof candidate.expression === 'string' ? candidate.expression : fallback.expression,
-      expressionPreset: typeof candidate.expressionPreset === 'string' ? candidate.expressionPreset : fallback.expressionPreset
-    }
-  }
-
-  const rawColor = source.colorRule && typeof source.colorRule === 'object' ? source.colorRule : {}
-  const safeStart = normalizeColor(String(rawColor.start ?? rawColor.startText ?? ''))
-    ? toFullHexColor(String(rawColor.start ?? rawColor.startText ?? ''))
-    : defaultColor.start
-  const safeTarget = normalizeColor(String(rawColor.target ?? rawColor.targetText ?? ''))
-    ? toFullHexColor(String(rawColor.target ?? rawColor.targetText ?? ''))
-    : defaultColor.target
-  const nextColor: ColorRuleState = {
-    mode: isRuleMode(rawColor.mode) ? rawColor.mode : defaultColor.mode,
-    cycleList: typeof rawColor.cycleList === 'string' ? rawColor.cycleList : defaultColor.cycleList,
-    start: safeStart,
-    startText: typeof rawColor.startText === 'string' && normalizeColor(rawColor.startText)
-      ? toFullHexColor(rawColor.startText)
-      : safeStart,
-    target: safeTarget,
-    targetText: typeof rawColor.targetText === 'string' && normalizeColor(rawColor.targetText)
-      ? toFullHexColor(rawColor.targetText)
-      : safeTarget,
-    alpha: typeof rawColor.alpha === 'string' ? rawColor.alpha : defaultColor.alpha
-  }
-
-  const rawDirect = source.directRules && typeof source.directRules === 'object' ? source.directRules : {}
-  const rawText = rawDirect.text && typeof rawDirect.text === 'object' ? rawDirect.text : {}
-  const rawFont = rawDirect.font && typeof rawDirect.font === 'object' ? rawDirect.font : {}
-  const rawStroke = rawDirect.stroke && typeof rawDirect.stroke === 'object' ? rawDirect.stroke : {}
-  const rawEasing = rawDirect.easing && typeof rawDirect.easing === 'object' ? rawDirect.easing : {}
-
-  const nextDirect: ToolWriteRequest['directRules'] = {
-    text: {
-      mode: isDirectRuleMode(rawText.mode) ? rawText.mode : defaultDirect.text.mode,
-      value: typeof rawText.value === 'string' ? rawText.value : defaultDirect.text.value,
-      cycleList: typeof rawText.cycleList === 'string' ? rawText.cycleList : defaultDirect.text.cycleList
-    },
-    font: {
-      mode: isDirectRuleMode(rawFont.mode) ? rawFont.mode : defaultDirect.font.mode,
-      value: typeof rawFont.value === 'string' ? rawFont.value : defaultDirect.font.value,
-      cycleList: typeof rawFont.cycleList === 'string' ? rawFont.cycleList : defaultDirect.font.cycleList
-    },
-    stroke: {
-      mode: isDirectRuleMode(rawStroke.mode) ? rawStroke.mode : defaultDirect.stroke.mode,
-      value: typeof rawStroke.value === 'boolean' ? rawStroke.value : defaultDirect.stroke.value,
-      cycleList: typeof rawStroke.cycleList === 'string' ? rawStroke.cycleList : defaultDirect.stroke.cycleList
-    },
-    easing: {
-      mode: isDirectRuleMode(rawEasing.mode) ? rawEasing.mode : defaultDirect.easing.mode,
-      value: rawEasing.value === 'speeddown' || rawEasing.value === 'speedup' ? rawEasing.value : defaultDirect.easing.value,
-      cycleList: typeof rawEasing.cycleList === 'string' ? rawEasing.cycleList : defaultDirect.easing.cycleList
-    }
-  }
-
-  const parsedQty = Number(source.quantityInput)
-  const safeQuantity = Number.isFinite(parsedQty) && parsedQty >= 1
-    ? String(Math.min(MAX_CREATION_QUANTITY, Math.round(parsedQty)))
-    : '10'
-
-  return {
-    quantityInput: safeQuantity,
-    expressionEnabled: typeof source.expressionEnabled === 'boolean' ? source.expressionEnabled : false,
-    writeMode: source.writeMode === 'append' || source.writeMode === 'replace' ? source.writeMode : 'replace',
-    numericRules: nextNumeric,
-    colorRule: nextColor,
-    directRules: nextDirect
-  }
-}
-
-function sanitizePreset(preset: CreationToolPreset): CreationToolPreset {
-  return {
-    ...preset,
-    state: sanitizePanelState(preset.state)
-  }
-}
-
 const previewText = ref('')
 const debouncedPreviewText = ref('')
 let previewSummaryTimer: ReturnType<typeof setTimeout> | null = null
@@ -690,12 +583,21 @@ const expressionEnabled = ref(false)
 const writeMode = ref<WriteMode>('replace')
 const autoOperationMode = ref<'default' | 'auto'>('default')
 const rangeExpressionPresets = RANGE_EXPRESSION_PRESETS_VALUE
-const presets = ref<CreationToolPreset[]>(loadCreationToolPresets().map(sanitizePreset))
-const managedPresetId = ref<string | null>(null)
+const activePresetName = ref<string | null>(null)
 
 const numericRules = ref(createDefaultNumericRules(store.currentTime))
 const colorRule = ref(createDefaultColorRule())
 const directRules = ref(createDefaultDirectRules())
+
+const activePreset = computed(() => {
+  if (!activePresetName.value) return null
+  return store.creationToolPresets.find((item) => item.name === activePresetName.value) ?? null
+})
+
+const isActivePresetDirty = computed(() => {
+  if (!activePreset.value) return false
+  return !areCreationPanelStatesEqual(buildPanelState(), activePreset.value.state)
+})
 const builtInFontOptions: FontOption[] = [
   { value: 'SimHei', label: '黑体' },
   { value: 'Microsoft YaHei', label: '微软雅黑' },
@@ -823,6 +725,9 @@ watch(
   () => props.visible,
   (visible) => {
     if (visible) {
+      void store.loadCreationToolPresets().catch((error) => {
+        toolStatus.value = error instanceof Error ? error.message : '加载预设失败'
+      })
       if (!previewText.value.trim()) {
         void resetPreviewToTemplate()
       } else {
@@ -833,17 +738,6 @@ watch(
     }
   },
   { immediate: true }
-)
-
-watch(
-  presets,
-  (nextPresets) => {
-    try {
-      saveCreationToolPresets(nextPresets)
-    } catch (error) {
-      notice.alert('保存预设到本地存储失败（存储空间可能已满）', 'error', '保存预设失败', error)
-    }
-  }
 )
 
 onMounted(() => {
@@ -969,21 +863,29 @@ function toggleAutoOperationMode() {
 }
 
 async function handleClearPresets() {
-  if (presets.value.length === 0) {
+  if (store.creationToolPresets.length === 0) {
     toolStatus.value = '当前没有可清空的预设'
     return
   }
 
-  const confirmed = await notice.confirm('确定要清空创建工具预设吗？这将丢失所有未导出的预设')
+  const confirmText = isTauriRuntime()
+    ? '确定要清空所有规则预设吗？本地预设文件将被移入系统回收站'
+    : '确定要清空创建工具预设吗？这将丢失所有未导出的预设'
+  const confirmed = await notice.confirm(confirmText)
   if (!confirmed) {
     return
   }
 
-  presets.value = []
-  managedPresetId.value = null
-  localStorage.removeItem('m7-editor.creation-tool-presets')
-  toolStatus.value = '已清空高级创建工具预设'
-  notice.log('已清空高级创建工具预设', 'success')
+  try {
+    await store.clearCreationToolPresets()
+    activePresetName.value = null
+    toolStatus.value = '已清空高级创建工具预设'
+    notice.log('已清空高级创建工具预设', 'success')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '清空预设失败'
+    toolStatus.value = message
+    notice.alert(message, 'error', '清空预设失败', error)
+  }
 }
 
 function toggleWriteMode() {
@@ -1006,6 +908,10 @@ async function handleCreationToolsShortcut(event: KeyboardEvent) {
   }
 
   if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+    return
+  }
+
+  if (event.target instanceof HTMLElement && event.target.closest('.preset-json-overlay')) {
     return
   }
 
@@ -1501,7 +1407,7 @@ function buildPanelState(): CreationToolPanelState {
 }
 
 function applyPanelState(state: CreationToolPanelState) {
-  const sanitized = sanitizePanelState(state)
+  const sanitized = sanitizeCreationPanelState(state, store.currentTime)
   quantityInput.value = sanitized.quantityInput
   expressionEnabled.value = sanitized.expressionEnabled
   writeMode.value = sanitized.writeMode
@@ -1555,64 +1461,30 @@ async function handleToolReset() {
   }
 }
 
-function handleAddPreset() {
-  const preset = createPresetFromState(presets.value, buildPanelState())
-  presets.value = [...presets.value, preset]
-  managedPresetId.value = preset.id
-  toolStatus.value = `已添加预设：${preset.name}`
-}
-
-function handleApplyPreset(presetId: string) {
-  const preset = presets.value.find((item) => item.id === presetId)
-  if (!preset) {
-    return
-  }
-
+function handleApplyPreset(preset: CreationToolPresetRecord) {
   applyPanelState(preset.state)
+  activePresetName.value = preset.name
   toolStatus.value = `已应用预设：${preset.name}`
 }
 
-function handleSelectManagedPreset(presetId: string | null) {
-  managedPresetId.value = presetId
+function handleRevertPreset(preset: CreationToolPresetRecord) {
+  applyPanelState(preset.state)
+  activePresetName.value = preset.name
+  toolStatus.value = `已还原预设：${preset.name}`
 }
 
-function handleRenamePreset(payload: { presetId: string; name: string }) {
-  presets.value = updatePresetName(presets.value, payload.presetId, payload.name)
-  const preset = presets.value.find((item) => item.id === payload.presetId)
-  if (preset) {
-    managedPresetId.value = preset.id
-    toolStatus.value = `已重命名预设：${preset.name}`
-  }
+function handleActivePresetChange(name: string | null) {
+  activePresetName.value = name
 }
 
-function handleDeletePreset(presetId: string) {
-  const presetIndex = presets.value.findIndex((item) => item.id === presetId)
-  if (presetIndex === -1) {
-    return
-  }
-
-  const deletedName = presets.value[presetIndex].name
-  const nextPresets = presets.value.filter((item) => item.id !== presetId)
-  presets.value = nextPresets
-
-  if (managedPresetId.value === presetId) {
-    managedPresetId.value = nextPresets[presetIndex]?.id || nextPresets[presetIndex - 1]?.id || null
-  }
-
-  toolStatus.value = `已删除预设：${deletedName}`
+function handleSyncActiveState(state: CreationToolPanelState) {
+  applyPanelState(state)
 }
 
-function handleImportPresets(importedPresets: CreationToolPreset[]) {
-  const sanitizedImported = importedPresets.map(sanitizePreset)
-  const previousLength = presets.value.length
-  presets.value = mergeImportedPresets(presets.value, sanitizedImported)
-
-  const firstImportedPreset = presets.value[previousLength]
-  if (firstImportedPreset) {
-    managedPresetId.value = firstImportedPreset.id
+function handlePresetStatus(message: string) {
+  if (message) {
+    toolStatus.value = message
   }
-
-  toolStatus.value = `已导入 ${sanitizedImported.length} 个预设，可在预设列表中点击应用`
 }
 
 function setExpressionPreset(path: NumericFieldPath, presetKey: string) {
@@ -1926,6 +1798,10 @@ defineExpose({
   font-size: 11px;
   color: #7c7c7c;
   font-family: 'Consolas', 'Courier New', monospace;
+  -webkit-user-select: all;
+  -moz-user-select: all;
+  -ms-user-select: all;
+  user-select: all;
 }
 
 .field-card-body {

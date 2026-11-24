@@ -1,5 +1,7 @@
+import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { compressIdList, expandIdList } from '../utils/idRange.ts'
 
 type JsonRpcResponse = {
   id?: number
@@ -69,6 +71,16 @@ function request(method: string, params?: Record<string, unknown>): Promise<Json
 }
 
 async function main() {
+  assert.equal(compressIdList([]), '')
+  assert.equal(compressIdList(['3', '1', '2', '7', '19']), '1~3,7,19')
+  assert.equal(compressIdList(['1', '2']), '1~2')
+  assert.equal(compressIdList(['007', '1', '2', "a'b", 'foo']), "1~2,'007','a\\'b','foo'")
+  assert.deepEqual(expandIdList('1~3,7,19'), ['1', '2', '3', '7', '19'])
+  assert.deepEqual(expandIdList("1~2,'007','a\\'b','foo'"), ['1', '2', '007', "a'b", 'foo'])
+  assert.throws(() => expandIdList(''))
+  assert.throws(() => expandIdList('1~20000', 10_000))
+  console.log('ID 范围压缩与展开单元测试通过。')
+
   try {
     const initialized = await request('initialize', {
       protocolVersion: '2025-06-18',
@@ -153,9 +165,26 @@ async function main() {
       quantity: 1,
       rules: { 'content.color': { mode: 'range', start: 'not-color', target: '#000000' } }
     })
-    console.log('生成规则参数检查正常，未知字段、无效颜色与越界 alpha 已在调用编辑器前拒绝。')
+    await assertRejected('inputPath 与 rules 混用', 'create_generated_danmakus', {
+      inputPath: 'rules.json',
+      quantity: 1,
+      rules: { startTime: { mode: 'range', start: 0, end: 100 } }
+    })
+    await assertRejected('缺少 rules 且无 inputPath', 'create_generated_danmakus', {
+      quantity: 1
+    })
+    await assertRejected('quantity 超过 10000 上限', 'create_generated_danmakus', {
+      quantity: 10_001,
+      rules: { startTime: { mode: 'range', start: 0, end: 100 } }
+    })
+    console.log('生成规则参数检查正常，未知字段、无效颜色、越界数量与文件互斥已在调用编辑器前拒绝。')
 
     await assertRejected('空 steps 数组', 'apply_field_updates', { steps: [] })
+    await assertRejected('steps 与 inputPath 混用', 'apply_field_updates', {
+      steps: [[{ field: 'startTime', method: '100' }]],
+      inputPath: 'steps.json'
+    })
+    await assertRejected('缺少 steps 与 inputPath', 'apply_field_updates', {})
     await assertRejected('无效 upset 混合参数', 'apply_field_updates', {
       steps: [[{ field: 'transform.start.x', method: { op: 'upset', expr: '$startX' } }]]
     })
@@ -169,9 +198,17 @@ async function main() {
       field: '@danmaku.delete',
       method: '1'
     })
-    console.log('字段更新参数检查正常，非法字段、同一步重复字段与无效 upset 已在调用编辑器前拒绝。')
+    console.log('字段更新参数检查正常，非法字段、同一步重复字段、文件互斥与无效 upset 已在调用编辑器前拒绝。')
 
     await assertRejected('缺少测量内容', 'measure_text', {})
+    await assertRejected('text 与 inputPath 混用', 'measure_text', {
+      text: 'hello',
+      inputPath: 'items.json'
+    })
+    await assertRejected('inputPath 混用顶层 size 参数', 'measure_text', {
+      inputPath: 'items.json',
+      size: 40
+    })
     await assertRejected('items 混用顶层 size 参数', 'measure_text', {
       items: [{ text: 'hello' }],
       size: 40
@@ -180,12 +217,18 @@ async function main() {
     console.log('文字测量参数检查正常，缺少内容、混用参数与过小字号已在调用编辑器前拒绝。')
 
     await assertRejected('空白 ids 元素', 'list_danmakus', { ids: ['  '] })
+    await assertRejected('ids 与 idsPath 混用', 'list_danmakus', { ids: '1~3', idsPath: 'ids.json' })
+    await assertRejected('idsOnly 与 outputPath 混用', 'list_danmakus', { idsOnly: true, outputPath: 'out.json' })
     await assertRejected('超限 limit', 'list_danmakus', { limit: 501 })
+    await assertRejected('ids 与 inputPath 混用', 'delete_danmakus', { ids: '1~3', inputPath: 'ids.json' })
     await assertRejected('空白筛选命令', 'select_by_command', { command: '   ' })
     await assertRejected('空编辑器设置对象', 'update_editor_settings', {})
     await assertRejected('非法运动角度', 'set_movement_length', { length: 100, angle: 'abc' })
     await assertRejected('非法描边颜色', 'apply_stroke', { width: 2, color: 'red' })
     await assertRejected('空白 snapshotId', 'get_history_snapshot', { snapshotId: '   ' })
+    await assertRejected('无 outputPath 时 snapshot limit 超限', 'get_history_snapshot', { snapshotId: 'snap_1', limit: 501 })
+    await assertRejected('无 outputPath 时日志 limit 超限', 'get_editor_logs', { limit: 501 })
+    await assertRejected('空 get_frame outputPath', 'get_frame', { timeMs: 0, outputPath: '   ' })
 
     const copyTool = tools.find((tool: { name?: string }) => tool.name === 'copy_coordinates') as
       | { inputSchema?: { required?: string[] } }
@@ -232,8 +275,13 @@ async function main() {
       }
       throw new Error(String(message))
     }
+    const stateText = state.result?.content?.find((item: { type?: string }) => item.type === 'text')?.text || ''
+    assert.equal(state.result?.structuredContent, undefined, 'MCP 返回不应重复附带 structuredContent')
+    assert.ok(!stateText.includes('\n'), 'MCP 返回应使用紧凑单行 JSON')
+    const parsedState = JSON.parse(stateText) as { selectedIds?: unknown }
+    assert.equal(typeof parsedState.selectedIds, 'string', 'selectedIds 应返回压缩范围字符串')
     console.log('MCP 工具调用成功，当前编辑器状态：')
-    console.log(state.result?.content?.find((item: { type?: string }) => item.type === 'text')?.text || '(无文本结果)')
+    console.log(stateText || '(无文本结果)')
   } finally {
     child.stdin.end()
     if (child.exitCode === null && child.signalCode === null) {

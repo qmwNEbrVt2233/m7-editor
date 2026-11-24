@@ -5,6 +5,7 @@ mod dialogs;
 mod fs_utils;
 mod mcp_bridge;
 mod media;
+mod presets;
 mod projects;
 mod templates;
 mod video_export;
@@ -78,6 +79,11 @@ pub fn run() {
             templates::update_danmaku_template,
             templates::rename_danmaku_template,
             templates::delete_danmaku_template,
+            presets::list_creation_presets,
+            presets::create_creation_preset,
+            presets::update_creation_preset,
+            presets::rename_creation_preset,
+            presets::delete_creation_preset,
             projects::commands::check_folder_project_path,
             projects::commands::create_folder_project,
             projects::commands::load_folder_project,
@@ -93,7 +99,9 @@ pub fn run() {
             projects::commands::read_xml_file,
             config::append_log,
             mcp_bridge::complete_mcp_request,
-            mcp_bridge::set_mcp_frontend_ready
+            mcp_bridge::set_mcp_frontend_ready,
+            mcp_bridge::read_mcp_json_file,
+            mcp_bridge::write_mcp_json_file
         ]);
 
     #[cfg(desktop)]

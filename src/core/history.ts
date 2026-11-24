@@ -283,7 +283,7 @@ export class HistoryManager {
     }))
   }
 
-  getSnapshotDanmakus(snapshotId: string, offset = 0, limit = 100) {
+  getSnapshotDanmakus(snapshotId: string, offset = 0, limit: number | undefined = 100, maxLimit = 500) {
     const targetIndex = this.state.snapshots.findIndex((snapshot) => snapshot.id === snapshotId)
     if (targetIndex < 0) throw new Error(`找不到历史快照：${snapshotId}`)
 
@@ -306,7 +306,15 @@ export class HistoryManager {
     const snapshot = this.state.snapshots[targetIndex]
     const allItems = Array.from(danmakus.values())
     const safeOffset = Number.isFinite(offset) ? Math.max(0, Math.trunc(offset)) : 0
-    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.trunc(limit))) : 100
+    const sliceItems = limit === undefined && maxLimit === Infinity
+      ? allItems.slice(safeOffset)
+      : (() => {
+          const requested = typeof limit === 'number' && Number.isFinite(limit) ? Math.trunc(limit) : 100
+          const cappedLimit = maxLimit === Infinity
+            ? Math.max(1, requested)
+            : Math.max(1, Math.min(maxLimit, requested))
+          return allItems.slice(safeOffset, safeOffset + cappedLimit)
+        })()
     return {
       snapshotId: snapshot.id,
       index: targetIndex,
@@ -314,7 +322,7 @@ export class HistoryManager {
       description: snapshot.description || '',
       total: allItems.length,
       offset: safeOffset,
-      items: allItems.slice(safeOffset, safeOffset + safeLimit).map((item) => this.cloneDanmaku(item))
+      items: sliceItems.map((item) => this.cloneDanmaku(item))
     }
   }
 

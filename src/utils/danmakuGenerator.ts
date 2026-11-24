@@ -230,8 +230,8 @@ export function buildToolWriteRequestFromAgentRules(
   input: AgentCreationRequest,
   currentTime: number
 ): ToolWriteRequest {
-  if (!Number.isSafeInteger(input.quantity) || input.quantity < 1 || input.quantity > 1000) {
-    throw new Error('quantity 必须是 1 到 1000 之间的整数')
+  if (!Number.isSafeInteger(input.quantity) || input.quantity < 1 || input.quantity > MAX_GENERATE_QUANTITY) {
+    throw new Error(`quantity 必须是 1 到 ${MAX_GENERATE_QUANTITY} 之间的整数`)
   }
 
   const entries = Object.entries(input.rules) as Array<[string, AgentCreationRule | undefined]>

@@ -96,6 +96,13 @@ export type DanmakuTemplateRecord = {
   danmakus: any[]
 }
 
+export type CreationToolPresetBackendRecord = {
+  name: string
+  createdAt: number
+  lastChangeAt: number
+  state: any
+}
+
 function getTauriInternals(): TauriInternals | undefined {
   if (typeof window === 'undefined') return undefined
   return (window as TauriWindow).__TAURI_INTERNALS__
@@ -364,6 +371,44 @@ export async function renameDanmakuTemplate(name: string, newName: string): Prom
 
 export async function deleteDanmakuTemplate(name: string): Promise<void> {
   await invokeTauri<void>('delete_danmaku_template', { name })
+}
+
+export async function listCreationPresets(): Promise<CreationToolPresetBackendRecord[]> {
+  return invokeTauri<CreationToolPresetBackendRecord[]>('list_creation_presets')
+}
+
+export async function createCreationPreset(
+  name: string,
+  state: any,
+  createdAt?: number,
+  lastChangeAt?: number
+): Promise<CreationToolPresetBackendRecord> {
+  return invokeTauri<CreationToolPresetBackendRecord>('create_creation_preset', {
+    name,
+    state,
+    createdAt: createdAt ?? null,
+    lastChangeAt: lastChangeAt ?? null
+  })
+}
+
+export async function updateCreationPreset(name: string, state: any): Promise<CreationToolPresetBackendRecord> {
+  return invokeTauri<CreationToolPresetBackendRecord>('update_creation_preset', { name, state })
+}
+
+export async function renameCreationPreset(name: string, newName: string): Promise<string> {
+  return invokeTauri<string>('rename_creation_preset', { name, newName })
+}
+
+export async function deleteCreationPreset(name: string): Promise<void> {
+  await invokeTauri<void>('delete_creation_preset', { name })
+}
+
+export async function readMcpJsonFile(path: string): Promise<unknown> {
+  return invokeTauri<unknown>('read_mcp_json_file', { path })
+}
+
+export async function writeMcpJsonFile(path: string, value: unknown): Promise<number> {
+  return invokeTauri<number>('write_mcp_json_file', { path, value })
 }
 
 export async function checkFolderProjectPath(parentDir: string, name: string): Promise<ProjectPathCheck> {

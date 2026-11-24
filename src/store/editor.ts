@@ -48,8 +48,27 @@ import {
   updateDanmakuTemplate,
   renameDanmakuTemplate,
   deleteDanmakuTemplate,
-  type DanmakuTemplateRecord
+  type DanmakuTemplateRecord,
+  listCreationPresets,
+  createCreationPreset,
+  updateCreationPreset,
+  renameCreationPreset,
+  deleteCreationPreset,
+  readMcpJsonFile,
+  writeMcpJsonFile,
+  type CreationToolPresetBackendRecord
 } from '@/utils/tauriBackend'
+import {
+  backupAndClearLegacyLocalPresets,
+  clearLocalCreationToolPresets,
+  deduplicatePresetName,
+  normalizeCreationPresetName,
+  readRawLegacyLocalPresets,
+  sanitizeCreationPanelState,
+  writeLocalCreationToolPresets,
+  type CreationToolPanelState,
+  type CreationToolPresetRecord
+} from '@/utils/toolPresets'
 
 export type VideoExportStatus = 'running' | 'completed' | 'failed' | 'canceled'
 
@@ -129,6 +148,7 @@ let playbackRafId: number | null = null
 let playbackAnchorTimeMs = 0
 let playbackAnchorPerfMs = 0
 let playheadMoveTimer: ReturnType<typeof setTimeout> | null = null
+let creationPresetsLoadPromise: Promise<void> | null = null
 const deferredRevokeBlobUrls = new Set<string>()
 
 function revokeBlobUrlSafely(url: string) {
@@ -419,7 +439,6 @@ export async function saveBlobWithFallback(
   filename: string,
   acceptType: SavePickerAcceptType
 ) {
-  const notice = useNoticeStore()
   const savePickerWindow = window as SavePickerWindow
 
   if (typeof savePickerWindow.showSaveFilePicker !== 'function') {
@@ -440,7 +459,7 @@ export async function saveBlobWithFallback(
       return
     }
 
-    notice.log(`'[保存] File System Access API 保存失败，回退到 Blob 下载'`, 'warn', error)
+    useNoticeStore().log(`'[保存] File System Access API 保存失败，回退到 Blob 下载'`, 'warn', error)
     triggerBlobDownload(blob, filename)
   }
 }
@@ -722,13 +741,6 @@ export const useEditorStore = defineStore('editor', {
     )
     const initialTimelineScale = Math.max(0.01, Math.min(3, sanitizePositiveFinite(saved?.timeline?.scale, 0.1, 0.01)))
 
-    historyManager.clear()
-    historyManager.recordSnapshot(
-      initialDanmakus,
-      `加载工程(${initialDanmakus.length}条弹幕)`,
-      true
-    )
-
     return {
       version: '1.12.0',
       InitializationPhase: isTauriRuntime(),
@@ -804,6 +816,8 @@ export const useEditorStore = defineStore('editor', {
         error: ''
       },
       danmakuTemplatesLoaded: false,
+      creationToolPresets: [] as CreationToolPresetRecord[],
+      creationToolPresetsLoaded: false,
       showSpectrogram: Boolean(saved?.timeline?.showSpectrogram),
       spectrogramColorScheme: typeof saved?.timeline?.spectrogramColorScheme === 'string'
         ? saved.timeline.spectrogramColorScheme
@@ -1161,7 +1175,30 @@ export const useEditorStore = defineStore('editor', {
       }
     },
 
-    getMcpDanmakus(options: { ids?: string[]; selectedOnly?: boolean; offset?: number; limit?: number } = {}) {
+    getMcpDanmakus(options: { ids?: string[]; selectedOnly?: boolean; offset?: number; limit?: number; idsOnly?: boolean } = {}) {
+      const ids = options.ids ? new Set(options.ids) : null
+      const selected = new Set(this.selectedIds)
+      const filtered = this.danmakus.filter((item: DanmakuItem) => {
+        if (ids) return ids.has(item.id)
+        if (options.selectedOnly !== false) return selected.has(item.id)
+        return true
+      })
+      if (options.idsOnly) {
+        return {
+          total: filtered.length,
+          ids: filtered.map((item: DanmakuItem) => item.id)
+        }
+      }
+      const offset = Number.isFinite(options.offset) ? Math.max(0, Math.trunc(options.offset as number)) : 0
+      const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(500, Math.trunc(options.limit as number))) : 100
+      return {
+        total: filtered.length,
+        offset,
+        items: filtered.slice(offset, offset + limit).map(cloneDanmakuShallowDeep)
+      }
+    },
+
+    async exportMcpDanmakusToFile(options: { outputPath: string; ids?: string[]; selectedOnly?: boolean; offset?: number; limit?: number }) {
       const ids = options.ids ? new Set(options.ids) : null
       const selected = new Set(this.selectedIds)
       const filtered = this.danmakus.filter((item: DanmakuItem) => {
@@ -1170,12 +1207,78 @@ export const useEditorStore = defineStore('editor', {
         return true
       })
       const offset = Number.isFinite(options.offset) ? Math.max(0, Math.trunc(options.offset as number)) : 0
-      const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(500, Math.trunc(options.limit as number))) : 100
-      return {
+      const slice = options.limit === undefined
+        ? filtered.slice(offset)
+        : filtered.slice(offset, offset + Math.max(1, Math.trunc(options.limit)))
+      const items = slice.map(cloneDanmakuShallowDeep)
+      await writeMcpJsonFile(options.outputPath, {
         total: filtered.length,
         offset,
-        items: filtered.slice(offset, offset + limit).map(cloneDanmakuShallowDeep)
+        count: items.length,
+        screen: { width: this.screenWidth, height: this.screenHeight },
+        danmakus: items
+      })
+      return {
+        ok: true,
+        outputPath: options.outputPath,
+        total: filtered.length,
+        offset,
+        exportedCount: items.length,
+        ids: items.map((item: DanmakuItem) => item.id)
       }
+    },
+
+    async exportMcpHistorySnapshotToFile(
+      snapshotId: string,
+      options: { outputPath: string; offset?: number; limit?: number }
+    ) {
+      const result = historyManager.getSnapshotDanmakus(snapshotId, options.offset ?? 0, options.limit, Infinity)
+      await writeMcpJsonFile(options.outputPath, {
+        snapshotId: result.snapshotId,
+        index: result.index,
+        createdAt: result.createdAt,
+        description: result.description,
+        total: result.total,
+        offset: result.offset,
+        count: result.items.length,
+        danmakus: result.items
+      })
+      return {
+        ok: true,
+        outputPath: options.outputPath,
+        snapshotId: result.snapshotId,
+        index: result.index,
+        createdAt: result.createdAt,
+        description: result.description,
+        total: result.total,
+        offset: result.offset,
+        exportedCount: result.items.length
+      }
+    },
+
+    async createDanmakusFromJsonFileForMcp(jsonPath: string, relativeToCurrentTime: boolean) {
+      const parsed = await readMcpJsonFile(jsonPath)
+      let drafts: unknown[]
+      if (Array.isArray(parsed)) {
+        drafts = parsed
+      } else if (parsed && typeof parsed === 'object') {
+        const record = parsed as Record<string, unknown>
+        if (Array.isArray(record.danmakus)) drafts = record.danmakus
+        else if (Array.isArray(record.items)) drafts = record.items
+        else drafts = [record]
+      } else {
+        throw new Error('JSON 文件必须包含弹幕对象、弹幕数组，或带 danmakus/items 数组的工程对象')
+      }
+      if (drafts.length === 0) {
+        throw new Error('JSON 文件中没有有效的弹幕对象')
+      }
+      if (drafts.length > 10_000) {
+        throw new Error('JSON 文件包含的弹幕数量超过单次上限（10000 条）')
+      }
+      return this.applyFieldUpdate('@danmaku.create', {
+        danmakus: drafts,
+        relativeToCurrentTime
+      })
     },
 
     getMcpLogs(options: { type?: string; offset?: number; limit?: number } = {}) {
@@ -1770,8 +1873,7 @@ export const useEditorStore = defineStore('editor', {
           : await saveFolderProject(this.activeFolderProjectPath, this.exportProject(), this.pendingFolderMediaPath)
         await this.applyFolderProjectPayload(payload, true)
         await this.refreshFileSystemState().catch((err) => console.warn('[MCP] 刷新工程列表失败:', err))
-        const notice = useNoticeStore()
-        notice.log(backup ? '[MCP] 文件夹工程已保存并备份' : '[MCP] 文件夹工程已保存', 'success')
+        useNoticeStore().log(backup ? '[MCP] 文件夹工程已保存并备份' : '[MCP] 文件夹工程已保存', 'success')
         return {
           ok: true,
           projectMode: this.projectMode,
@@ -1811,11 +1913,10 @@ export const useEditorStore = defineStore('editor', {
       if (options.closeManager !== false) {
         this.showProjectManager = false
       }
-      const notice = useNoticeStore()
-      notice.log(options.logMessage, 'success')
+      useNoticeStore().log(options.logMessage, 'success')
       if (payload.warnings?.length) {
         for (const warning of payload.warnings) {
-          notice.alert(warning, 'warn', '媒体文件警告')
+          useNoticeStore().alert(warning, 'warn', '媒体文件警告')
         }
       }
       return {
@@ -2234,9 +2335,8 @@ export const useEditorStore = defineStore('editor', {
     },
 
     async loadFromLocal() {
-      const notice = useNoticeStore()
       if (this.projectMode === 'folder') {
-        notice.log('[缓存] 文件夹工程不会从本地缓存恢复', 'warn')
+        useNoticeStore().log('[缓存] 文件夹工程不会从本地缓存恢复', 'warn')
         return
       }
 
@@ -2296,14 +2396,6 @@ export const useEditorStore = defineStore('editor', {
           'text/xml': ['.xml']
         }
       })
-    },
-
-    async saveBlob(
-      blob: Blob,
-      filename: string,
-      acceptType: SavePickerAcceptType
-    ) {
-      await saveBlobWithFallback(blob, filename, acceptType)
     },
 
     loadFromFile(file: File) {
@@ -3177,6 +3269,269 @@ export const useEditorStore = defineStore('editor', {
     setDanmakuTemplateReplacement(enabled: boolean): void {
       this.replaceDefaultDanmakuWithTemplate = enabled
       this.persistGlobalSettings()
+    },
+
+    async loadCreationToolPresets(): Promise<void> {
+      if (this.creationToolPresetsLoaded) return
+      if (creationPresetsLoadPromise) {
+        return creationPresetsLoadPromise
+      }
+      creationPresetsLoadPromise = (async () => {
+        try {
+          if (isTauriRuntime()) {
+            await this.migrateLegacyLocalCreationPresetsIfNeeded()
+          }
+          await this.refreshCreationToolPresets()
+        } catch (error) {
+          this.creationToolPresetsLoaded = false
+          throw error
+        } finally {
+          creationPresetsLoadPromise = null
+        }
+      })()
+      return creationPresetsLoadPromise
+    },
+
+    async migrateLegacyLocalCreationPresetsIfNeeded(): Promise<void> {
+      const legacy = readRawLegacyLocalPresets()
+      if (!legacy) return
+
+      const diskPresets = await listCreationPresets()
+      const existingNames = new Set(diskPresets.map((item) => item.name))
+      const failed: CreationToolPresetRecord[] = []
+      let migratedCount = 0
+
+      for (const preset of legacy.presets) {
+        const targetName = deduplicatePresetName(preset.name, existingNames)
+        const sanitizedState = sanitizeCreationPanelState(preset.state, this.currentTime)
+        try {
+          await createCreationPreset(targetName, sanitizedState, preset.createdAt, preset.lastChangeAt)
+          existingNames.add(targetName)
+          migratedCount++
+        } catch (error) {
+          console.warn(`[预设] 迁移预设 ${preset.name} 失败:`, error)
+          failed.push({
+            ...preset,
+            name: targetName,
+            state: sanitizedState
+          })
+        }
+      }
+
+      if (failed.length === 0) {
+        backupAndClearLegacyLocalPresets(legacy.raw)
+        if (migratedCount > 0) {
+          useNoticeStore().log(`[预设] 已将 ${migratedCount} 个旧版本地预设迁移至文件夹`, 'success')
+        }
+      } else {
+        try {
+          writeLocalCreationToolPresets(failed)
+        } catch (error) {
+          console.warn('[预设] 写回未迁移预设失败:', error)
+        }
+        useNoticeStore().alert(
+          `部分旧版预设迁移失败（已迁移 ${migratedCount} 个，保留 ${failed.length} 个未迁移项在本地缓存）`,
+          'warn',
+          '预设迁移警告'
+        )
+      }
+    },
+
+    async refreshCreationToolPresets(): Promise<void> {
+      if (isTauriRuntime()) {
+        const records = await listCreationPresets()
+        this.creationToolPresets = records
+          .map((item: CreationToolPresetBackendRecord) => ({
+            name: item.name,
+            createdAt: item.createdAt,
+            lastChangeAt: item.lastChangeAt,
+            state: sanitizeCreationPanelState(item.state, this.currentTime)
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name))
+      } else {
+        const local = readRawLegacyLocalPresets()
+        const normalized = (local?.presets ?? [])
+          .map((item) => ({
+            ...item,
+            state: sanitizeCreationPanelState(item.state, this.currentTime)
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name))
+        this.creationToolPresets = normalized
+        if (local?.hadLegacyFieldsOrDuplicates) {
+          try {
+            writeLocalCreationToolPresets(normalized)
+          } catch (error) {
+            console.warn('[预设] 规范化本地缓存预设失败:', error)
+          }
+        }
+      }
+      this.creationToolPresetsLoaded = true
+    },
+
+    async createCreationToolPreset(name: string, state: CreationToolPanelState): Promise<CreationToolPresetRecord> {
+      await this.loadCreationToolPresets()
+      const normalizedName = normalizeCreationPresetName(name)
+      if (!normalizedName) throw new Error('预设名称不能为空或仅含非法字符')
+      if (this.creationToolPresets.some((item: CreationToolPresetRecord) => item.name.toLocaleLowerCase() === normalizedName.toLocaleLowerCase())) {
+        throw new Error('同名预设已存在')
+      }
+
+      const sanitizedState = sanitizeCreationPanelState(state, this.currentTime)
+      let record: CreationToolPresetRecord
+      if (isTauriRuntime()) {
+        const created = await createCreationPreset(normalizedName, sanitizedState)
+        record = {
+          name: created.name,
+          createdAt: created.createdAt,
+          lastChangeAt: created.lastChangeAt,
+          state: sanitizeCreationPanelState(created.state, this.currentTime)
+        }
+      } else {
+        const now = Date.now()
+        record = {
+          name: normalizedName,
+          createdAt: now,
+          lastChangeAt: now,
+          state: sanitizedState
+        }
+        const nextList = [...this.creationToolPresets, record].sort((a, b) => a.name.localeCompare(b.name))
+        writeLocalCreationToolPresets(nextList)
+      }
+
+      this.creationToolPresets = [...this.creationToolPresets, record].sort((a, b) => a.name.localeCompare(b.name))
+      return record
+    },
+
+    async updateCreationToolPreset(name: string, state: CreationToolPanelState): Promise<CreationToolPresetRecord> {
+      const existing = this.creationToolPresets.find((item: CreationToolPresetRecord) => item.name === name)
+      if (!existing) throw new Error('预设不存在')
+
+      const sanitizedState = sanitizeCreationPanelState(state, this.currentTime)
+      let record: CreationToolPresetRecord
+      if (isTauriRuntime()) {
+        const updated = await updateCreationPreset(name, sanitizedState)
+        record = {
+          name: updated.name,
+          createdAt: updated.createdAt,
+          lastChangeAt: updated.lastChangeAt,
+          state: sanitizeCreationPanelState(updated.state, this.currentTime)
+        }
+      } else {
+        record = {
+          ...existing,
+          lastChangeAt: Date.now(),
+          state: sanitizedState
+        }
+        const nextList = this.creationToolPresets.map((item: CreationToolPresetRecord) => item.name === name ? record : item)
+        writeLocalCreationToolPresets(nextList)
+      }
+
+      this.creationToolPresets = this.creationToolPresets.map((item: CreationToolPresetRecord) => item.name === name ? record : item)
+      return record
+    },
+
+    async renameCreationToolPreset(name: string, newName: string): Promise<string> {
+      const normalizedName = normalizeCreationPresetName(newName)
+      if (!normalizedName) throw new Error('预设名称不能为空或仅含非法字符')
+      if (normalizedName === name) return name
+      if (this.creationToolPresets.some((item: CreationToolPresetRecord) => item.name !== name && item.name.toLocaleLowerCase() === normalizedName.toLocaleLowerCase())) {
+        throw new Error('同名预设已存在')
+      }
+
+      let actualName = normalizedName
+      if (isTauriRuntime()) {
+        actualName = await renameCreationPreset(name, normalizedName)
+      } else {
+        const nextList = this.creationToolPresets
+          .map((item: CreationToolPresetRecord) => item.name === name ? { ...item, name: actualName } : item)
+          .sort((a, b) => a.name.localeCompare(b.name))
+        writeLocalCreationToolPresets(nextList)
+      }
+
+      this.creationToolPresets = this.creationToolPresets
+        .map((item: CreationToolPresetRecord) => item.name === name ? { ...item, name: actualName } : item)
+        .sort((a, b) => a.name.localeCompare(b.name))
+      return actualName
+    },
+
+    async saveCreationToolPreset(
+      oldName: string,
+      newName: string,
+      state: CreationToolPanelState
+    ): Promise<CreationToolPresetRecord> {
+      const normalizedName = normalizeCreationPresetName(newName)
+      if (!normalizedName) throw new Error('预设名称不能为空或仅含非法字符')
+      if (this.creationToolPresets.some((item: CreationToolPresetRecord) => item.name !== oldName && item.name.toLocaleLowerCase() === normalizedName.toLocaleLowerCase())) {
+        throw new Error('同名预设已存在')
+      }
+
+      const updated = await this.updateCreationToolPreset(oldName, state)
+      if (normalizedName !== oldName) {
+        const actualName = await this.renameCreationToolPreset(oldName, normalizedName)
+        return this.creationToolPresets.find((item: CreationToolPresetRecord) => item.name === actualName)
+          ?? { ...updated, name: actualName }
+      }
+      return updated
+    },
+
+    async deleteCreationToolPreset(name: string): Promise<void> {
+      const nextList = this.creationToolPresets.filter((item: CreationToolPresetRecord) => item.name !== name)
+      if (isTauriRuntime()) {
+        await deleteCreationPreset(name)
+      } else {
+        writeLocalCreationToolPresets(nextList)
+      }
+      this.creationToolPresets = nextList
+    },
+
+    async importCreationToolPresets(imported: CreationToolPresetRecord[]): Promise<CreationToolPresetRecord[]> {
+      await this.loadCreationToolPresets()
+      const existingNames = new Set(this.creationToolPresets.map((item: CreationToolPresetRecord) => item.name))
+      const createdRecords: CreationToolPresetRecord[] = []
+
+      for (const item of imported) {
+        const targetName = deduplicatePresetName(item.name, existingNames)
+        const sanitizedState = sanitizeCreationPanelState(item.state, this.currentTime)
+        let record: CreationToolPresetRecord
+        if (isTauriRuntime()) {
+          const created = await createCreationPreset(targetName, sanitizedState, item.createdAt, item.lastChangeAt)
+          record = {
+            name: created.name,
+            createdAt: created.createdAt,
+            lastChangeAt: created.lastChangeAt,
+            state: sanitizeCreationPanelState(created.state, this.currentTime)
+          }
+        } else {
+          record = {
+            name: targetName,
+            createdAt: item.createdAt,
+            lastChangeAt: item.lastChangeAt,
+            state: sanitizedState
+          }
+        }
+        existingNames.add(record.name)
+        createdRecords.push(record)
+      }
+
+      const nextList = [...this.creationToolPresets, ...createdRecords].sort((a, b) => a.name.localeCompare(b.name))
+      if (!isTauriRuntime()) {
+        writeLocalCreationToolPresets(nextList)
+      }
+      this.creationToolPresets = nextList
+      return createdRecords
+    },
+
+    async clearCreationToolPresets(): Promise<void> {
+      if (isTauriRuntime()) {
+        const targets = [...this.creationToolPresets]
+        for (const preset of targets) {
+          await deleteCreationPreset(preset.name)
+        }
+        await this.refreshCreationToolPresets()
+      } else {
+        clearLocalCreationToolPresets()
+        this.creationToolPresets = []
+      }
     },
 
     insertDanmakus(drafts: DanmakuItem[], historyLabel = '插入弹幕', _immediate = false): DanmakuItem[] {

@@ -421,7 +421,97 @@ function unescapeCriterionLiteral(raw: string): string {
   })
 }
 
-function parseSelectionCommand(command: string): (item: DanmakuItem, selecting: Set<string>) => boolean {
+type SelectionTest = (value: unknown, item: DanmakuItem) => boolean
+
+function splitRangeOutsideQuotes(input: string): string[] {
+  const parts: string[] = []
+  let current = ''
+  let quote: '"' | "'" | null = null
+  let escaping = false
+  for (const char of input) {
+    if (escaping) {
+      current += char
+      escaping = false
+      continue
+    }
+    if (char === '\\' && quote) {
+      current += char
+      escaping = true
+      continue
+    }
+    if ((char === '"' || char === "'") && (!quote || quote === char)) {
+      quote = quote ? null : char
+      current += char
+      continue
+    }
+    if (char === '~' && !quote) {
+      parts.push(current.trim())
+      current = ''
+      continue
+    }
+    current += char
+  }
+  if (quote || escaping) throw new Error('筛选命令中存在未闭合的引号')
+  parts.push(current.trim())
+  return parts
+}
+
+function parseCanonicalNumericId(value: unknown): number | null {
+  if (typeof value !== 'string' || !/^(?:0|[1-9]\d*)$/.test(value)) return null
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) ? parsed : null
+}
+
+function buildNumericRangeOrExactTest(
+  criterion: string,
+  fieldLabel: string,
+  extractNumber: (value: unknown) => number | null
+): SelectionTest {
+  const parts = splitRangeOutsideQuotes(criterion)
+  if (parts.length === 1) {
+    const evalTarget = compileNumericExpression(parts[0], `筛选字段 ${fieldLabel} 目标值 `)
+    return (value: unknown, item: DanmakuItem) => {
+      const num = extractNumber(value)
+      if (num === null) return false
+      return num === evalTarget(createNumericVariableContext(item))
+    }
+  }
+  if (parts.length === 2) {
+    const [left, right] = parts
+    if (!left && !right) {
+      throw new Error(`筛选字段 ${fieldLabel} 范围起终点不能同时为空`)
+    }
+    if (left && right) {
+      const evalFrom = compileNumericExpression(left, `筛选字段 ${fieldLabel} 范围起点 `)
+      const evalTo = compileNumericExpression(right, `筛选字段 ${fieldLabel} 范围终点 `)
+      return (value: unknown, item: DanmakuItem) => {
+        const num = extractNumber(value)
+        if (num === null) return false
+        const variables = createNumericVariableContext(item)
+        const from = evalFrom(variables)
+        const to = evalTo(variables)
+        return num >= Math.min(from, to) && num <= Math.max(from, to)
+      }
+    }
+    if (left) {
+      const evalFrom = compileNumericExpression(left, `筛选字段 ${fieldLabel} 范围起点 `)
+      return (value: unknown, item: DanmakuItem) => {
+        const num = extractNumber(value)
+        if (num === null) return false
+        return num >= evalFrom(createNumericVariableContext(item))
+      }
+    }
+    const evalTo = compileNumericExpression(right, `筛选字段 ${fieldLabel} 范围终点 `)
+    return (value: unknown, item: DanmakuItem) => {
+      const num = extractNumber(value)
+      if (num === null) return false
+      return num <= evalTo(createNumericVariableContext(item))
+    }
+  }
+  throw new Error(`筛选字段 ${fieldLabel} 范围表达式格式无效`)
+}
+
+export function parseSelectionCommand(command: string): (item: DanmakuItem, selecting: Set<string>) => boolean {
   const body = command.trim().replace(/^\/s\b/i, '').trim()
   if (!body) throw new Error('请输入至少一组筛选规则')
   const rawGroups = splitOutsideQuotes(body, ';')
@@ -447,6 +537,8 @@ function parseSelectionCommand(command: string): (item: DanmakuItem, selecting: 
 
   const criteria = groups.map((group) => group.map((rule) => {
     if (rule === 'selecting') return { kind: 'selecting' as const }
+    if (rule === 'all') return { kind: 'all' as const }
+    if (rule === 'none') return { kind: 'none' as const }
     const match = rule.match(/^([A-Za-z_][A-Za-z0-9_.]*)\s*:\s*"([\s\S]*)"$/)
     if (!match) throw new Error('筛选规则格式无效')
     const path = aliases[match[1]]
@@ -454,7 +546,6 @@ function parseSelectionCommand(command: string): (item: DanmakuItem, selecting: 
     const rawCriteria = splitCriteriaList(match[2])
     if (rawCriteria.length === 0) throw new Error(`筛选字段 ${match[1]} 的条件不能为空`)
     const isNumericField = numericPathPattern.test(path)
-    type SelectionTest = (value: unknown, item: DanmakuItem) => boolean
     const tests: SelectionTest[] = rawCriteria.map((criterion) => {
       if (criterion.length >= 2 && criterion.startsWith("'") && criterion.endsWith("'")) {
         const expected = unescapeCriterionLiteral(criterion.slice(1, -1))
@@ -469,17 +560,27 @@ function parseSelectionCommand(command: string): (item: DanmakuItem, selecting: 
         }
       }
       if (isNumericField) {
-        const parts = splitOutsideQuotes(criterion, '~')
-        if (parts.length !== 2) throw new Error(`筛选字段 ${match[1]} 的条件应为 '精确值'、<正则> 或 数值~数值`)
-        const evalFrom = compileNumericExpression(parts[0], `筛选字段 ${match[1]} 范围起点 `)
-        const evalTo = compileNumericExpression(parts[1], `筛选字段 ${match[1]} 范围终点 `)
-        return (value: unknown, item: DanmakuItem) => {
-          if (typeof value !== 'number' || !Number.isFinite(value)) return false
-          const variables = createNumericVariableContext(item)
-          const from = evalFrom(variables)
-          const to = evalTo(variables)
-          return value >= Math.min(from, to) && value <= Math.max(from, to)
-        }
+        return buildNumericRangeOrExactTest(
+          criterion,
+          match[1],
+          (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null)
+        )
+      }
+      if (path === 'id') {
+        return buildNumericRangeOrExactTest(criterion, match[1], parseCanonicalNumericId)
+      }
+      if (path === 'content.stroke' && /^(?:true|false)$/i.test(criterion)) {
+        const expected = criterion.toLowerCase() === 'true'
+        return (value: unknown) => value === expected
+      }
+      if (path === 'animation.easing' && (criterion === 'speedup' || criterion === 'speeddown')) {
+        return (value: unknown) => value === criterion
+      }
+      if (path === 'content.stroke') {
+        throw new Error(`筛选字段 ${match[1]} 的条件格式无效，请使用 true/false、'精确值' 或 <正则表达式>`)
+      }
+      if (path === 'animation.easing') {
+        throw new Error(`筛选字段 ${match[1]} 的条件格式无效，请使用 speedup/speeddown、'精确值' 或 <正则表达式>`)
       }
       throw new Error(`筛选字段 ${match[1]} 的条件格式无效，请使用 '精确值' 或 <正则表达式>`)
     })
@@ -487,6 +588,8 @@ function parseSelectionCommand(command: string): (item: DanmakuItem, selecting: 
   }))
   return (item, selecting) => criteria.some((group) => group.every((rule) => {
     if (rule.kind === 'selecting') return selecting.has(item.id)
+    if (rule.kind === 'all') return true
+    if (rule.kind === 'none') return false
     const value = getPath(item as unknown as Record<string, any>, rule.path)
     return rule.tests.some((test) => test(value, item))
   }))

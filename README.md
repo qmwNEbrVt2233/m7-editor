@@ -227,6 +227,7 @@ Codex 会负责启动 stdio 服务；不要先在终端单独运行 `npm run --s
 │   │
 │   └───utils
 │           danmakuGenerator.ts               #高级创建工具生成算法
+│           idRange.ts                        #id列表压缩与解析
 │           parser.ts                         #解析工具
 │           tauriBackend.ts                   #后端api
 │           time.ts                           #时间格式化工具
@@ -255,6 +256,7 @@ Codex 会负责启动 stdio 服务；不要先在终端单独运行 `npm run --s
         │   main.rs                           #桌面端程序启动入口
         │   mcp_bridge.rs                     #MCP本机HTTP桥接服务
         │   media.rs                          #媒体文件校验与协议授权
+        │   presets.rs                        #弹幕生成规则预设读写与管理
         │   templates.rs                      #弹幕模板读写与管理
         │
         ├───projects

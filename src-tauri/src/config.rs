@@ -108,10 +108,12 @@ pub(crate) fn documents_data_dirs(app: &AppHandle) -> Result<(PathBuf, PathBuf, 
     let logs_dir = data_dir.join("logs");
     let projects_dir = data_dir.join("projects");
     let templates_dir = data_dir.join("templates");
+    let presets_dir = data_dir.join("presets");
 
     fs::create_dir_all(&logs_dir).map_err(|error| format!("无法创建日志目录: {error}"))?;
     fs::create_dir_all(&projects_dir).map_err(|error| format!("无法创建默认工程目录: {error}"))?;
     fs::create_dir_all(&templates_dir).map_err(|error| format!("无法创建模板目录: {error}"))?;
+    fs::create_dir_all(&presets_dir).map_err(|error| format!("无法创建预设目录: {error}"))?;
 
     Ok((data_dir, logs_dir, projects_dir))
 }
