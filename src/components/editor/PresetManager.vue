@@ -159,10 +159,6 @@
       </div>
     </section>
 
-    <div v-if="statusMessage" class="preset-status" :class="statusTone">
-      {{ statusMessage }}
-    </div>
-
     <div
       v-if="jsonEditorTarget"
       class="preset-json-overlay"
@@ -277,8 +273,6 @@ const editingInputRef = ref<HTMLInputElement | HTMLInputElement[] | null>(null)
 const editingPresetName = ref<string | null>(null)
 const editingName = ref('')
 const searchQuery = ref('')
-const statusMessage = ref('')
-const statusTone = ref<'info' | 'success' | 'error'>('info')
 const refreshing = ref(false)
 const mutating = ref(false)
 
@@ -333,8 +327,6 @@ const jsonStateValidation = computed<
 })
 
 function setStatus(message: string, tone: 'info' | 'success' | 'error') {
-  statusMessage.value = message
-  statusTone.value = tone
   if (message) {
     notice.log(`[预设] ${message}`, tone)
     emit('status', message)
@@ -1002,25 +994,6 @@ onBeforeUnmount(() => {
 
 .rename-input:focus {
   outline: none;
-}
-
-.preset-status {
-  padding: 9px 12px;
-  border: 1px solid #333;
-  border-radius: 8px;
-  background: #1b1b1d;
-  font-size: 12px;
-  color: #9aa0a6;
-  flex-shrink: 0;
-  word-break: break-word;
-}
-
-.preset-status.success {
-  color: #9cdc87;
-}
-
-.preset-status.error {
-  color: #ff9b9b;
 }
 
 .hidden-input {

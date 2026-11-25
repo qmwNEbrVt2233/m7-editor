@@ -230,20 +230,38 @@ async function handleMcpCommand(payload: McpCommandPayload) {
       if (typeof params.jsonPath !== 'string' || !params.jsonPath.trim()) {
         throw new Error('jsonPath 不能为空')
       }
-      if (typeof params.relativeToCurrentTime !== 'boolean') {
-        throw new Error('relativeToCurrentTime 必须明确传入 true 或 false')
+      if (params.relativeToCurrentTime !== undefined) {
+        throw new Error('不再支持 relativeToCurrentTime，请改为传入具体的 alignToTimeMs（毫秒）或省略以保留绝对 startTime')
       }
-      const response = await store.createDanmakusFromJsonFileForMcp(params.jsonPath, params.relativeToCurrentTime)
+      if (
+        params.alignToTimeMs !== undefined &&
+        (typeof params.alignToTimeMs !== 'number' || !Number.isFinite(params.alignToTimeMs) || params.alignToTimeMs < 0)
+      ) {
+        throw new Error('alignToTimeMs 必须是非负有限数字')
+      }
+      const response = await store.createDanmakusFromJsonFileForMcp(
+        params.jsonPath,
+        params.alignToTimeMs as number | undefined
+      )
       result = response
       reportMcpEditResult('@danmaku.create', response)
     } else if (method === 'editor.createGeneratedDanmakus') {
       if (!editorReady.value) throw new Error('编辑器尚未加载工程，暂不能创建弹幕')
-      const input = params as AgentCreationRequest & { relativeToCurrentTime?: boolean }
-      const drafts = await generateDanmakuDraftsFromAgentRules(input, store.currentTime, store.allowNegativeValues)
+      const input = params as AgentCreationRequest & { alignToTimeMs?: number; relativeToCurrentTime?: unknown }
+      if (input.relativeToCurrentTime !== undefined) {
+        throw new Error('不再支持 relativeToCurrentTime，请改为传入具体的 alignToTimeMs（毫秒）或省略以保留绝对 startTime')
+      }
+      if (
+        input.alignToTimeMs !== undefined &&
+        (typeof input.alignToTimeMs !== 'number' || !Number.isFinite(input.alignToTimeMs) || input.alignToTimeMs < 0)
+      ) {
+        throw new Error('alignToTimeMs 必须是非负有限数字')
+      }
+      const drafts = await generateDanmakuDraftsFromAgentRules(input, input.alignToTimeMs ?? 0, store.allowNegativeValues)
       const response = await store.applyFieldUpdate('@danmaku.create', {
         danmakus: drafts,
-        relativeToCurrentTime: input.relativeToCurrentTime === true
-      })
+        ...(input.alignToTimeMs !== undefined ? { alignToTimeMs: input.alignToTimeMs } : {})
+      }, { fromMcp: true })
       result = response
       reportMcpEditResult('@danmaku.create', response)
     } else if (method === 'editor.captureFrame') {
@@ -297,7 +315,7 @@ async function handleMcpCommand(payload: McpCommandPayload) {
       if (!editorReady.value) throw new Error('编辑器尚未加载工程，暂不能编辑')
       if (typeof params.field !== 'string' || !params.field) throw new Error('字段或操作名称不能为空')
       const field = params.field
-      const response = await store.applyFieldUpdate(field, params.method as EditorApiMethod)
+      const response = await store.applyFieldUpdate(field, params.method as EditorApiMethod, { fromMcp: true })
       result = response
       reportMcpEditResult(field, response)
     } else {
@@ -329,13 +347,11 @@ function reportMcpEditResult(field: string, response: Awaited<ReturnType<typeof 
   response.warnings.forEach((warning) => notice.alert('MCP：' + warning, 'warn'))
   const summary = field === '@selection.filter'
     ? 'MCP 筛选完成：当前选中 ' + response.selectedIds.length + ' 条弹幕'
-    : field === '@editor.currentTime'
-      ? 'MCP 已设置当前播放时间'
-      : field === '@editor.settings'
-        ? 'MCP 已更新画布或层数设置'
-        : field === '@danmaku.create'
-          ? 'MCP 已创建 ' + response.createdIds.length + ' 条弹幕'
-          : 'MCP 编辑完成：修改 ' + response.changedIds.length + ' 条，新增 ' + response.createdIds.length + ' 条弹幕'
+    : field === '@editor.settings'
+      ? 'MCP 已更新画布或层数设置'
+      : field === '@danmaku.create'
+        ? 'MCP 已创建 ' + response.createdIds.length + ' 条弹幕'
+        : 'MCP 编辑完成：修改 ' + response.changedIds.length + ' 条，新增 ' + response.createdIds.length + ' 条弹幕'
   if (response.changedIds.length || response.createdIds.length || field === '@selection.filter' || field.startsWith('@history.') || field.startsWith('@editor.')) {
     notice.log(summary, 'success')
   }

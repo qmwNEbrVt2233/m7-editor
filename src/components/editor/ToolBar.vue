@@ -112,16 +112,6 @@
       </div>
     </div>
     <div v-if="activeAdvancedPanel === 'command'" class="advanced-panel command-panel">
-      <div class="command-log have-scrollbar">
-        <div
-          v-for="log in commandLogs"
-          :key="log.id"
-          class="command-log-item"
-        >
-          {{ log.text }}
-        </div>
-      </div>
-
       <textarea
         v-model="commandInput"
         class="advanced-text-input have-scrollbar"
@@ -298,7 +288,6 @@ import { normalizeColor, roundToInteger } from '@/utils/validation'
 type ScopeMode = 'S' | 'E' | 'B'
 type Axis = 'x' | 'y'
 type AdvancedPanel = 'stroke' | 'calculator' | 'command'
-type CommandLogItem = { id: number; text: string }
 
 const ANGLE_INPUT_REGEX = /^[+-]?\d+(?:\.\d+)?$/
 const store = useEditorStore()
@@ -315,10 +304,6 @@ const calculatorAngleInput = ref('')
 const calculatorLengthInput = ref('200')
 const lockAngleEnabled = ref(false)
 const commandInput = ref('')
-let nextCommandLogId = 1
-const commandLogs = ref<CommandLogItem[]>([
-  { id: nextCommandLogId++, text: '运算赋值命令与 /s 筛选命令已就绪' }
-])
 const pickButtonRef = ref<HTMLButtonElement | null>(null)
 const selectedDanmakus = computed(() => store.getSelectedDanmakus)
 const hasSelection = computed(() => selectedDanmakus.value.length > 0)
@@ -345,14 +330,6 @@ function isTextEditingTarget(target: EventTarget | null): boolean {
     target instanceof HTMLSelectElement ||
     target.isContentEditable
   )
-}
-
-function appendCommandLog(message: string) {
-  const timestamp = new Date().toLocaleTimeString('zh-CN', { hour12: false })
-  commandLogs.value = [
-    { id: nextCommandLogId++, text: `[${timestamp}] ${message}` },
-    ...commandLogs.value
-  ].slice(0, 30)
 }
 
 async function applyApi(field: string, method: string | number | boolean | Record<string, unknown>) {
@@ -423,7 +400,7 @@ async function handleApplyStroke() {
     width: Math.min(500, Math.max(1, Math.round(parsedWidth))),
     color: normalizedColor
   })
-  if (result.ok) appendCommandLog(`描边完成：新增 ${result.createdIds.length} 条弹幕`)
+  if (result.ok) notice.log(`描边完成：新增 ${result.createdIds.length} 条弹幕`, 'success')
 }
 
 function onCommandKeydown(event: KeyboardEvent) {
@@ -435,20 +412,26 @@ function onCommandKeydown(event: KeyboardEvent) {
 }
 
 async function handleCommandSubmit() {
-  const command = commandInput.value.trim()
+  const rawCommand = commandInput.value
+  const command = rawCommand.trim()
   if (!command) {
-    appendCommandLog('命令为空，未执行')
+    notice.log('命令为空，未执行', 'warn', rawCommand)
     return
   }
   const field = /^\/s\b/.test(command) ? '@selection.filter' : '@toolbar.command'
-  const result = await applyApi(field, { command })
+  const result = await store.applyFieldUpdate(field, { command })
   if (result.ok) {
-    appendCommandLog(field === '@selection.filter'
-      ? `筛选命令执行成功：选中 ${result.selectedIds.length} 条弹幕`
-      : `命令执行成功：修改 ${result.changedIds.length} 条弹幕`)
+    result.warnings.forEach((warning) => notice.alert(warning, 'warn'))
+    notice.log(
+      field === '@selection.filter'
+        ? `筛选命令执行成功：选中 ${result.selectedIds.length} 条弹幕`
+        : `命令执行成功：修改 ${result.changedIds.length} 条弹幕`,
+      'success',
+      rawCommand
+    )
     commandInput.value = ''
   } else {
-    appendCommandLog(result.message)
+    notice.log(result.message, 'warn', rawCommand)
   }
 }
 
@@ -725,8 +708,8 @@ onBeforeUnmount(() => {
   color: #e0e0e0;
   font-size: 13px;
   transition: border-color 0.2s;
-  height: 84px;
-  flex-shrink: 0;
+  flex: 1;
+  min-height: 84px;
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   resize: none;
   box-sizing: border-box;
@@ -792,22 +775,6 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   gap: 10px;
-}
-
-.command-log {
-  flex: 1;
-  min-height: 80px;
-  overflow-y: auto;
-  padding: 10px;
-  border: 1px solid #333;
-  border-radius: 3px;
-  background: #131313;
-  font-size: 12px;
-  color: #9ad29f;
-}
-
-.command-log-item + .command-log-item {
-  margin-top: 6px;
 }
 
 .toolbar {

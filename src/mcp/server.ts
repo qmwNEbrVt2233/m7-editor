@@ -634,7 +634,6 @@ function compactEditorState(value: unknown): unknown {
     ...(value.timelineRange ? { timelineRange: value.timelineRange } : {}),
     selectedCount: value.selectedCount,
     selectedIds: Array.isArray(value.selectedIds) ? compressIdList(value.selectedIds as string[]) : '',
-    currentTime: value.currentTime,
     screen: value.screen,
     maxLayers: value.maxLayers,
     canUndo: value.canUndo,
@@ -783,7 +782,7 @@ function createMcpServer() {
   registerTool(
     'get_editor_state',
     '读取编辑器状态',
-    '读取当前运行的 m7-editor 会话、工程、播放头、画布、媒体信息（media）、时间轴弹幕范围（timelineRange）、视频导出设置与状态（useWebglVideoExport / videoExport）和选择状态（selectedIds 为压缩范围字符串，如 "1~3,7,19"）。',
+    '读取当前运行的 m7-editor 会话、工程、画布、媒体信息（media）、时间轴弹幕范围（timelineRange）、视频导出设置与状态（useWebglVideoExport / videoExport）和选择状态（selectedIds 为压缩范围字符串，如 "1~3,7,19"）。',
     emptyInput,
     async () => compactEditorState(await callEditor('editor.getState')),
     true
@@ -1131,19 +1130,19 @@ function createMcpServer() {
   }).refine((rules) => Object.values(rules).some((rule) => rule !== undefined), 'rules 至少需要提供一个字段规则')
   const generatedRuleFileSchema = z.strictObject({
     quantity: z.number().int().min(1).max(10_000),
-    relativeToCurrentTime: z.boolean().optional(),
+    alignToTimeMs: z.number().finite().nonnegative().optional(),
     rules: generationRules
   })
 
   registerTool(
     'create_generated_danmakus',
     '按 creationTools 规则生成弹幕',
-    '用 creationTools 同一规则引擎批量生成并创建弹幕（单次最多 10000 条）。可直接传 quantity + rules，或通过 inputPath 从本机 JSON 文件读取 { quantity, rules, relativeToCurrentTime? }；未指定字段沿用界面默认值。默认保留绝对 startTime；relativeToCurrentTime=true 时使用播放头偏移和层级分配。新弹幕会自动选中。',
+    '用 creationTools 同一规则引擎批量生成并创建弹幕（单次最多 10000 条）。可直接传 quantity + rules，或通过 inputPath 从本机 JSON 文件读取 { quantity, rules, alignToTimeMs? }；未指定字段沿用默认值（未指定 startTime 规则时默认从 alignToTimeMs ?? 0 毫秒开始每条 +100 ms）。省略 alignToTimeMs 时保留规则生成的绝对 startTime；传入 alignToTimeMs（毫秒）时将整批最早的生成弹幕对齐到该时间点并自动分配层级。新弹幕会自动选中。',
     z.strictObject({
       quantity: z.number().int().min(1).max(10_000).optional(),
-      relativeToCurrentTime: z.boolean().optional(),
+      alignToTimeMs: z.number().finite().nonnegative().optional().describe('可选目标对齐时间（毫秒）；传入时将整批最早的生成弹幕对齐到该时间点并按插入规则分配层级；省略时保留规则生成的绝对 startTime'),
       rules: generationRules.optional(),
-      inputPath: z.string().trim().min(1, 'inputPath 不能为空').optional().describe('本机 JSON 文件路径（包含 { quantity, rules, relativeToCurrentTime? }）；与 quantity/rules 二选一')
+      inputPath: z.string().trim().min(1, 'inputPath 不能为空').optional().describe('本机 JSON 文件路径（包含 { quantity, rules, alignToTimeMs? }）；与 quantity/rules 二选一')
     }).superRefine((input, context) => {
       if (input.inputPath !== undefined) {
         if (input.quantity !== undefined || input.rules !== undefined) {
@@ -1154,20 +1153,21 @@ function createMcpServer() {
       }
     }),
     async (input) => {
-      let payload: { quantity: number; rules: z.output<typeof generationRules>; relativeToCurrentTime: boolean }
+      let payload: { quantity: number; rules: z.output<typeof generationRules>; alignToTimeMs?: number }
       if (input.inputPath !== undefined) {
         const { parsed } = await readJsonFile(input.inputPath, 'inputPath')
         const spec = generatedRuleFileSchema.parse(parsed)
+        const alignToTimeMs = input.alignToTimeMs ?? spec.alignToTimeMs
         payload = {
           quantity: spec.quantity,
           rules: spec.rules,
-          relativeToCurrentTime: input.relativeToCurrentTime ?? spec.relativeToCurrentTime ?? false
+          ...(alignToTimeMs !== undefined ? { alignToTimeMs } : {})
         }
       } else {
         payload = {
           quantity: input.quantity!,
           rules: input.rules!,
-          relativeToCurrentTime: input.relativeToCurrentTime ?? false
+          ...(input.alignToTimeMs !== undefined ? { alignToTimeMs: input.alignToTimeMs } : {})
         }
       }
       return compactEditorApiResult(await callEditor('editor.createGeneratedDanmakus', payload))
@@ -1177,11 +1177,11 @@ function createMcpServer() {
   registerTool(
     'create_danmakus',
     '创建弹幕',
-    '从本机 JSON 文件（推荐，支持最多 32 MiB / 10000 条且由桌面端直接读取，不占上下文与桥接载荷）或直接传入的弹幕对象/数组创建弹幕。relativeToCurrentTime=true 时按 insertDanmakus 规则对齐到当前播放头并分配层级；false 时保留绝对 startTime。输入中的 id 会被忽略。',
+    '从本机 JSON 文件（推荐，支持最多 32 MiB / 10000 条且由桌面端直接读取，不占上下文与桥接载荷）或直接传入的弹幕对象/数组创建弹幕。省略 alignToTimeMs 时保留输入弹幕的绝对 startTime；传入 alignToTimeMs（毫秒）时按 insertDanmakus 规则将整批最早的弹幕对齐到该时间点并自动分配层级。输入中的 id 会被忽略。',
     z.strictObject({
       danmaku: z.union([danmakuObjectInput, z.array(danmakuObjectInput).min(1).max(5000)]).optional().describe('一个弹幕对象或弹幕对象数组（大批量建议使用脚本写文件后改传 jsonPath）'),
       jsonPath: z.string().trim().min(1, 'jsonPath 不能为空').optional().describe('推荐：本机 JSON 文件路径；相对路径以 MCP 工作目录为基准。支持弹幕对象、弹幕数组或包含 danmakus/items 数组的工程 JSON（最大 32 MiB、10000 条）'),
-      relativeToCurrentTime: z.boolean().describe('是否相对当前播放头创建；必须明确传入 true 或 false')
+      alignToTimeMs: z.number().finite().nonnegative().optional().describe('可选目标对齐时间（毫秒）；传入时将整批最早的弹幕对齐到该时间点并按插入规则分配层级；省略时保留输入弹幕的绝对 startTime')
     }).superRefine((input, context) => {
       if ((input.danmaku !== undefined) === (input.jsonPath !== undefined)) {
         context.addIssue({ code: 'custom', message: '请在 danmaku 对象和 jsonPath 路径中二选一' })
@@ -1192,13 +1192,16 @@ function createMcpServer() {
         const resolvedPath = await validateDanmakusJsonFile(input.jsonPath)
         return compactEditorApiResult(await callEditor('editor.createDanmakusFromFile', {
           jsonPath: resolvedPath,
-          relativeToCurrentTime: input.relativeToCurrentTime
+          ...(input.alignToTimeMs !== undefined ? { alignToTimeMs: input.alignToTimeMs } : {})
         }))
       }
       const danmakus = extractDanmakuDrafts(input.danmaku, 'danmaku 参数', 5000)
       return compactEditorApiResult(await callEditor('editor.applyFieldUpdate', {
         field: '@danmaku.create',
-        method: { danmakus, relativeToCurrentTime: input.relativeToCurrentTime }
+        method: {
+          danmakus,
+          ...(input.alignToTimeMs !== undefined ? { alignToTimeMs: input.alignToTimeMs } : {})
+        }
       }))
     }
   )
@@ -1228,13 +1231,6 @@ function createMcpServer() {
         method: resolvedIds ? { ids: resolvedIds } : {}
       }))
     }
-  )
-  registerTool(
-    'update_current_time',
-    '设置当前播放时间',
-    '设置当前时间轴播放头位置，单位为毫秒。',
-    z.strictObject({ currentTime: z.number().finite().nonnegative() }),
-    async (input) => compactEditorApiResult(await callEditor('editor.applyFieldUpdate', { field: '@editor.currentTime', method: input.currentTime }))
   )
   registerTool(
     'update_editor_settings',
@@ -1597,8 +1593,18 @@ function createMcpServer() {
   registerTool(
     'split_danmakus',
     '分割弹幕',
-    '将当前选择按行、按字或按播放头时间点分割。按字分割依赖界面文字测量，测量失败时整次操作取消。',
-    z.strictObject({ mode: z.enum(['line', 'letter', 'time']) }),
+    '将当前选择按行（line）、按字（letter）或按指定时间点（time，需传入 timeMs）分割。按字分割依赖界面文字测量，测量失败时整次操作取消。',
+    z.strictObject({
+      mode: z.enum(['line', 'letter', 'time']),
+      timeMs: z.number().finite().nonnegative().optional().describe('时间分割目标时间点（毫秒）；mode 为 time 时必填，mode 为 line 或 letter 时不可传入')
+    }).superRefine((input, context) => {
+      if (input.mode === 'time' && input.timeMs === undefined) {
+        context.addIssue({ code: 'custom', message: 'mode 为 time 时必须传入 timeMs' })
+      }
+      if (input.mode !== 'time' && input.timeMs !== undefined) {
+        context.addIssue({ code: 'custom', message: '只有 mode 为 time 时才能传入 timeMs' })
+      }
+    }),
     async (input) => compactEditorApiResult(await callEditor('editor.applyFieldUpdate', { field: '@toolbar.split', method: input }))
   )
   registerTool(

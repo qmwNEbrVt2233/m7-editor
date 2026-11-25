@@ -98,7 +98,7 @@ async function main() {
       'get_editor_state', 'measure_text', 'get_frame', 'list_danmakus',
       'apply_field_update', 'apply_field_updates', 'create_generated_danmakus',
       'create_danmakus', 'delete_danmakus', 'select_by_command',
-      'update_current_time', 'update_editor_settings',
+      'update_editor_settings',
       'save_folder_project', 'backup_folder_project', 'get_file_system_state',
       'check_folder_project_path', 'create_folder_project', 'load_folder_project',
       'import_folder_project', 'edit_folder_project', 'delete_folder_project',
@@ -114,6 +114,9 @@ async function main() {
     if (tools.some((tool: { name?: string }) => tool.name === 'execute_edit_command')) {
       throw new Error('MCP 服务仍暴露已移除的 execute_edit_command 工具')
     }
+    if (tools.some((tool: { name?: string }) => tool.name === 'update_current_time')) {
+      throw new Error('MCP 服务仍暴露已移除的 update_current_time 工具')
+    }
     console.log(`MCP 握手成功，已发现 ${tools.length} 个工具。`)
 
     const assertRejected = async (label: string, name: string, args: Record<string, unknown>) => {
@@ -127,15 +130,22 @@ async function main() {
     await assertRejected('无效镜像方向', 'mirror_danmakus', { axis: 'diagonal' })
     console.log('Zod 参数校验正常，无效镜像方向已在调用编辑器前拒绝。')
 
-    const invalidCreate = await assertRejected('缺失弹幕输入', 'create_danmakus', { relativeToCurrentTime: false })
+    const invalidCreate = await assertRejected('缺失弹幕输入', 'create_danmakus', {})
     const createErrorText = invalidCreate.result?.content?.find((item: { type?: string }) => item.type === 'text')?.text
     if (!String(createErrorText || invalidCreate.error?.message || '').includes('danmaku')) {
       throw new Error('创建工具没有返回可理解的输入错误')
     }
     await assertRejected('同时传入 danmaku 与 jsonPath', 'create_danmakus', {
       danmaku: {},
+      jsonPath: 'demo.json'
+    })
+    await assertRejected('已移除的 relativeToCurrentTime 参数', 'create_danmakus', {
       jsonPath: 'demo.json',
       relativeToCurrentTime: false
+    })
+    await assertRejected('负 alignToTimeMs', 'create_danmakus', {
+      jsonPath: 'demo.json',
+      alignToTimeMs: -10
     })
     await assertRejected('无效弹幕颜色', 'create_danmakus', {
       danmaku: {
@@ -145,8 +155,7 @@ async function main() {
         transform: { start: { x: 0, y: 0 }, end: { x: 0, y: 0 }, zRotate: 0, yRotate: 0 },
         opacity: { from: 1, to: 1 },
         animation: { duration: 1000, moveDuration: 500, delay: 0, easing: 'speedup' }
-      },
-      relativeToCurrentTime: false
+      }
     })
     console.log('创建参数检查正常，缺失、冲突与畸形弹幕数据已在调用编辑器前拒绝。')
 
@@ -156,6 +165,16 @@ async function main() {
     await assertRejected('未知字段规则', 'create_generated_danmakus', {
       quantity: 1,
       rules: { unsupportedField: { mode: 'range', start: 0, end: 1 } }
+    })
+    await assertRejected('已移除的 relativeToCurrentTime 参数', 'create_generated_danmakus', {
+      quantity: 1,
+      relativeToCurrentTime: true,
+      rules: { startTime: { mode: 'range', start: 0, end: 100 } }
+    })
+    await assertRejected('负 alignToTimeMs', 'create_generated_danmakus', {
+      quantity: 1,
+      alignToTimeMs: -1,
+      rules: { startTime: { mode: 'range', start: 0, end: 100 } }
     })
     await assertRejected('越界颜色 alpha', 'create_generated_danmakus', {
       quantity: 2,
@@ -225,6 +244,9 @@ async function main() {
     await assertRejected('空编辑器设置对象', 'update_editor_settings', {})
     await assertRejected('非法运动角度', 'set_movement_length', { length: 100, angle: 'abc' })
     await assertRejected('非法描边颜色', 'apply_stroke', { width: 2, color: 'red' })
+    await assertRejected('时间分割缺少 timeMs', 'split_danmakus', { mode: 'time' })
+    await assertRejected('时间分割负 timeMs', 'split_danmakus', { mode: 'time', timeMs: -1 })
+    await assertRejected('非时间分割传入 timeMs', 'split_danmakus', { mode: 'line', timeMs: 1000 })
     await assertRejected('空白 snapshotId', 'get_history_snapshot', { snapshotId: '   ' })
     await assertRejected('无 outputPath 时 snapshot limit 超限', 'get_history_snapshot', { snapshotId: 'snap_1', limit: 501 })
     await assertRejected('无 outputPath 时日志 limit 超限', 'get_editor_logs', { limit: 501 })
@@ -278,8 +300,9 @@ async function main() {
     const stateText = state.result?.content?.find((item: { type?: string }) => item.type === 'text')?.text || ''
     assert.equal(state.result?.structuredContent, undefined, 'MCP 返回不应重复附带 structuredContent')
     assert.ok(!stateText.includes('\n'), 'MCP 返回应使用紧凑单行 JSON')
-    const parsedState = JSON.parse(stateText) as { selectedIds?: unknown }
+    const parsedState = JSON.parse(stateText) as { selectedIds?: unknown; currentTime?: unknown }
     assert.equal(typeof parsedState.selectedIds, 'string', 'selectedIds 应返回压缩范围字符串')
+    assert.equal(parsedState.currentTime, undefined, 'get_editor_state 不应返回播放头 currentTime')
     console.log('MCP 工具调用成功，当前编辑器状态：')
     console.log(stateText || '(无文本结果)')
   } finally {

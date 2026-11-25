@@ -15,18 +15,41 @@
       ref="logListRef"
       class="log-list have-scrollbar"
       @click.stop
+      @scroll="handleLogListScroll"
     >
-      <div v-if="omittedLogCount > 0" class="log-truncated-hint">
-        已省略较早的 {{ omittedLogCount }} 条日志（导出可查看全部）
-      </div>
       <div
-        v-for="item in displayedLogs"
-        :key="item.id"
-        class="log-item"
-        :class="`log-type-${item.type ?? 'log'}`"
+        class="log-virtual-spacer"
+        :style="{ height: `${logListTotalHeight}px` }"
       >
-        <span>[{{ item.timestamp }}]</span>
-        <span>{{ item.message }}</span>
+        <div
+          class="log-virtual-content"
+          :style="{ transform: `translateY(${logListOffset}px)` }"
+        >
+          <div
+            v-for="item in visibleLogs"
+            :key="item.id"
+            :ref="(element) => setLogItemRef(element, item.id)"
+            class="log-item"
+            :class="[
+              `log-type-${item.type ?? 'log'}`,
+              { 'has-additional-info': hasAdditionalInfo(item) }
+            ]"
+            :role="hasAdditionalInfo(item) ? 'button' : undefined"
+            :tabindex="hasAdditionalInfo(item) ? 0 : undefined"
+            :aria-expanded="hasAdditionalInfo(item) ? expandedLogId === item.id : undefined"
+            @click.stop="toggleAdditionalInfo(item)"
+            @keydown.enter.prevent="toggleAdditionalInfo(item)"
+            @keydown.space.prevent="toggleAdditionalInfo(item)"
+          >
+            <span>[{{ item.timestamp }}]</span>
+            <span>{{ item.message }}</span>
+            <pre
+              v-if="expandedLogId === item.id"
+              class="log-additional-info"
+              @click.stop
+            >{{ formatAdditionalInfo(item.AdditionalInfo) }}</pre>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -71,33 +94,185 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import type { ComponentPublicInstance } from 'vue'
 import { useEditorStore } from '@/store/editor'
 import { useNoticeStore } from '@/store/notice'
 const store = useEditorStore()
 const notice = useNoticeStore()
 
-const MAX_RENDERED_LOGS = 500
 const LOG_FADE_DELAY_MS = 1000
+const LOG_ITEM_ESTIMATED_HEIGHT = 22
+const LOG_ITEM_GAP = 4
+const LOG_LIST_OVERSCAN = 50
 
 const hovering = ref(false)
 const logExpanded = ref(false)
+const expandedLogId = ref<number | null>(null)
 const logRef = ref<HTMLElement>()
 const logListRef = ref<HTMLElement>()
 const modalContainerRef = ref<HTMLElement>()
+const virtualScrollTop = ref(0)
+const virtualViewportHeight = ref(0)
+const measuredLogHeights = ref(new Map<number, number>())
 const isIdle = ref(Date.now() - notice.lastLogTime > LOG_FADE_DELAY_MS)
 let fadeTimer: ReturnType<typeof setTimeout> | null = null
 let modalKeyListenerAttached = false
+let logResizeObserver: ResizeObserver | null = null
+const logItemElements = new Map<number, HTMLElement>()
+const logElementIds = new WeakMap<Element, number>()
 
-const displayedLogs = computed(() => {
-  if (notice.logList.length <= MAX_RENDERED_LOGS) {
-    return notice.logList
-  }
-  return notice.logList.slice(-MAX_RENDERED_LOGS)
+const logOffsets = computed(() => {
+  const offsets = [0]
+  notice.logList.forEach((item, index) => {
+    const height = measuredLogHeights.value.get(item.id) ?? LOG_ITEM_ESTIMATED_HEIGHT
+    offsets.push(offsets[index] + height + LOG_ITEM_GAP)
+  })
+  return offsets
 })
 
-const omittedLogCount = computed(() => Math.max(0, notice.logList.length - MAX_RENDERED_LOGS))
+const logListTotalHeight = computed(() => logOffsets.value[notice.logList.length] ?? 0)
+
+function findLogIndexAtOffset(offset: number): number {
+  let low = 0
+  let high = notice.logList.length
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    if (logOffsets.value[middle + 1] <= offset) {
+      low = middle + 1
+    } else {
+      high = middle
+    }
+  }
+  return low
+}
+
+const logListStartIndex = computed(() =>
+  findLogIndexAtOffset(Math.max(0, virtualScrollTop.value - LOG_LIST_OVERSCAN))
+)
+const logListEndIndex = computed(() =>
+  Math.min(
+    notice.logList.length,
+    findLogIndexAtOffset(
+      virtualScrollTop.value + virtualViewportHeight.value + LOG_LIST_OVERSCAN
+    ) + 1
+  )
+)
+const logListOffset = computed(() => logOffsets.value[logListStartIndex.value] ?? 0)
+const visibleLogs = computed(() =>
+  notice.logList.slice(logListStartIndex.value, logListEndIndex.value)
+)
 
 const shouldFade = computed(() => isIdle.value && !hovering.value && !logExpanded.value)
+
+function setLogItemRef(
+  element: Element | ComponentPublicInstance | null,
+  id: number
+) {
+  const previousElement = logItemElements.get(id)
+  if (previousElement && previousElement !== element) {
+    logResizeObserver?.unobserve(previousElement)
+    logItemElements.delete(id)
+  }
+  if (!(element instanceof HTMLElement)) {
+    return
+  }
+  logItemElements.set(id, element)
+  logElementIds.set(element, id)
+  logResizeObserver?.observe(element)
+}
+
+function handleLogListScroll(event: Event) {
+  const element = event.currentTarget as HTMLElement
+  virtualScrollTop.value = element.scrollTop
+  virtualViewportHeight.value = element.clientHeight
+}
+
+function updateLogMeasurements(entries: ResizeObserverEntry[]) {
+  const listElement = logListRef.value
+  const wasAtBottom = listElement
+    ? listElement.scrollHeight - listElement.clientHeight - listElement.scrollTop <= 2
+    : false
+  const updatedHeights = new Map(measuredLogHeights.value)
+  let measurementsChanged = false
+
+  for (const entry of entries) {
+    if (entry.target === listElement) {
+      virtualViewportHeight.value = listElement.clientHeight
+      continue
+    }
+    const id = logElementIds.get(entry.target)
+    if (id === undefined) {
+      continue
+    }
+    const height = (entry.target as HTMLElement).getBoundingClientRect().height
+    if (Math.abs((updatedHeights.get(id) ?? 0) - height) > 1) {
+      updatedHeights.set(id, height)
+      measurementsChanged = true
+    }
+  }
+
+  if (measurementsChanged) {
+    measuredLogHeights.value = updatedHeights
+    if (wasAtBottom) {
+      void nextTick(() => scrollToBottom())
+    }
+  }
+}
+
+function hasAdditionalInfo(item: (typeof notice.logList)[number]) {
+  return item.AdditionalInfo !== undefined && item.AdditionalInfo !== null
+}
+
+function toggleAdditionalInfo(item: (typeof notice.logList)[number]) {
+  if (!hasAdditionalInfo(item)) {
+    return
+  }
+  expandedLogId.value = expandedLogId.value === item.id ? null : item.id
+}
+
+function formatAdditionalInfo(value: unknown): string {
+  if (typeof value === 'string') {
+    return value
+  }
+  if (value instanceof Error) {
+    return value.stack || `${value.name}: ${value.message}`
+  }
+  if (value === null || value === undefined) {
+    return ''
+  }
+  if (typeof value !== 'object') {
+    return String(value)
+  }
+
+  const seen = new WeakSet<object>()
+  try {
+    return JSON.stringify(
+      value,
+      (_key, currentValue) => {
+        if (typeof currentValue === 'bigint') {
+          return `${currentValue}n`
+        }
+        if (currentValue instanceof Error) {
+          return {
+            name: currentValue.name,
+            message: currentValue.message,
+            stack: currentValue.stack
+          }
+        }
+        if (currentValue && typeof currentValue === 'object') {
+          if (seen.has(currentValue)) {
+            return '[Circular]'
+          }
+          seen.add(currentValue)
+        }
+        return currentValue
+      },
+      2
+    ) || String(value)
+  } catch {
+    return String(value)
+  }
+}
 
 function scheduleFadeTimer() {
   if (fadeTimer) {
@@ -180,11 +355,21 @@ watch(
 onMounted(() => {
   document.addEventListener('click', handleClickOutside)
   scheduleFadeTimer()
+  logResizeObserver = new ResizeObserver(updateLogMeasurements)
+  if (logListRef.value) {
+    logResizeObserver.observe(logListRef.value)
+    virtualViewportHeight.value = logListRef.value.clientHeight
+  }
+  for (const element of logItemElements.values()) {
+    logResizeObserver.observe(element)
+  }
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
   detachModalKeyListener()
+  logResizeObserver?.disconnect()
+  logResizeObserver = null
 
   if (fadeTimer) {
     clearTimeout(fadeTimer)
@@ -201,7 +386,9 @@ const scrollToBottom = async () => {
 
   const el = logListRef.value
   if (el) {
-    el.scrollTop = el.scrollHeight
+    virtualViewportHeight.value = el.clientHeight
+    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
+    virtualScrollTop.value = el.scrollTop
   }
 }
 
@@ -210,6 +397,34 @@ watch(
   () => {
     void scrollToBottom()
   }
+)
+
+watch(
+  logListRef,
+  (element, previousElement) => {
+    if (previousElement) {
+      logResizeObserver?.unobserve(previousElement)
+    }
+    if (element) {
+      logResizeObserver?.observe(element)
+      virtualViewportHeight.value = element.clientHeight
+    }
+  },
+  { flush: 'post' }
+)
+
+watch(
+  () => notice.logList[0]?.id,
+  () => {
+    const retainedIds = new Set(notice.logList.map((item) => item.id))
+    const retainedHeights = new Map(
+      [...measuredLogHeights.value].filter(([id]) => retainedIds.has(id))
+    )
+    if (retainedHeights.size !== measuredLogHeights.value.size) {
+      measuredLogHeights.value = retainedHeights
+    }
+  },
+  { flush: 'post' }
 )
 
 </script>
@@ -247,13 +462,23 @@ watch(
 }
 
 .log-list {
-  margin-bottom: 8px;
   overflow-y: auto;
   display: flex;
   flex: 1 1 auto;
   min-height: 0;
-  flex-direction: column;
-  gap: 4px;
+}
+
+.log-virtual-spacer {
+  position: relative;
+  flex: 0 0 auto;
+  width: 100%;
+}
+
+.log-virtual-content {
+  position: relative;
+  top: 0;
+  left: 0;
+  right: 0;
 }
 
 .log-current {
@@ -279,15 +504,28 @@ watch(
 
 .log-item {
   padding: 4px;
+  margin-bottom: 4px;
   border-bottom: 1px solid #444;
   word-break: break-all;
 }
 
-.log-truncated-hint {
-  padding: 4px 6px;
-  color: #aaa;
-  font-size: 11px;
-  border-bottom: 1px dashed #555;
+.log-item.has-additional-info {
+  cursor: pointer;
+}
+
+.log-item.has-additional-info:focus-visible {
+  outline: 1px solid #888;
+  outline-offset: -1px;
+}
+
+.log-additional-info {
+  margin: 6px 0 2px;
+  padding: 6px;
+  border-left: 2px solid #666;
+  color: #ccc;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .log-item.log-type-log {

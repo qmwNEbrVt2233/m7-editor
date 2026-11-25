@@ -43,7 +43,7 @@ export type EditorApiResult = {
 export type EditorApiContext = {
   danmakus: DanmakuItem[]
   selectedIds: string[]
-  currentTime: number
+  currentTime?: number
   screenWidth: number
   screenHeight: number
   maxLayers: number
@@ -994,14 +994,22 @@ async function applyToolbarOperation(
   if (field === '@toolbar.split') {
     const mode = params.mode
     if (mode !== 'line' && mode !== 'letter' && mode !== 'time') throw new Error('分割模式无效')
+    if (mode !== 'time' && params.timeMs !== undefined) {
+      throw new Error('只有时间分割模式支持传入 timeMs')
+    }
     const created: DanmakuItem[] = []
     const nextSelected = [...selectedIds]
     const lineItems: Array<{ item: DanmakuItem; base: DanmakuItem; lineIndex: number }> = []
     if (mode === 'time') {
-      if (!Number.isFinite(context.currentTime) || context.currentTime < 0) {
-        throw new Error('当前播放头时间无效，无法进行时间分割')
+      const hasExplicitTime = params.timeMs !== undefined
+      if (hasExplicitTime) {
+        if (typeof params.timeMs !== 'number' || !Number.isFinite(params.timeMs) || params.timeMs < 0) {
+          throw new Error('时间分割参数 timeMs 必须是非负有限数字')
+        }
+      } else if (typeof context.currentTime !== 'number' || !Number.isFinite(context.currentTime) || context.currentTime < 0) {
+        throw new Error('缺少有效的时间分割点（timeMs 或当前播放头时间），无法进行时间分割')
       }
-      const splitTime = Math.round(context.currentTime)
+      const splitTime = Math.round(hasExplicitTime ? params.timeMs : context.currentTime!)
       let skippedCount = 0
       for (const item of selected) {
         const original = cloneDanmaku(item)
@@ -1021,10 +1029,11 @@ async function applyToolbarOperation(
         nextSelected.push(second.id)
       }
       if (skippedCount > 0) {
+        const subject = hasExplicitTime ? '分割时间点' : '播放头'
         warnings.push(
           created.length === 0
-            ? '没有弹幕被时间分割：播放头需落在选中弹幕起止时间 10ms 以外的区间'
-            : `有 ${skippedCount} 条弹幕未满足时间分割条件（播放头距起止不足 10ms），已跳过`
+            ? `没有弹幕被时间分割：${subject}需落在选中弹幕起止时间 10ms 以外的区间`
+            : `有 ${skippedCount} 条弹幕未满足时间分割条件（${subject}距起止不足 10ms），已跳过`
         )
       }
     } else {

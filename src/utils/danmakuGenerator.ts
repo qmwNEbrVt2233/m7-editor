@@ -236,7 +236,7 @@ export function createDefaultDirectRules(): ToolWriteRequest['directRules'] {
 
 export function buildToolWriteRequestFromAgentRules(
   input: AgentCreationRequest,
-  currentTime: number
+  defaultStartTime = 0
 ): ToolWriteRequest {
   if (!Number.isSafeInteger(input.quantity) || input.quantity < 1 || input.quantity > MAX_GENERATE_QUANTITY) {
     throw new Error(`quantity 必须是 1 到 ${MAX_GENERATE_QUANTITY} 之间的整数`)
@@ -252,7 +252,7 @@ export function buildToolWriteRequestFromAgentRules(
     expressionEnabled: false,
     writeMode: 'replace',
     previewText: '[]',
-    numericRules: createDefaultNumericRules(currentTime),
+    numericRules: createDefaultNumericRules(defaultStartTime),
     colorRule: createDefaultColorRule(),
     directRules: createDefaultDirectRules()
   }
@@ -341,11 +341,11 @@ export function buildToolWriteRequestFromAgentRules(
 
 export async function generateDanmakuDraftsFromAgentRules(
   input: AgentCreationRequest,
-  currentTime: number,
+  defaultStartTime = 0,
   allowNegativeValues = false,
   options?: GenerateDanmakuOptions
 ): Promise<DanmakuDraft[]> {
-  const request = buildToolWriteRequestFromAgentRules(input, currentTime)
+  const request = buildToolWriteRequestFromAgentRules(input, defaultStartTime)
   const drafts = await generateDanmakuDraftsFromRules(request, options)
   return drafts.map((draft) => normalizeGeneratedDraft(draft, allowNegativeValues))
 }

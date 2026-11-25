@@ -1552,8 +1552,7 @@ async function handleCreate() {
       return normalized
     })
     const response = await store.applyFieldUpdate('@danmaku.create', {
-      danmakus: normalizedDrafts,
-      relativeToCurrentTime: false
+      danmakus: normalizedDrafts
     })
     if (!response.ok) throw new Error(response.message || '创建失败')
 

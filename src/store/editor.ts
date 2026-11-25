@@ -854,9 +854,14 @@ export const useEditorStore = defineStore('editor', {
   },
 
   actions: {
-    async applyFieldUpdate(field: string, method: EditorApiMethod): Promise<EditorApiResult> {
+    async applyFieldUpdate(
+      field: string,
+      method: EditorApiMethod,
+      options?: { fromMcp?: boolean }
+    ): Promise<EditorApiResult> {
       return withEditorOperationLock(async () => {
       this._flushPendingHistoryTimers()
+      const fromMcp = options?.fromMcp === true
       const emptyResult = { changedIds: [], createdIds: [], selectedIds: [...this.selectedIds], warnings: [] as string[] }
 
       if (field === '@history.undo' || field === '@history.redo') {
@@ -878,15 +883,21 @@ export const useEditorStore = defineStore('editor', {
         const methodParams = method && typeof method === 'object' ? method as Record<string, unknown> : {}
 
         if (field === '@danmaku.create') {
-          if (typeof methodParams.relativeToCurrentTime !== 'boolean') {
-            throw new Error('relativeToCurrentTime 必须明确传入 true 或 false')
+          if (methodParams.relativeToCurrentTime !== undefined) {
+            throw new Error('不再支持 relativeToCurrentTime，请改为传入具体的 alignToTimeMs（毫秒）或省略以保留绝对 startTime')
+          }
+          if (
+            methodParams.alignToTimeMs !== undefined &&
+            (typeof methodParams.alignToTimeMs !== 'number' || !Number.isFinite(methodParams.alignToTimeMs) || methodParams.alignToTimeMs < 0)
+          ) {
+            throw new Error('alignToTimeMs 必须是非负有限数字')
           }
           const drafts = normalizeMcpDanmakuDrafts(methodParams.danmakus, this.getDefaultDanmakuDuration())
           historyManager.ensureBaseline(this.danmakus, 'MCP 编辑前的状态')
-          const relativeToCurrentTime = methodParams.relativeToCurrentTime === true
+          const alignToTimeMs = methodParams.alignToTimeMs as number | undefined
           let created: DanmakuItem[]
-          if (relativeToCurrentTime) {
-            created = this.insertDanmakus(drafts, 'MCP 创建弹幕', true)
+          if (alignToTimeMs !== undefined) {
+            created = this.insertDanmakus(drafts, 'MCP 创建弹幕', true, alignToTimeMs)
           } else {
             const usedIds = new Set(this.danmakus.map((item: DanmakuItem) => item.id))
             let nextId = this.danmakus.reduce((max: number, item: DanmakuItem) => {
@@ -938,14 +949,6 @@ export const useEditorStore = defineStore('editor', {
           }
         }
 
-        if (field === '@editor.currentTime') {
-          if (typeof method !== 'number' || !Number.isFinite(method)) throw new Error('currentTime 必须是有限数字')
-          const nextTime = Math.max(0, Math.round(method))
-          this.setTime(nextTime)
-          this.timelineOffset = nextTime
-          return { ok: true, ...emptyResult, warnings: nextTime === method ? [] : ['currentTime 已四舍五入并限制为非负值'] }
-        }
-
         if (field === '@editor.settings') {
           if (!method || typeof method !== 'object' || Array.isArray(method)) throw new Error('编辑器设置必须是对象')
           const settings = method as Record<string, unknown>
@@ -979,7 +982,7 @@ export const useEditorStore = defineStore('editor', {
         const outcome = await applyEditorApi({
           danmakus: this.danmakus,
           selectedIds: [...this.selectedIds],
-          currentTime: this.currentTime,
+          ...(fromMcp ? {} : { currentTime: this.currentTime }),
           screenWidth: this.screenWidth,
           screenHeight: this.screenHeight,
           maxLayers: this.maxLayers,
@@ -1013,7 +1016,7 @@ export const useEditorStore = defineStore('editor', {
             : outcome.changedField
               ? [outcome.changedField]
               : []
-          if (fieldsToCheck.length && outcome.changedIds.length > 0) {
+          if (!fromMcp && fieldsToCheck.length && outcome.changedIds.length > 0) {
             const danmakuMap = new Map<string, DanmakuItem>(
               (this.danmakus as DanmakuItem[]).map((danmaku) => [danmaku.id, danmaku])
             )
@@ -1093,7 +1096,6 @@ export const useEditorStore = defineStore('editor', {
         timelineRange,
         selectedIds: [...this.selectedIds],
         selectedCount: this.selectedIds.length,
-        currentTime: this.currentTime,
         screen: { width: this.screenWidth, height: this.screenHeight },
         maxLayers: this.maxLayers,
         canUndo: history.canUndo,
@@ -1256,7 +1258,7 @@ export const useEditorStore = defineStore('editor', {
       }
     },
 
-    async createDanmakusFromJsonFileForMcp(jsonPath: string, relativeToCurrentTime: boolean) {
+    async createDanmakusFromJsonFileForMcp(jsonPath: string, alignToTimeMs?: number) {
       const parsed = await readMcpJsonFile(jsonPath)
       let drafts: unknown[]
       if (Array.isArray(parsed)) {
@@ -1277,8 +1279,8 @@ export const useEditorStore = defineStore('editor', {
       }
       return this.applyFieldUpdate('@danmaku.create', {
         danmakus: drafts,
-        relativeToCurrentTime
-      })
+        ...(alignToTimeMs !== undefined ? { alignToTimeMs } : {})
+      }, { fromMcp: true })
     },
 
     getMcpLogs(options: { type?: string; offset?: number; limit?: number } = {}) {
@@ -3024,10 +3026,11 @@ export const useEditorStore = defineStore('editor', {
 
     /**
      * 处理多条弹幕的startTime偏移
-     * 将所有要创建的弹幕中最小的startTime作为基准，计算与播放头的差值，应用于所有弹幕
+     * 将所有要创建的弹幕中最小的startTime作为基准，计算与目标时间（省略时为当前播放头）的差值，应用于所有弹幕
      * @param danmakusToAdd 要添加的弹幕数组
+     * @param targetTime 可选目标基准时间（毫秒）；省略时使用当前播放头时间
      */
-    adjustStartTimesForDanmakus(danmakusToAdd: DanmakuItem[]): void {
+    adjustStartTimesForDanmakus(danmakusToAdd: DanmakuItem[], targetTime?: number): void {
       if (danmakusToAdd.length === 0) return
 
       // 找最小的startTime（避免大数组 spread 触发调用栈溢出）
@@ -3038,9 +3041,10 @@ export const useEditorStore = defineStore('editor', {
       }
       if (!Number.isFinite(minStartTime)) minStartTime = 0
 
-      // 计算偏移量（播放头位置 - 最小startTime）
-      const safeCurrentTime = Number.isFinite(this.currentTime) ? Math.max(0, this.currentTime) : 0
-      const offset = safeCurrentTime - minStartTime
+      // 计算偏移量（目标基准时间或播放头位置 - 最小startTime）
+      const baseTime = targetTime !== undefined ? targetTime : this.currentTime
+      const safeBaseTime = Number.isFinite(baseTime) ? Math.max(0, baseTime) : 0
+      const offset = safeBaseTime - minStartTime
 
       // 应用偏移到所有弹幕
       for (const d of danmakusToAdd) {
@@ -3534,7 +3538,12 @@ export const useEditorStore = defineStore('editor', {
       }
     },
 
-    insertDanmakus(drafts: DanmakuItem[], historyLabel = '插入弹幕', _immediate = false): DanmakuItem[] {
+    insertDanmakus(
+      drafts: DanmakuItem[],
+      historyLabel = '插入弹幕',
+      _immediate = false,
+      targetStartTime?: number
+    ): DanmakuItem[] {
       if (!Array.isArray(drafts) || drafts.length === 0) return []
       this._flushPendingHistoryTimers()
       const duration = this.getDefaultDanmakuDuration()
@@ -3567,7 +3576,7 @@ export const useEditorStore = defineStore('editor', {
         danmaku.id = nextId
       })
 
-      this.adjustStartTimesForDanmakus(danmakusToAdd)
+      this.adjustStartTimesForDanmakus(danmakusToAdd, targetStartTime)
       this.assignLayersForDanmakusSequentially(danmakusToAdd)
       this.danmakus.push(...danmakusToAdd)
       this.selectedIds = danmakusToAdd.map((danmaku) => danmaku.id)
