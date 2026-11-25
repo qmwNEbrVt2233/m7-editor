@@ -46,7 +46,7 @@
           <h3>内容</h3>
 
           <div class="form-group">
-            <label>文本内容 (0-255个字符，换行占2个)</label>
+            <label>文本内容 (0-255个字符)</label>
             <textarea
               v-model="text"
               @focus="onFieldFocus"
@@ -57,9 +57,9 @@
             ></textarea>
             <div
               class="char-counter"
-              :class="{ 'char-counter-exceeded': !isTextMixed && !isTextLengthValid(text) }"
+              :class="{ 'char-counter-exceeded': !isTextMixed && !text.length }"
             >
-              已占用: {{ isTextMixed ? '--' : calculateTextLength(text) }}/255
+              已占用: {{ isTextMixed ? '--' : text.length }}/255
             </div>
           </div>
 
@@ -1135,28 +1135,6 @@ const startTimePreview = computed<string>(() => {
   }
   return formatSafeTime(applyOperation(base, parseResult))
 })
-
-/**
- * 计算文本占用的字符数（换行符占用2个字符）
- */
-function calculateTextLength(str: string): number {
-  let length = 0
-  for (let i = 0; i < str.length; i++) {
-    if (str[i] === '\n') {
-      length += 2
-    } else {
-      length += 1
-    }
-  }
-  return length
-}
-
-/**
- * 检查文本长度是否有效（0-255）
- */
-function isTextLengthValid(str: string): boolean {
-  return calculateTextLength(str) <= 255
-}
 
 // 清除选择
 function handleClearSelection() {

@@ -1067,7 +1067,7 @@ function createMcpServer() {
       mode: z.literal('range'),
       start: z.number().finite(),
       end: z.number().finite(),
-      expression: z.string().trim().min(1, 'expression 不能为空字符串').max(2000).optional().describe('可选数学表达式；支持 S、E、i、n、t、width、height、bezier(...)、seededRandom(seed, index?) 及其他字段路径')
+      expression: z.string().trim().min(1, 'expression 不能为空字符串').max(2000).optional().describe('可选数学表达式；支持 S、E、i、n、t、width、height、rawWidth、rawHeight、boxWidth、boxHeight、bezier(...)、seededRandom(seed, index?) 及其他字段路径（注意避免宽高变量的循环引用）')
     }),
     z.strictObject({
       mode: z.literal('relative'),
@@ -1093,7 +1093,7 @@ function createMcpServer() {
     z.strictObject({ mode: z.literal('cycle'), values: z.array(colorStringInput).min(1).max(10_000) })
   ])
   const textGenerationRule = z.discriminatedUnion('mode', [
-    z.strictObject({ mode: z.literal('assign'), value: z.string().max(10_000).describe('文字；可使用反引号模板，例如 `第 ${i + 1} 条`') }),
+    z.strictObject({ mode: z.literal('assign'), value: z.string().max(10_000).describe('文字；可使用反引号模板，例如 `第 ${i + 1} 条`（模板内不允许引用 rawWidth/rawHeight/boxWidth/boxHeight）') }),
     z.strictObject({ mode: z.literal('cycle'), values: z.array(z.string().max(10_000)).min(1).max(10_000) })
   ])
   const fontGenerationRule = z.discriminatedUnion('mode', [

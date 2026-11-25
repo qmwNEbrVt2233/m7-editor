@@ -239,7 +239,7 @@ async function handleMcpCommand(payload: McpCommandPayload) {
     } else if (method === 'editor.createGeneratedDanmakus') {
       if (!editorReady.value) throw new Error('编辑器尚未加载工程，暂不能创建弹幕')
       const input = params as AgentCreationRequest & { relativeToCurrentTime?: boolean }
-      const drafts = generateDanmakuDraftsFromAgentRules(input, store.currentTime, store.allowNegativeValues)
+      const drafts = await generateDanmakuDraftsFromAgentRules(input, store.currentTime, store.allowNegativeValues)
       const response = await store.applyFieldUpdate('@danmaku.create', {
         danmakus: drafts,
         relativeToCurrentTime: input.relativeToCurrentTime === true

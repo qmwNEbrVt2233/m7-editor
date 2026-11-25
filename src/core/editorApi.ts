@@ -105,8 +105,15 @@ function expandColorHex(input: string): string | null {
   return normalized
 }
 
-const SEGMENTER = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
-  ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+const Segmenter = (Intl as unknown as {
+  Segmenter?: new (
+    locales?: string | string[],
+    options?: { granularity?: 'grapheme' }
+  ) => { segment(text: string): Iterable<{ segment: string }> }
+}).Segmenter
+
+const SEGMENTER = typeof Segmenter === 'function'
+  ? new Segmenter(undefined, { granularity: 'grapheme' })
   : null
 
 function splitGraphemes(text: string): string[] {
@@ -136,12 +143,6 @@ function setPath(target: Record<string, any>, path: string, value: unknown) {
     throw new Error(`非法字段路径：${path}`)
   }
   current[leaf] = value
-}
-
-function calculateTextLength(text: string): number {
-  let length = 0
-  for (const char of text) length += char === '\n' ? 2 : 1
-  return length
 }
 
 type CompiledNumericEvaluator = (variables: Record<string, number>) => number
@@ -257,7 +258,7 @@ function prepareFieldEvaluator(
   if (path === 'content.text') {
     if (typeof input === 'boolean') throw new Error('文本字段不能接收布尔值')
     const text = String(input)
-    if (calculateTextLength(text) > 255) warnings.push('文本数据超过255字符限制（换行符占2个字符）')
+    if (text.length > 255) warnings.push('文本数据超过255字符限制')
     return () => text
   }
 
@@ -1115,8 +1116,8 @@ export async function applyEditorApi(context: EditorApiContext, field: string, m
     && method !== null
     && typeof method === 'object'
     && !Array.isArray(method)
-    && typeof method.command === 'string'
-    && /^\/s\b/i.test(method.command.trim())
+    && typeof (method as Record<string, unknown>).command === 'string'
+    && /^\/s\b/i.test(((method as Record<string, unknown>).command as string).trim())
 
   if (field === '@selection.filter' || isCommandFilter) {
     if (!method || typeof method !== 'object' || Array.isArray(method) || typeof (method as Record<string, unknown>).command !== 'string') {

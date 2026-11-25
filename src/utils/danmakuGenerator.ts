@@ -1,5 +1,6 @@
 import { useEditorStore } from '@/store/editor'
 import type { DanmakuItem } from '@/core/danmaku'
+import { measureDanmakus, type ToolbarMeasure } from '@/core/danmakuMeasurement'
 import {
   applyOperation,
   blendColor,
@@ -97,6 +98,12 @@ export type AgentCreationRequest = {
   rules: Partial<Record<AllFieldPath, AgentCreationRule>>
 }
 
+export type MeasurementVariableName = 'rawWidth' | 'rawHeight' | 'boxWidth' | 'boxHeight'
+
+export type GenerateDanmakuOptions = {
+  measureDanmakus?: (danmakus: DanmakuItem[]) => Promise<ToolbarMeasure>
+}
+
 export type DanmakuDraft = Omit<DanmakuItem, 'id'> & {
   id?: string
 }
@@ -113,6 +120,7 @@ interface RangeEvaluationParams {
   endVal: number;     // UI传入的终点数值
   quantity: number;   // 生成数量
   fieldSeries?: Partial<Record<AllFieldPath, unknown[]>>
+  measurementSeries?: Partial<Record<MeasurementVariableName, number[]>>
 }
 
 export type ExpressionPreset = {
@@ -331,14 +339,15 @@ export function buildToolWriteRequestFromAgentRules(
   return request
 }
 
-export function generateDanmakuDraftsFromAgentRules(
+export async function generateDanmakuDraftsFromAgentRules(
   input: AgentCreationRequest,
   currentTime: number,
-  allowNegativeValues = false
-): DanmakuDraft[] {
+  allowNegativeValues = false,
+  options?: GenerateDanmakuOptions
+): Promise<DanmakuDraft[]> {
   const request = buildToolWriteRequestFromAgentRules(input, currentTime)
-  return generateDanmakuDraftsFromRules(request)
-    .map((draft) => normalizeGeneratedDraft(draft, allowNegativeValues))
+  const drafts = await generateDanmakuDraftsFromRules(request, options)
+  return drafts.map((draft) => normalizeGeneratedDraft(draft, allowNegativeValues))
 }
 
 const NUMERIC_FIELD_PATHS: NumericFieldPath[] = [
@@ -377,7 +386,41 @@ export const CREATION_TOOL_FIELD_PATHS: AllFieldPath[] = [
 
 const CREATION_TOOL_FIELD_PATH_SET = new Set<AllFieldPath>(CREATION_TOOL_FIELD_PATHS)
 
+type RawMeasurementVariableName = 'rawWidth' | 'rawHeight'
+type BoxMeasurementVariableName = 'boxWidth' | 'boxHeight'
+type DependencyNode = AllFieldPath | MeasurementVariableName
+
+const RAW_MEASUREMENT_VARIABLE_NAMES: RawMeasurementVariableName[] = [
+  'rawWidth',
+  'rawHeight'
+]
+const BOX_MEASUREMENT_VARIABLE_NAMES: BoxMeasurementVariableName[] = [
+  'boxWidth',
+  'boxHeight'
+]
+export const MEASUREMENT_VARIABLE_NAMES: MeasurementVariableName[] = [
+  ...RAW_MEASUREMENT_VARIABLE_NAMES,
+  ...BOX_MEASUREMENT_VARIABLE_NAMES
+]
+
+const RAW_MEASUREMENT_VARIABLE_SET = new Set<string>(RAW_MEASUREMENT_VARIABLE_NAMES)
+const BOX_MEASUREMENT_VARIABLE_SET = new Set<string>(BOX_MEASUREMENT_VARIABLE_NAMES)
+const MEASUREMENT_VARIABLE_SET = new Set<string>(MEASUREMENT_VARIABLE_NAMES)
+
+const RAW_MEASUREMENT_DEPENDENCIES: AllFieldPath[] = [
+  'content.text',
+  'content.size',
+  'content.font',
+  'content.stroke'
+]
+const BOX_MEASUREMENT_DEPENDENCIES: AllFieldPath[] = [
+  ...RAW_MEASUREMENT_DEPENDENCIES,
+  'transform.zRotate'
+]
+const MEASURE_BATCH_SIZE = 500
+
 type FieldSeriesMap = Partial<Record<AllFieldPath, unknown[]>>
+type MeasurementSeriesMap = Partial<Record<MeasurementVariableName, number[]>>
 type FieldResolveState = 'visiting' | 'resolved'
 
 type TextTemplatePart =
@@ -388,9 +431,12 @@ type TextTemplate = {
   parts: TextTemplatePart[]
 }
 
-export function writeGeneratedDanmakusToPreview(request: ToolWriteRequest): GeneratedPreviewResult {
+export async function writeGeneratedDanmakusToPreview(
+  request: ToolWriteRequest,
+  options?: GenerateDanmakuOptions
+): Promise<GeneratedPreviewResult> {
   const store = useEditorStore()
-  const generatedDanmakus = generateDanmakuDraftsFromRules(request).map((draft) => {
+  const generatedDanmakus = (await generateDanmakuDraftsFromRules(request, options)).map((draft) => {
     return normalizeGeneratedDraft(draft, store.allowNegativeValues)
   })
   const nextDanmakus = request.writeMode === 'append'
@@ -404,13 +450,16 @@ export function writeGeneratedDanmakusToPreview(request: ToolWriteRequest): Gene
   }
 }
 
-export function generateDanmakuDraftsFromRules(request: ToolWriteRequest): DanmakuDraft[] {
+export async function generateDanmakuDraftsFromRules(
+  request: ToolWriteRequest,
+  options?: GenerateDanmakuOptions
+): Promise<DanmakuDraft[]> {
   if (typeof request.quantity === 'number' && Number.isFinite(request.quantity) && request.quantity > MAX_GENERATE_QUANTITY) {
     throw new Error(`单次生成数量不能超过 ${MAX_GENERATE_QUANTITY} 条`)
   }
   const quantity = normalizeQuantity(request.quantity)
   const screenSize = resolveScreenDimensions()
-  const fieldSeries = buildFieldSeriesMap(request, quantity, screenSize)
+  const fieldSeries = await buildFieldSeriesMap(request, quantity, screenSize, options)
   const numericSeries = fieldSeries as Record<NumericFieldPath, number[]>
   const colorSeries = fieldSeries['content.color'] as string[]
   const textSeries = fieldSeries['content.text'] as string[]
@@ -528,67 +577,304 @@ export function normalizeGeneratedDraft(draft: DanmakuDraft, allowNegativeValues
   }
 }
 
-function buildFieldSeriesMap(
-  request: ToolWriteRequest,
-  quantity: number,
-  screenSize: { width: number; height: number }
-): Record<AllFieldPath, unknown[]> {
-  const cache: FieldSeriesMap = {}
-  const states = new Map<AllFieldPath, FieldResolveState>()
-  const stack: AllFieldPath[] = []
+function buildDependencyGraph(request: ToolWriteRequest): {
+  dependencyMap: Map<DependencyNode, Set<DependencyNode>>
+  usesBoxMeasurement: boolean
+  zRotateDependsOnRaw: boolean
+} {
+  const dependencyMap = new Map<DependencyNode, Set<DependencyNode>>()
+  let usesBoxMeasurement = false
 
-  const resolveField = (path: AllFieldPath): unknown[] => {
-    if (states.get(path) === 'resolved') {
-      return cache[path] || []
+  for (const path of CREATION_TOOL_FIELD_PATHS) {
+    const deps = getNodeDependencies(path, request)
+    dependencyMap.set(path, deps)
+    for (const dep of deps) {
+      if (isBoxMeasurementVariableName(dep)) {
+        usesBoxMeasurement = true
+      }
     }
+  }
 
-    if (states.get(path) === 'visiting') {
-      const cycleStart = stack.indexOf(path)
-      const cycle = [...stack.slice(cycleStart), path].join(' -> ')
+  for (const variable of MEASUREMENT_VARIABLE_NAMES) {
+    dependencyMap.set(variable, getNodeDependencies(variable, request))
+  }
+
+  const visitStates = new Map<DependencyNode, FieldResolveState>()
+  const stack: DependencyNode[] = []
+
+  const validateNode = (node: DependencyNode) => {
+    const state = visitStates.get(node)
+    if (state === 'resolved') {
+      return
+    }
+    if (state === 'visiting') {
+      const cycleStart = stack.indexOf(node)
+      const cycle = [...stack.slice(cycleStart), node].join(' -> ')
       throw new Error(`字段引用出现循环: ${cycle}`)
     }
 
-    states.set(path, 'visiting')
-    stack.push(path)
+    visitStates.set(node, 'visiting')
+    stack.push(node)
 
-    const dependencies = getFieldDependencies(path, request)
-    if (dependencies.has(path)) {
-      throw new Error(`${path} 表达式不能引用自身`)
+    const deps = dependencyMap.get(node) || new Set<DependencyNode>()
+    if (deps.has(node)) {
+      throw new Error(`${node} 表达式不能引用自身`)
     }
 
-    for (const dependency of dependencies) {
-      resolveField(dependency)
+    for (const dep of deps) {
+      validateNode(dep)
     }
 
-    const series = buildFieldSeries(path, request, quantity, cache, screenSize)
-    cache[path] = series
     stack.pop()
-    states.set(path, 'resolved')
-
-    return series
+    visitStates.set(node, 'resolved')
   }
 
   for (const path of CREATION_TOOL_FIELD_PATHS) {
-    resolveField(path)
+    validateNode(path)
+  }
+
+  const zRotateDependsOnRaw = canReachDependencyNode(
+    'transform.zRotate',
+    RAW_MEASUREMENT_VARIABLE_SET,
+    dependencyMap
+  )
+
+  return {
+    dependencyMap,
+    usesBoxMeasurement,
+    zRotateDependsOnRaw
+  }
+}
+
+function canReachDependencyNode(
+  start: DependencyNode,
+  targets: Set<string>,
+  dependencyMap: Map<DependencyNode, Set<DependencyNode>>
+): boolean {
+  const visited = new Set<DependencyNode>()
+  const queue: DependencyNode[] = [start]
+
+  while (queue.length > 0) {
+    const current = queue.shift() as DependencyNode
+    const deps = dependencyMap.get(current)
+    if (!deps) continue
+    for (const dep of deps) {
+      if (targets.has(dep)) {
+        return true
+      }
+      if (!visited.has(dep)) {
+        visited.add(dep)
+        queue.push(dep)
+      }
+    }
+  }
+
+  return false
+}
+
+async function buildFieldSeriesMap(
+  request: ToolWriteRequest,
+  quantity: number,
+  screenSize: { width: number; height: number },
+  options?: GenerateDanmakuOptions
+): Promise<Record<AllFieldPath, unknown[]>> {
+  const { dependencyMap, usesBoxMeasurement, zRotateDependsOnRaw } = buildDependencyGraph(request)
+  const canCombineRawAndBox = usesBoxMeasurement && !zRotateDependsOnRaw
+  const measureFn = options?.measureDanmakus ?? measureDanmakus
+
+  const cache: FieldSeriesMap = {}
+  const measurementCache: MeasurementSeriesMap = {}
+  const states = new Map<DependencyNode, FieldResolveState>()
+  const stack: DependencyNode[] = []
+
+  const resolveMeasurement = async (includeZRotate: boolean) => {
+    const measured = await measureDanmakuSeries(quantity, cache, includeZRotate, measureFn)
+    if (!measurementCache.rawWidth) {
+      measurementCache.rawWidth = measured.rawWidth
+    }
+    if (!measurementCache.rawHeight) {
+      measurementCache.rawHeight = measured.rawHeight
+    }
+    states.set('rawWidth', 'resolved')
+    states.set('rawHeight', 'resolved')
+
+    if (includeZRotate) {
+      measurementCache.boxWidth = measured.boxWidth
+      measurementCache.boxHeight = measured.boxHeight
+      states.set('boxWidth', 'resolved')
+      states.set('boxHeight', 'resolved')
+    }
+  }
+
+  const resolveNode = async (node: DependencyNode): Promise<void> => {
+    if (states.get(node) === 'resolved') {
+      return
+    }
+
+    if (states.get(node) === 'visiting') {
+      const cycleStart = stack.indexOf(node)
+      const cycle = [...stack.slice(cycleStart), node].join(' -> ')
+      throw new Error(`字段引用出现循环: ${cycle}`)
+    }
+
+    states.set(node, 'visiting')
+    stack.push(node)
+
+    if (isMeasurementVariableName(node)) {
+      const includeZRotate = isBoxMeasurementVariableName(node) || canCombineRawAndBox
+      const requiredFields = includeZRotate ? BOX_MEASUREMENT_DEPENDENCIES : RAW_MEASUREMENT_DEPENDENCIES
+      for (const field of requiredFields) {
+        await resolveNode(field)
+      }
+      await resolveMeasurement(includeZRotate)
+      stack.pop()
+      return
+    }
+
+    const dependencies = dependencyMap.get(node) || new Set<DependencyNode>()
+    for (const dependency of dependencies) {
+      await resolveNode(dependency)
+    }
+
+    cache[node] = buildFieldSeries(node, request, quantity, cache, measurementCache, screenSize)
+    stack.pop()
+    states.set(node, 'resolved')
+  }
+
+  for (const path of CREATION_TOOL_FIELD_PATHS) {
+    await resolveNode(path)
   }
 
   return cache as Record<AllFieldPath, unknown[]>
 }
 
-function getFieldDependencies(path: AllFieldPath, request: ToolWriteRequest): Set<AllFieldPath> {
-  if (isNumericFieldPath(path)) {
-    const rule = request.numericRules[path]
-    if (request.expressionEnabled && rule.mode === 'range') {
-      const expression = rule.expression?.trim() || RANGE_EXPRESSION_PRESETS[0].expression
-      return extractExpressionDependencies(expression, `${path} `)
+async function measureDanmakuSeries(
+  quantity: number,
+  fieldSeries: FieldSeriesMap,
+  includeZRotate: boolean,
+  measureFn: (danmakus: DanmakuItem[]) => Promise<ToolbarMeasure>
+): Promise<{
+  rawWidth: number[]
+  rawHeight: number[]
+  boxWidth: number[]
+  boxHeight: number[]
+}> {
+  const textSeries = (fieldSeries['content.text'] as string[] | undefined) || []
+  const fontSeries = (fieldSeries['content.font'] as string[] | undefined) || []
+  const sizeSeries = (fieldSeries['content.size'] as number[] | undefined) || []
+  const strokeSeries = (fieldSeries['content.stroke'] as boolean[] | undefined) || []
+  const zRotateSeries = includeZRotate
+    ? ((fieldSeries['transform.zRotate'] as number[] | undefined) || [])
+    : []
+
+  const uniqueRequestMap = new Map<string, string>()
+  const uniqueItems: DanmakuItem[] = []
+  const indexToRequestId: string[] = new Array(quantity)
+
+  for (let index = 0; index < quantity; index++) {
+    const text = String(textSeries[index] ?? '')
+    const font = String(fontSeries[index] ?? 'Microsoft YaHei')
+    const size = clampIntegerByRule(sizeSeries[index], M7_RULES.size)
+    const stroke = normalizeStrokeValue(strokeSeries[index])
+    const zRotate = includeZRotate
+      ? clampIntegerByRule(normalizeAngle(zRotateSeries[index]), M7_RULES.rotate)
+      : 0
+
+    const key = JSON.stringify([text, font, size, stroke, zRotate])
+    let requestId = uniqueRequestMap.get(key)
+    if (!requestId) {
+      requestId = `generator-measure-${uniqueItems.length}`
+      uniqueRequestMap.set(key, requestId)
+      uniqueItems.push({
+        id: requestId,
+        layer: 0,
+        startTime: 0,
+        content: {
+          text,
+          font,
+          size,
+          color: '#FFFFFF',
+          stroke
+        },
+        transform: {
+          start: { x: 0, y: 0 },
+          end: { x: 0, y: 0 },
+          zRotate,
+          yRotate: 0
+        },
+        opacity: { from: 1, to: 1 },
+        animation: {
+          duration: 1000,
+          moveDuration: 1,
+          delay: 0,
+          easing: 'speedup'
+        }
+      })
     }
-    if (rule.mode === 'cycle') {
-      return getNumericCycleDependencies(rule, path)
+    indexToRequestId[index] = requestId
+  }
+
+  const measurements: ToolbarMeasure = {}
+  for (let offset = 0; offset < uniqueItems.length; offset += MEASURE_BATCH_SIZE) {
+    const batch = uniqueItems.slice(offset, offset + MEASURE_BATCH_SIZE)
+    const batchResult = await measureFn(batch)
+    for (const item of batch) {
+      const entry = batchResult?.[item.id]
+      if (
+        !entry ||
+        !Number.isFinite(entry.rawWidth) ||
+        !Number.isFinite(entry.rawHeight) ||
+        (includeZRotate && (!Number.isFinite(entry.width) || !Number.isFinite(entry.height)))
+      ) {
+        throw new Error('弹幕实际宽高测量结果缺失或无效')
+      }
+      measurements[item.id] = entry
     }
   }
 
-  if (path === 'content.text') {
-    return getTextRuleDependencies(request.directRules.text)
+  const rawWidth: number[] = new Array(quantity)
+  const rawHeight: number[] = new Array(quantity)
+  const boxWidth: number[] = new Array(quantity)
+  const boxHeight: number[] = new Array(quantity)
+
+  for (let index = 0; index < quantity; index++) {
+    const entry = measurements[indexToRequestId[index]]
+    rawWidth[index] = entry.rawWidth
+    rawHeight[index] = entry.rawHeight
+    boxWidth[index] = includeZRotate ? entry.width : entry.rawWidth
+    boxHeight[index] = includeZRotate ? entry.height : entry.rawHeight
+  }
+
+  return { rawWidth, rawHeight, boxWidth, boxHeight }
+}
+
+function getNodeDependencies(node: DependencyNode, request: ToolWriteRequest): Set<DependencyNode> {
+  if (isRawMeasurementVariableName(node)) {
+    return new Set<DependencyNode>(RAW_MEASUREMENT_DEPENDENCIES)
+  }
+
+  if (isBoxMeasurementVariableName(node)) {
+    return new Set<DependencyNode>(BOX_MEASUREMENT_DEPENDENCIES)
+  }
+
+  if (isNumericFieldPath(node)) {
+    const rule = request.numericRules[node]
+    if (request.expressionEnabled && rule.mode === 'range') {
+      const expression = rule.expression?.trim() || RANGE_EXPRESSION_PRESETS[0].expression
+      return extractExpressionDependencies(expression, `${node} `)
+    }
+    if (rule.mode === 'cycle') {
+      return getNumericCycleDependencies(rule, node)
+    }
+  }
+
+  if (node === 'content.text') {
+    const dependencies = getTextRuleDependencies(request.directRules.text)
+    const forbiddenMeasurements = Array.from(dependencies).filter(isMeasurementVariableName)
+    if (forbiddenMeasurements.length > 0) {
+      throw new Error(`content.text 表达式不能引用宽高变量: ${forbiddenMeasurements.join(', ')}`)
+    }
+    return dependencies
   }
 
   return new Set()
@@ -599,10 +885,19 @@ function buildFieldSeries(
   request: ToolWriteRequest,
   quantity: number,
   fieldSeries: FieldSeriesMap,
+  measurementSeries: MeasurementSeriesMap,
   screenSize: { width: number; height: number }
 ): unknown[] {
   if (isNumericFieldPath(path)) {
-    return buildNumericSeries(path, request.numericRules[path], quantity, request.expressionEnabled, fieldSeries, screenSize)
+    return buildNumericSeries(
+      path,
+      request.numericRules[path],
+      quantity,
+      request.expressionEnabled,
+      fieldSeries,
+      measurementSeries,
+      screenSize
+    )
   }
 
   if (path === 'content.color') {
@@ -630,31 +925,36 @@ function buildNumericSeries(
   quantity: number,
   expressionEnabled: boolean,
   fieldSeries: FieldSeriesMap,
+  measurementSeries: MeasurementSeriesMap,
   screenSize: { width: number; height: number }
 ): number[] {
   if (rule.mode === 'cycle') {
-    return buildCycleNumericSeries(path, rule, quantity, fieldSeries, screenSize)
+    return buildCycleNumericSeries(path, rule, quantity, fieldSeries, measurementSeries, screenSize)
   }
 
   const startValue = parseRequiredNumber(rule.start, `${path} 起始值`)
 
-  if (quantity <= 1) {
-    return [startValue]
-  }
-
   if (rule.mode === 'range') {
-    const endValue = parseRequiredNumber(rule.end, `${path} 结束值`)
     if (expressionEnabled) {
+      const endValue = quantity <= 1 && !rule.end.trim()
+        ? startValue
+        : parseRequiredNumber(rule.end, `${path} 结束值`)
       const expression = rule.expression?.trim() || RANGE_EXPRESSION_PRESETS[0].expression
       return evaluateRangeExpressionInternal({
         expression,
         startVal: startValue,
         endVal: endValue,
         quantity,
-        fieldSeries
+        fieldSeries,
+        measurementSeries
       }, screenSize)
     }
 
+    if (quantity <= 1) {
+      return [startValue]
+    }
+
+    const endValue = parseRequiredNumber(rule.end, `${path} 结束值`)
     const diff = endValue - startValue
     return Array.from({ length: quantity }, (_, index) => {
       const t = index / (quantity - 1)
@@ -664,6 +964,10 @@ function buildNumericSeries(
       }
       return val
     })
+  }
+
+  if (quantity <= 1) {
+    return [startValue]
   }
 
   if (isOpacityPath(path)) {
@@ -766,6 +1070,7 @@ function buildCycleNumericSeries(
   rule: NumericRuleState,
   quantity: number,
   fieldSeries: FieldSeriesMap,
+  measurementSeries: MeasurementSeriesMap,
   screenSize: { width: number; height: number }
 ): number[] {
   const entries = getRuleCycleEntries(rule)
@@ -789,6 +1094,7 @@ function buildCycleNumericSeries(
       startVal: 0,
       endVal: 0,
       fieldSeries,
+      measurementSeries,
       screenSize,
       label: `${path} 循环值`
     })
@@ -801,9 +1107,9 @@ function buildCycleNumericSeries(
   })
 }
 
-function getNumericCycleDependencies(rule: NumericRuleState, path: NumericFieldPath): Set<AllFieldPath> {
+function getNumericCycleDependencies(rule: NumericRuleState, path: NumericFieldPath): Set<DependencyNode> {
   const entries = getRuleCycleEntries(rule)
-  const dependencies = new Set<AllFieldPath>()
+  const dependencies = new Set<DependencyNode>()
 
   for (const [index, entry] of entries.entries()) {
     mergeDependencies(dependencies, extractExpressionDependencies(entry, `${path} 循环值 ${index + 1} `))
@@ -828,8 +1134,8 @@ function buildCycleColorSeries(rule: ColorRuleState, quantity: number): string[]
   })
 }
 
-function getTextRuleDependencies(rule: DirectRuleState<string>): Set<AllFieldPath> {
-  const dependencies = new Set<AllFieldPath>()
+function getTextRuleDependencies(rule: DirectRuleState<string>): Set<DependencyNode> {
+  const dependencies = new Set<DependencyNode>()
 
   if (rule.mode === 'assign') {
     mergeDependencies(dependencies, collectTextTemplateDependencies(rule.value, 'content.text '))
@@ -844,9 +1150,9 @@ function getTextRuleDependencies(rule: DirectRuleState<string>): Set<AllFieldPat
   return dependencies
 }
 
-function collectTextTemplateDependencies(rawValue: string, label: string): Set<AllFieldPath> {
+function collectTextTemplateDependencies(rawValue: string, label: string): Set<DependencyNode> {
   const expressions = scanTextTemplateExpressions(rawValue)
-  const dependencies = new Set<AllFieldPath>()
+  const dependencies = new Set<DependencyNode>()
 
   if (!expressions) {
     return dependencies
@@ -1072,15 +1378,41 @@ function compileMathExpression(expression: string, label: string): { evaluate: (
   }
 }
 
-function extractExpressionDependencies(expression: string, label: string): Set<AllFieldPath> {
+function resolveStaticMemberPath(node: any): string | null {
+  if (!node || typeof node !== 'object') {
+    return null
+  }
+  if (node.isSymbolNode && typeof node.name === 'string') {
+    return node.name
+  }
+  if (
+    node.isAccessorNode &&
+    node.index?.isIndexNode &&
+    Array.isArray(node.index.dimensions) &&
+    node.index.dimensions.length === 1
+  ) {
+    const dim = node.index.dimensions[0]
+    if (dim?.isConstantNode && typeof dim.value === 'string') {
+      const parent = resolveStaticMemberPath(node.object)
+      return parent ? `${parent}.${dim.value}` : null
+    }
+  }
+  return null
+}
+
+function extractExpressionDependencies(expression: string, label: string): Set<DependencyNode> {
   try {
     const node = parseMathExpression(expression) as any
-    const dependencies = new Set<AllFieldPath>()
+    const dependencies = new Set<DependencyNode>()
 
     node.traverse((childNode: any) => {
-      const fieldPath = childNode.toString()
-      if (isAllFieldPath(fieldPath)) {
-        dependencies.add(fieldPath)
+      if (childNode?.isSymbolNode && isMeasurementVariableName(childNode.name)) {
+        dependencies.add(childNode.name)
+        return
+      }
+      const memberPath = resolveStaticMemberPath(childNode)
+      if (memberPath && isAllFieldPath(memberPath)) {
+        dependencies.add(memberPath)
       }
     })
 
@@ -1110,6 +1442,7 @@ function evaluateCompiledExpression(
     startVal: number
     endVal: number
     fieldSeries?: FieldSeriesMap
+    measurementSeries?: MeasurementSeriesMap
     screenSize?: { width: number; height: number }
     label?: string
   }
@@ -1134,6 +1467,7 @@ function createExpressionScope(params: {
   startVal: number
   endVal: number
   fieldSeries?: FieldSeriesMap
+  measurementSeries?: MeasurementSeriesMap
   screenSize?: { width: number; height: number }
 }) {
   const screenSize = params.screenSize ?? resolveScreenDimensions()
@@ -1152,6 +1486,12 @@ function createExpressionScope(params: {
 
   for (const [path, series] of Object.entries(params.fieldSeries || {}) as Array<[AllFieldPath, unknown[]]>) {
     assignScopePath(scope, path, series[params.index])
+  }
+
+  for (const [name, series] of Object.entries(params.measurementSeries || {}) as Array<[MeasurementVariableName, number[]]>) {
+    if (Array.isArray(series)) {
+      scope[name] = series[params.index]
+    }
   }
 
   return scope
@@ -1186,7 +1526,7 @@ function evaluateBezier(x1: number, y1: number, x2: number, y2: number, t: numbe
   return solver(t)
 }
 
-function mergeDependencies(target: Set<AllFieldPath>, source: Set<AllFieldPath>) {
+function mergeDependencies(target: Set<DependencyNode>, source: Set<DependencyNode>) {
   for (const dependency of source) {
     target.add(dependency)
   }
@@ -1198,6 +1538,18 @@ function isNumericFieldPath(path: string): path is NumericFieldPath {
 
 function isAllFieldPath(path: string): path is AllFieldPath {
   return CREATION_TOOL_FIELD_PATH_SET.has(path as AllFieldPath)
+}
+
+function isRawMeasurementVariableName(name: string): name is RawMeasurementVariableName {
+  return RAW_MEASUREMENT_VARIABLE_SET.has(name)
+}
+
+function isBoxMeasurementVariableName(name: string): name is BoxMeasurementVariableName {
+  return BOX_MEASUREMENT_VARIABLE_SET.has(name)
+}
+
+function isMeasurementVariableName(name: string): name is MeasurementVariableName {
+  return MEASUREMENT_VARIABLE_SET.has(name)
 }
 
 function getErrorMessage(error: unknown): string {
@@ -1483,10 +1835,10 @@ function evaluateRangeExpressionInternal(
   params: RangeEvaluationParams,
   screenSize: { width: number; height: number }
 ): number[] {
-  const { expression, startVal, endVal, quantity, fieldSeries } = params;
+  const { expression, startVal, endVal, quantity, fieldSeries, measurementSeries } = params;
   const results: number[] = [];
 
-  if (quantity < 2) return [startVal];
+  if (quantity <= 0) return [];
 
   try {
     const compiledExpr = compileMathExpression(expression, '表达式')
@@ -1500,6 +1852,7 @@ function evaluateRangeExpressionInternal(
         startVal,
         endVal,
         fieldSeries,
+        measurementSeries,
         screenSize
       });
       

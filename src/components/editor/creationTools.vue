@@ -101,8 +101,8 @@
                   重置
                 </button>
 
-                <button class="btn-primary" type="button" @click="handleToolWrite">
-                  写入
+                <button class="btn-primary" type="button" :disabled="isToolWriting" @click="handleToolWrite">
+                  {{ isToolWriting ? '写入中...' : '写入' }}
                 </button>
               </div>
             </div>
@@ -578,6 +578,7 @@ let previewSummaryTimer: ReturnType<typeof setTimeout> | null = null
 const previewStatus = ref('预览框中的 JSON 可直接编辑并创建')
 const previewStatusTone = ref<'info' | 'success' | 'error'>('info')
 const toolStatus = ref('')
+const isToolWriting = ref(false)
 const quantityInput = ref('10')
 const expressionEnabled = ref(false)
 const writeMode = ref<WriteMode>('replace')
@@ -926,7 +927,7 @@ async function handleCreationToolsShortcut(event: KeyboardEvent) {
       break
     case '1':
       event.preventDefault()
-      handleToolWrite()
+      await handleToolWrite()
       break
     case '2':
       event.preventDefault()
@@ -1430,11 +1431,16 @@ function validateStrictQuantity(): number {
   return normalized
 }
 
-function handleToolWrite() {
+async function handleToolWrite() {
+  if (isToolWriting.value) {
+    return
+  }
+
+  isToolWriting.value = true
   try {
     validateStrictQuantity()
     const request = buildToolWriteRequest()
-    const result = writeGeneratedDanmakusToPreview(request)
+    const result = await writeGeneratedDanmakusToPreview(request)
 
     previewText.value = result.previewText
     syncPreviewSummaryNow()
@@ -1447,6 +1453,8 @@ function handleToolWrite() {
     toolStatus.value = message
     previewStatus.value = message
     previewStatusTone.value = 'error'
+  } finally {
+    isToolWriting.value = false
   }
 }
 

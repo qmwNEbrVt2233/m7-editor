@@ -672,8 +672,11 @@ const sectionContents = computed<Record<string, string>>(() => ({
       <li><code>e</code>：自然常数</li>
       <li><code>width</code>：设置的屏幕宽度</li>
       <li><code>height</code>：设置的屏幕高度</li>
+      <li><code>rawWidth</code> / <code>rawHeight</code>：当前弹幕未旋转时的实际排版宽高（依赖 <code>content.text</code>、<code>content.size</code>、<code>content.font</code>）</li>
+      <li><code>boxWidth</code> / <code>boxHeight</code>：当前弹幕经 <code>transform.zRotate</code> 旋转后的视觉包围盒宽高（依赖 <code>content.text</code>、<code>content.size</code>、<code>content.font</code>、<code>transform.zRotate</code>）</li>
       <li>所有数值字段当前索引的值（如 <code>transform.start.x</code>）</li>
     </ul>
+    <p>注意：为避免循环引用，<code>content.text</code> 与 <code>content.size</code>（及其上游依赖）不能引用任何宽高变量；<code>transform.zRotate</code>（及其上游依赖）不能引用 <code>boxWidth</code> / <code>boxHeight</code>，但可以引用 <code>rawWidth</code> / <code>rawHeight</code>。</p>
 
     <h3>可用运算与函数</h3>
     <ul>
