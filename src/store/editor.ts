@@ -742,7 +742,7 @@ export const useEditorStore = defineStore('editor', {
     const initialTimelineScale = Math.max(0.01, Math.min(3, sanitizePositiveFinite(saved?.timeline?.scale, 0.1, 0.01)))
 
     return {
-      version: '1.12.0',
+      version: '1.13.0',
       InitializationPhase: isTauriRuntime(),
       showProjectManager: isTauriRuntime(),
       projectMode: 'single' as 'single' | 'folder',
@@ -2142,10 +2142,6 @@ export const useEditorStore = defineStore('editor', {
       historyManager.clear()
       historyManager.recordSnapshot(this.danmakus, `导入 XML (${danmakus.length}条弹幕)`, true)
 
-      errors.forEach((error) => {
-        notice.log('[XML 导入] 已跳过异常弹幕:' + error.message + '，导出日志以获取更多信息', 'warn', error.metadata)
-      })
-
       if (errors.length > 0) {
         console.warn(`[XML 导入] 共跳过 ${errors.length} 条异常弹幕`)
       }
@@ -2156,10 +2152,15 @@ export const useEditorStore = defineStore('editor', {
         this.showProjectManager = false
       }
 
+      const errorDetails = errors.map((error) => ({
+        message: error.message,
+        ...error.metadata
+      }))
       notice.alert(
-        errors.length === 0 ? `共 ${danmakus.length} 条，未见异常弹幕` : `共 ${danmakus.length} 条，共跳过 ${errors.length} 条异常弹幕`,
+        errors.length === 0 ? `共 ${danmakus.length} 条，未见异常弹幕` : `共 ${danmakus.length} 条，共跳过 ${errors.length} 条异常弹幕，导出日志以查看详情`,
         errors.length === 0 ? 'success' : 'warn',
-        'XML导入成功'
+        'XML导入成功',
+        errorDetails.length > 0 ? errorDetails : undefined
       )
 
       return {

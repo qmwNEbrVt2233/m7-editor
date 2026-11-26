@@ -231,7 +231,11 @@ pub(crate) fn replace_project_in_app_config(
 
 pub(crate) fn initialize_file_system(app: &AppHandle) -> Result<File, String> {
     let (_data_dir, logs_dir, _projects_dir) = documents_data_dirs(app)?;
-    let _ = load_app_config_unlocked(app)?;
+    let mut config = load_app_config_unlocked(app)?;
+    if config.version != APP_VERSION {
+        config.version = APP_VERSION.to_string();
+        save_app_config_unlocked(app, &config)?;
+    }
     let log_path = logs_dir.join(format!("m7-editor_{}.log", backup_timestamp(now_millis())));
     let mut file = OpenOptions::new()
         .create(true)

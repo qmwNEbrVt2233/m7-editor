@@ -122,6 +122,7 @@ pub(crate) async fn update_danmaku_template(
             .ok_or_else(|| "模板文件内容必须是 JSON 对象".to_string())?;
         object.insert("danmakus".to_string(), Value::Array(danmakus));
         object.insert("lastChangeAt".to_string(), json!(now_millis()));
+        object.insert("version".to_string(), json!(APP_VERSION));
         write_json(&path, &value)
     })
     .await

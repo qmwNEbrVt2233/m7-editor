@@ -17,6 +17,7 @@ use crate::{
         FolderProjectPayload, ProjectConfig, ProjectMediaConfig, ProjectSummary,
         PROJECT_CONFIG_FILE,
     },
+    APP_VERSION,
 };
 
 pub(crate) fn validate_project_config_fields(config: &ProjectConfig) -> Result<(), String> {
@@ -300,6 +301,7 @@ pub(crate) fn save_folder_project_inner(
         }
     }
 
+    config.version = APP_VERSION.to_string();
     config.last_change_at = now_millis();
     set_project_media_value(&mut project, media_path.as_deref());
     let project_file = resolve_file_inside_dir(&project_dir, &config.project_file, "工程文件")?;

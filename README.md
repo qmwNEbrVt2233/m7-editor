@@ -281,6 +281,8 @@ Codex 会负责启动 stdio 服务；不要先在终端单独运行 `npm run --s
 - 弹幕发送工具，最终上传时的稳定选择：https://github.com/qmwNEbrVt2233/DMsender_CLI
 - MCP服务源代码：[分支：MCP-server](https://github.com/qmwNEbrVt2233/m7-editor/tree/MCP-server)
 - 网页版部署代码：[分支：gh-pages](https://github.com/qmwNEbrVt2233/m7-editor/tree/gh-pages)
+- 演示工程下载：[m7-editor_v1.8.0_projectExample.zip](https://github.com/qmwNEbrVt2233/m7-editor/releases/download/1.8.0/m7-editor_v1.8.0_projectExample.zip)
+- 模板样例包下载：[templatePack_v1.9.0.zip](https://github.com/qmwNEbrVt2233/m7-editor/releases/download/1.9.0/templatePack_v1.9.0.zip)
 
 # 联系作者
 

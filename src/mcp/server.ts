@@ -749,7 +749,7 @@ function resolveOptionalPath(value?: string): string | undefined {
 }
 
 function createMcpServer() {
-  const server = new McpServer({ name: 'm7-editor', version: '1.12.0' }, {
+  const server = new McpServer({ name: 'm7-editor', version: '1.13.0' }, {
     capabilities: { tools: {} },
     instructions: '控制当前运行的 m7-editor 编辑会话。强烈建议采用“程序生成 + 外部文件”工作流：批量创建/读取/测量/更新/删除/查询日志或快照时，优先用脚本读写本机 JSON 文件并通过 jsonPath / inputPath / idsPath / outputPath 传参，避免在上下文中传输大段 JSON。返回的 ID 列表与 selectedIds 统一压缩为范围字符串（如 "1~3,7,19"），可直接用于 select_by_command（id:"1~3,7,19"）、list_danmakus.ids 与 delete_danmakus.ids。当 get_editor_state 返回 ready=false 时，可先调用工程工具打开或创建工程。get_frame 支持 outputPath 保存图片并默认省略 base64 返回以节省上下文。export_video 异步/短等待导出 .mp4 视频。保存/备份仅支持文件夹工程。reload_app 会清空内存历史快照与未保存状态，仅在需从本地更新工程信息时使用。'
   })

@@ -431,7 +431,7 @@ export function parsePresetImport(text: string, fallbackName?: string): Creation
 
 export function serializePresetExport(
   presets: CreationToolPresetRecord[],
-  version = '1.12.0'
+  version = '1.13.0'
 ): CreationToolPresetExport {
   return {
     meta: {

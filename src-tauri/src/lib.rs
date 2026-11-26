@@ -20,7 +20,7 @@ use crate::{
     video_export::VideoExportRuntime,
 };
 
-pub(crate) const APP_VERSION: &str = "1.12.0";
+pub(crate) const APP_VERSION: &str = "1.13.0";
 pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/

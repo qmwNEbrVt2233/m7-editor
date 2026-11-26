@@ -632,6 +632,11 @@ export function parseXML(xml: string, options: XmlImportOptions = {}): XmlParseR
   const maxLayers = normalizeMaxLayers(options.maxLayers)
   nodes.forEach((node, index) => {
     try {
+      const p = (node.getAttribute('p') ?? '').split(',')
+      if (p[1]?.trim() !== '7') {
+        return
+      }
+
       parsedDanmakus.push(createDanmakuFromXmlNode(node, index, options))
     } catch (error) {
       if (error instanceof XmlDanmakuParseError) {
